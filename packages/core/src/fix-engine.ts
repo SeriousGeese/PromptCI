@@ -93,50 +93,22 @@ export async function applyFixRecipe(
     return changes;
   }
 
-  // 3. Outdated Stale Year Replacement (2019-2023 -> 2026)
+  // 3. Stale years are intentionally NOT auto-fixable.
+  //
+  // BUG-14: this branch used to rewrite every year matching a hardcoded
+  // 2019–2023 alternation to the literal string '2026' across the whole
+  // flagged section. Three problems, any one of which is disqualifying:
+  //   - the source range and the replacement year were both hardcoded, so the
+  //     recipe was wrong from Jan 1 2027 onward;
+  //   - the range disagreed with the detector's own (2019–2025), so the fixer
+  //     silently skipped most of what the detector flagged; and
+  //   - a bare year substitution cannot tell a stale instruction from a
+  //     copyright line, a release date, or a version pin — it rewrote
+  //     "© 2021", "shipped in 2020", and "the 2022 spec" alike.
+  //
+  // The finding now carries an advisory `fixRecipe` string instead (see
+  // stale-instructions.ts) and produces no automated edit.
   if (issue.id.startsWith('stale-') && issue.category === 'stale_instruction') {
-    const STALE_YEAR_RE = /(?<![/-])\b(2019|2020|2021|2022|2023)\b(?![/-])/g;
-    
-    // Check if this issue is specifically about stale years
-    const hasYearEvidence = issue.evidence.some(ev => ev.includes('Year reference(s) that may be outdated'));
-    if (hasYearEvidence && issue.locations.length > 0) {
-      const loc = issue.locations[0];
-      const filePath = resolveSafePath(repoRoot, loc.filePath);
-      
-      let content = '';
-      try {
-        content = await fs.readFile(filePath, 'utf-8');
-      } catch {
-        return [];
-      }
-
-      const lines = content.split(/\r?\n/);
-      const hasCRLF = content.includes('\r\n');
-      const lineEnding = hasCRLF ? '\r\n' : '\n';
-
-      const startIdx = (loc.startLine ?? 1) - 1;
-      const endIdx = (loc.endLine ?? lines.length) - 1;
-
-      let modified = false;
-      for (let i = startIdx; i <= endIdx; i++) {
-        if (i >= 0 && i < lines.length) {
-          const original = lines[i];
-          const updated = original.replace(STALE_YEAR_RE, '2026');
-          if (updated !== original) {
-            lines[i] = updated;
-            modified = true;
-          }
-        }
-      }
-
-      if (modified) {
-        changes.push({
-          filePath,
-          originalContent: content,
-          newContent: lines.join(lineEnding),
-        });
-      }
-    }
     return changes;
   }
 

@@ -3,6 +3,7 @@ import * as path from 'node:path';
 import * as fs from 'node:fs';
 import type { PromptCiIssue } from './types.js';
 import type { RepoContext } from './repo-context.js';
+import { matchEvidence } from './evidence.js';
 
 interface SecurityCheck {
   id: string;
@@ -422,16 +423,18 @@ export function detectSecurityPack(context: RepoContext): PromptCiIssue[] {
 
   // 9. Inspect generated reports before source docs (Cost 9)
   for (const file of files) {
-    const inspectBeforePatterns = [
-      /read\s+.*\.promptci\s+before/i,
-      /inspect\s+.*\.promptci\s+before/i,
-      /check\s+.*\.promptci\s+before/i,
-      /read\s+.*report.*\s+before\s+.*(source|docs|code)/i,
-      /inspect\s+.*report.*\s+before\s+.*(source|docs|code)/i,
+    // BUG-20: each pattern carries a human label so evidence can quote the
+    // matched instruction text instead of the regex source.
+    const inspectBeforePatterns: Array<{ re: RegExp; label: string }> = [
+      { re: /read\s+.*\.promptci\s+before/i, label: 'Instruction to read .promptci reports first' },
+      { re: /inspect\s+.*\.promptci\s+before/i, label: 'Instruction to inspect .promptci reports first' },
+      { re: /check\s+.*\.promptci\s+before/i, label: 'Instruction to check .promptci reports first' },
+      { re: /read\s+.*report.*\s+before\s+.*(source|docs|code)/i, label: 'Instruction to read generated reports before source' },
+      { re: /inspect\s+.*report.*\s+before\s+.*(source|docs|code)/i, label: 'Instruction to inspect generated reports before source' },
     ];
 
     for (const pat of inspectBeforePatterns) {
-      if (pat.test(file.content)) {
+      if (pat.re.test(file.content)) {
         issues.push({
           // SP1 / B3: was a constant id inside this per-file loop — the
           // `break` below only exits the pattern loop, not the file loop, so
@@ -445,7 +448,7 @@ export function detectSecurityPack(context: RepoContext): PromptCiIssue[] {
             `generated reports before source files, which can cause circular or outdated guidance ingestion.`,
           filePaths: [file.path],
           locations: [],
-          evidence: [`Matched pattern: ${pat.toString()}`],
+          evidence: [matchEvidence(file.content, pat.re, pat.label)],
           recommendation: 'Recommend linking to latest reports or directing the agent to read source documents first instead of generated reports.',
           fixRecipe: 'Update the instruction to prioritize reading source files and configuration rather than relying on generated reports.',
           confidence: 0.7,

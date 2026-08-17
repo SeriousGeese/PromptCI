@@ -2,7 +2,7 @@
  * Tests for the stale-instructions detector, including BUG-013 fix.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { detectStaleInstructions } from '../src/stale-instructions.js';
 import type { InstructionFile, InstructionSection } from '../src/types.js';
 
@@ -32,6 +32,14 @@ function makeFile(content: string, filePath = '/repo/CLAUDE.md'): InstructionFil
   };
 }
 
+/**
+ * BUG-14: fixtures whose subject is "stale relative to now" are computed from
+ * the clock, not written as literals — otherwise they assert the very rot the
+ * detector was fixed to avoid.
+ */
+const THIS_YEAR = new Date().getFullYear();
+const yearsAgo = (n: number): number => THIS_YEAR - n;
+
 // ── Baseline behaviour ───────────────────────────────────────────────────────
 
 describe('detectStaleInstructions — baseline', () => {
@@ -41,7 +49,7 @@ describe('detectStaleInstructions — baseline', () => {
 
   it('flags a section with a stale year reference', () => {
     const file = makeFile(
-      '## Known Issues\nThe category model was scoped for Q2 2022 but deprioritized.',
+      `## Known Issues\nThe category model was scoped for Q2 ${yearsAgo(4)} but deprioritized.`,
     );
     const issues = detectStaleInstructions([file]);
     expect(issues.length).toBeGreaterThan(0);
@@ -49,10 +57,11 @@ describe('detectStaleInstructions — baseline', () => {
     expect(issues[0].severity).toBe('warning');
   });
 
-  it('flags a 2024 TODO as potentially stale in 2026', () => {
-    const file = makeFile('## TODO\nTODO 2024: migrate to the new auth flow.');
+  it('flags a two-year-old TODO as potentially stale', () => {
+    const year = yearsAgo(2);
+    const file = makeFile(`## TODO\nTODO ${year}: migrate to the new auth flow.`);
     const issues = detectStaleInstructions([file]);
-    expect(issues.some((i) => i.evidence.some((e) => /2024/.test(e)))).toBe(true);
+    expect(issues.some((i) => i.evidence.some((e) => e.includes(String(year))))).toBe(true);
   });
 
   it('flags a WORKAROUND cleanup keyword', () => {
@@ -165,7 +174,7 @@ describe('detectStaleInstructions — ST1 multi-line HTML comment dated markers'
 
   it('does NOT flag a current-year dated TODO inside an HTML comment', () => {
     const file = makeFile(
-      '## Notes\n<!-- TODO (2026-07-01): remove after Q3 launch -->',
+      `## Notes\n<!-- TODO (${THIS_YEAR}-07-01): remove after Q3 launch -->`,
     );
     const issues = detectStaleInstructions([file]);
     expect(issues.some((i) => i.evidence.some((e) => /dated todo/i.test(e)))).toBe(false);
@@ -310,5 +319,53 @@ describe('detectStaleInstructions — ST4 negation context across a line wrap', 
       i.evidence.some((e) => /old version/i.test(e) && /vue 2/i.test(e)),
     );
     expect(staleVue).toBeDefined();
+  });
+});
+
+// ── BUG-14: the stale-year window rolls with the calendar ────────────────────
+
+describe('detectStaleInstructions — stale-year window is derived from the clock', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function yearsFlagged(issues: ReturnType<typeof detectStaleInstructions>): string {
+    return issues.flatMap((i) => i.evidence).find((e) => e.startsWith('Year reference(s)')) ?? '';
+  }
+
+  it('flags last year but not the current year, in any calendar year', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2031-06-15T00:00:00Z'));
+
+    const file = makeFile('## Rules\nUse the 2030 toolchain. The 2031 toolchain is not ready.');
+    const evidence = yearsFlagged(detectStaleInstructions([file]));
+
+    expect(evidence).toContain('2030');
+    expect(evidence).not.toContain('2031');
+  });
+
+  it('ignores years older than the rolling window', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2031-06-15T00:00:00Z'));
+
+    // Window in 2031 is 2024–2030; 2011 predates it and reads as a deliberate
+    // historical reference rather than an instruction that rotted.
+    const file = makeFile('## History\nThe project charter dates to 2011.', '/repo/AGENTS.md');
+    const evidence = yearsFlagged(detectStaleInstructions([file]));
+
+    expect(evidence).toBe('');
+  });
+
+  it('flags a dated HTML-comment TODO relative to the current year', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2031-06-15T00:00:00Z'));
+
+    const stale = makeFile('## Notes\n<!-- TODO (2029-03-10): drop the shim -->');
+    const notYet = makeFile('## Notes\n<!-- TODO (2031-03-10): drop the shim -->');
+
+    expect(detectStaleInstructions([stale]).length).toBeGreaterThan(0);
+    expect(
+      detectStaleInstructions([notYet]).flatMap((i) => i.evidence).some((e) => e.includes('TODO')),
+    ).toBe(false);
   });
 });

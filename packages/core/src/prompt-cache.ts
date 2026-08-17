@@ -1,4 +1,5 @@
 import type { InstructionFile, PromptCiIssue } from './types.js';
+import { matchEvidence } from './evidence.js';
 import * as path from 'node:path';
 import * as crypto from 'node:crypto';
 
@@ -12,25 +13,38 @@ function promptCacheIssueId(kind: string, filePath: string): string {
   return `prompt-cache-${kind}-${hash}`;
 }
 
-const DATE_PATTERNS = [
-  /\b(?:last\s+updated|last\s+modified|updated\s+at|modified\s+at|date)\b\s*:\s*\b\d{4}-\d{2}-\d{2}\b/i,
-  /\b\d{4}-\d{2}-\d{2}t\d{2}:\d{2}:\d{2}\b/i,
-  /\b(?:january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{1,2}(?:st|nd|rd|th)?,\s+\d{4}\b/i,
+/**
+ * BUG-20: each pattern carries a human-readable label. Evidence quotes the
+ * matched instruction text under that label — the regex source is never shown
+ * to report readers. See evidence.ts.
+ */
+type LabelledPattern = { re: RegExp; label: string };
+
+const DATE_PATTERNS: LabelledPattern[] = [
+  {
+    re: /\b(?:last\s+updated|last\s+modified|updated\s+at|modified\s+at|date)\b\s*:\s*\b\d{4}-\d{2}-\d{2}\b/i,
+    label: 'Dated "last updated"/"modified" line',
+  },
+  { re: /\b\d{4}-\d{2}-\d{2}t\d{2}:\d{2}:\d{2}\b/i, label: 'ISO 8601 timestamp' },
+  {
+    re: /\b(?:january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{1,2}(?:st|nd|rd|th)?,\s+\d{4}\b/i,
+    label: 'Long-form calendar date',
+  },
 ];
 
-const SCAN_REPORT_PATTERNS = [
-  /health\s+score\s*:\s*\d+/i,
-  /files\s+scanned\s*:\s*\d+/i,
-  /promptci\s+report/i,
-  /\bgenerated\s+by\s+promptci\b/i,
-  /latest\s+scan\s+results/i,
-  /scan\s+history/i,
+const SCAN_REPORT_PATTERNS: LabelledPattern[] = [
+  { re: /health\s+score\s*:\s*\d+/i, label: 'Health-score line from a scan report' },
+  { re: /files\s+scanned\s*:\s*\d+/i, label: 'File-count line from a scan report' },
+  { re: /promptci\s+report/i, label: 'PromptCI report heading' },
+  { re: /\bgenerated\s+by\s+promptci\b/i, label: 'PromptCI generated-by marker' },
+  { re: /latest\s+scan\s+results/i, label: 'Pasted "latest scan results" section' },
+  { re: /scan\s+history/i, label: 'Pasted "scan history" section' },
 ];
 
-const BRANCH_TASK_PATTERNS = [
-  /current\s+branch\s*:\s*\S+/i,
-  /git\s+branch\s*:\s*\S+/i,
-  /current\s+task\s*:\s*\S+/i,
+const BRANCH_TASK_PATTERNS: LabelledPattern[] = [
+  { re: /current\s+branch\s*:\s*\S+/i, label: 'Current-branch line' },
+  { re: /git\s+branch\s*:\s*\S+/i, label: 'Git-branch line' },
+  { re: /current\s+task\s*:\s*\S+/i, label: 'Current-task line' },
 ];
 
 const LOCAL_PATH_PATTERN = /(?:[a-zA-Z]:\\users\\[a-zA-Z0-9_-]+)|(?:\/users\/[a-zA-Z0-9_-]+\/)|(?:\/home\/(?!runner)[a-zA-Z0-9_-]+\/)/i;
@@ -40,7 +54,7 @@ export function detectPromptCacheFriendliness(files: InstructionFile[]): PromptC
 
   // Focus only on persistent, always-loaded instruction files
   const targetFiles = files.filter((f) =>
-    ['claude', 'agents', 'cursor', 'copilot', 'prompt'].includes(f.fileType)
+    ['claude', 'agents', 'cursor', 'windsurf', 'copilot', 'prompt'].includes(f.fileType)
   );
 
   for (const file of targetFiles) {
@@ -48,7 +62,7 @@ export function detectPromptCacheFriendliness(files: InstructionFile[]): PromptC
 
     // 1. Timestamps and Dates
     for (const pat of DATE_PATTERNS) {
-      if (pat.test(file.content)) {
+      if (pat.re.test(file.content)) {
         issues.push({
           id: promptCacheIssueId('volatile-timestamp', file.path),
           severity: 'warning',
@@ -57,7 +71,7 @@ export function detectPromptCacheFriendliness(files: InstructionFile[]): PromptC
           summary: `The instruction file "${fileName}" contains a volatile date or timestamp. Frequently changing dates in persistent instruction files invalidate prompt caches.`,
           filePaths: [file.path],
           locations: [],
-          evidence: [`Matched pattern: ${pat.toString()}`],
+          evidence: [matchEvidence(file.content, pat.re, pat.label)],
           recommendation: 'Move volatile dates to a separate task-specific prompt or scratch file, or remove them from canonical instructions.',
           fixRecipe: 'Remove the "Last updated: <date>" or timestamp line from the file.',
           confidence: 0.85,
@@ -68,7 +82,7 @@ export function detectPromptCacheFriendliness(files: InstructionFile[]): PromptC
 
     // 2. Pasted Scan Outputs/Reports
     for (const pat of SCAN_REPORT_PATTERNS) {
-      if (pat.test(file.content)) {
+      if (pat.re.test(file.content)) {
         issues.push({
           id: promptCacheIssueId('pasted-report', file.path),
           severity: 'warning',
@@ -77,7 +91,7 @@ export function detectPromptCacheFriendliness(files: InstructionFile[]): PromptC
           summary: `The instruction file "${fileName}" contains pasted scan results or reports. Committing generated reports into canonical instruction files breaks prompt caching and bloats context.`,
           filePaths: [file.path],
           locations: [],
-          evidence: [`Matched pattern: ${pat.toString()}`],
+          evidence: [matchEvidence(file.content, pat.re, pat.label)],
           recommendation: 'Link to the generated report file or read it on-demand instead of pasting its contents into canonical instructions.',
           fixRecipe: 'Delete the pasted report summary block and reference the report file path instead.',
           confidence: 0.9,
@@ -88,7 +102,7 @@ export function detectPromptCacheFriendliness(files: InstructionFile[]): PromptC
 
     // 3. Current Branch or Task status
     for (const pat of BRANCH_TASK_PATTERNS) {
-      if (pat.test(file.content)) {
+      if (pat.re.test(file.content)) {
         issues.push({
           id: promptCacheIssueId('volatile-branch-task', file.path),
           severity: 'warning',
@@ -97,7 +111,7 @@ export function detectPromptCacheFriendliness(files: InstructionFile[]): PromptC
           summary: `The instruction file "${fileName}" contains active git branch or task details. Frequently updated task status or branch names break prompt caching.`,
           filePaths: [file.path],
           locations: [],
-          evidence: [`Matched pattern: ${pat.toString()}`],
+          evidence: [matchEvidence(file.content, pat.re, pat.label)],
           recommendation: 'Move branch-specific notes and active task details to git commit messages, PR descriptions, or a temporary scratch file.',
           fixRecipe: 'Remove active branch and task notes from the persistent instructions.',
           confidence: 0.85,

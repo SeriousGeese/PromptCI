@@ -54,19 +54,22 @@ describe('runFix CLI command', () => {
     expect(content).toContain('dist/');
   });
 
-  it('automatically resolves stale years in instruction files in non-interactive mode', async () => {
+  // BUG-14: stale-year findings are advisory. `fix` used to blind-substitute
+  // every matched year with the current one, which corrupted copyright lines,
+  // release dates, and version pins indiscriminately.
+  it('does not rewrite years in instruction files — stale findings are advisory', async () => {
     const claudeMdPath = path.join(tmpDir, 'CLAUDE.md');
-    await fs.writeFile(
-      claudeMdPath,
-      '## Coding Rules\nFollow guidelines for the 2023 release cycle.\n',
-      'utf-8'
-    );
+    const original =
+      '## Coding Rules\n' +
+      'Follow guidelines for the 2023 release cycle.\n' +
+      '\n' +
+      'Copyright 2021 Example Corp. Shipped in 2020.\n';
+    await fs.writeFile(claudeMdPath, original, 'utf-8');
 
     await runFix({ scanPath: tmpDir, interactive: false });
 
     const content = await fs.readFile(claudeMdPath, 'utf-8');
-    expect(content).toContain('2026');
-    expect(content).not.toContain('2023');
+    expect(content).toBe(original);
   });
 
   it('consolidates duplicate sections across files, replacing secondary sections with links', async () => {
@@ -96,50 +99,35 @@ describe('runFix CLI command', () => {
   });
 
   it('prompts user in interactive mode and applies changes on confirmation', async () => {
-    const claudeMdPath = path.join(tmpDir, 'CLAUDE.md');
-    await fs.writeFile(
-      claudeMdPath,
-      '## Rules\nEnsure 2022 compatibility standards.\n',
-      'utf-8'
-    );
+    const gitignorePath = path.join(tmpDir, '.gitignore');
+    await fs.writeFile(gitignorePath, 'node_modules/\n', 'utf-8');
 
     // Answer 'y' (yes)
     await runFix({ scanPath: tmpDir, interactive: true, answers: ['y'] });
 
-    const content = await fs.readFile(claudeMdPath, 'utf-8');
-    expect(content).toContain('2026');
-    expect(content).not.toContain('2022');
+    const content = await fs.readFile(gitignorePath, 'utf-8');
+    expect(content).toContain('.promptci/');
   });
 
   it('prompts user in interactive mode and skips changes on rejection', async () => {
-    const claudeMdPath = path.join(tmpDir, 'CLAUDE.md');
-    await fs.writeFile(
-      claudeMdPath,
-      '## Rules\nEnsure 2022 compatibility standards.\n',
-      'utf-8'
-    );
+    const gitignorePath = path.join(tmpDir, '.gitignore');
+    await fs.writeFile(gitignorePath, 'node_modules/\n', 'utf-8');
 
     // Answer 'n' (no)
     await runFix({ scanPath: tmpDir, interactive: true, answers: ['n'] });
 
-    const content = await fs.readFile(claudeMdPath, 'utf-8');
-    expect(content).toContain('2022');
-    expect(content).not.toContain('2026');
+    const content = await fs.readFile(gitignorePath, 'utf-8');
+    expect(content).toBe('node_modules/\n');
   });
 
   it('does not modify files when --dry-run is specified', async () => {
-    const claudeMdPath = path.join(tmpDir, 'CLAUDE.md');
-    await fs.writeFile(
-      claudeMdPath,
-      '## Rules\nEnsure 2021 compatibility standards.\n',
-      'utf-8'
-    );
+    const gitignorePath = path.join(tmpDir, '.gitignore');
+    await fs.writeFile(gitignorePath, 'node_modules/\n', 'utf-8');
 
     await runFix({ scanPath: tmpDir, dryRun: true });
 
-    const content = await fs.readFile(claudeMdPath, 'utf-8');
-    expect(content).toContain('2021');
-    expect(content).not.toContain('2026');
+    const content = await fs.readFile(gitignorePath, 'utf-8');
+    expect(content).toBe('node_modules/\n');
   });
 
   describe('LLM fix support', () => {

@@ -1,6 +1,6 @@
 /** Core data types for PromptCI */
 
-export type FileType = 'claude' | 'agents' | 'cursor' | 'copilot' | 'readme' | 'docs' | 'prompt' | 'unknown';
+export type FileType = 'claude' | 'agents' | 'cursor' | 'windsurf' | 'copilot' | 'readme' | 'docs' | 'prompt' | 'unknown';
 
 export type IssueSeverity = 'info' | 'warning' | 'high' | 'critical';
 

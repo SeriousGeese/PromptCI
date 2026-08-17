@@ -1,5 +1,6 @@
 import type { RepoContext } from './repo-context.js';
 import type { PromptCiIssue } from './types.js';
+import { matchEvidence } from './evidence.js';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
 import * as crypto from 'node:crypto';
@@ -129,7 +130,8 @@ export function detectMcpTooling(context: RepoContext): PromptCiIssue[] {
           summary: `The instruction file "${fileName}" commands the agent to "${exp.name}". This encourages expensive broad context loading instead of using targeted search or MCP tools.`,
           filePaths: [file.path],
           locations: [],
-          evidence: [`Matched pattern: ${exp.pattern.toString()}`],
+          // BUG-20: quote the offending instruction text, not the regex source.
+          evidence: [matchEvidence(file.content, exp.pattern, `Instruction to "${exp.name}"`)],
           recommendation,
           fixRecipe,
           confidence: 0.8,

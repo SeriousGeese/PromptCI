@@ -181,11 +181,10 @@ function isRepairable(issue: PromptCiIssue): boolean {
   if (issue.id === 'security-pack-no-promptci-gitignore') return true;
   if (issue.id === 'security-pack-unignored-dirs') return true;
   if (issue.category === 'duplicate' && issue.locations.length >= 2) return true;
-  
-  if (issue.id.startsWith('stale-') && issue.category === 'stale_instruction') {
-    return issue.evidence.some(ev => ev.includes('Year reference(s) that may be outdated'));
-  }
 
+  // BUG-14: stale_instruction findings used to be auto-repairable via a blind
+  // year substitution. They are advisory now — `fixRecipe` tells the reader
+  // what to edit, but `promptci fix` will not rewrite years on their behalf.
   return false;
 }
 

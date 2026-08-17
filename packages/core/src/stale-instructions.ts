@@ -2,7 +2,8 @@
  * Stale-instruction detector for PromptCI.
  *
  * Flags sections that likely reference outdated content:
- *   - Years 2019–2023 that appear outside code blocks
+ *   - Recent-but-past years that appear outside code blocks (rolling window,
+ *     see STALE_YEAR_WINDOW below)
  *   - Cleanup keywords: "TODO remove", "remove later", "temporary fix", "workaround"
  *   - "deprecated" near a version number or tool name
  *   - Known old framework versions (React 16, Next.js 9, Unity 2019, etc.)
@@ -16,12 +17,45 @@ import type { InstructionFile, InstructionSection, PromptCiIssue } from './types
 // ─── Pattern definitions ──────────────────────────────────────────────────────
 
 /**
- * Years likely stale in an AI instruction context.
- * 2023 is now included since the current year is 2026.
- * Must not be immediately preceded by "/" or "-" (avoids ISO dates like 2022-01-01
- * or paths like /2022/report) — those are not year references.
+ * BUG-14: the stale-year window is derived from the current date rather than
+ * hardcoded. The previous literal alternation (2019…2025) was correct only for
+ * calendar 2026 and silently stopped flagging last year's dates every Jan 1.
+ *
+ * How far back the window reaches. In year Y the detector flags
+ * Y-STALE_YEAR_WINDOW … Y-1 inclusive; the current year is never stale, and
+ * years older than the window are assumed to be deliberate historical
+ * references (founding dates, cited papers, license years) rather than
+ * instructions that rotted.
  */
-const STALE_YEAR_RE = /(?<![/-])\b(2019|2020|2021|2022|2023|2024|2025)\b(?![/-])/g;
+const STALE_YEAR_WINDOW = 7;
+
+/** Seam for tests; production callers always get the real clock. */
+export function currentYear(now: Date = new Date()): number {
+  return now.getFullYear();
+}
+
+let cachedYear = 0;
+let cachedYearRe: RegExp | null = null;
+
+/**
+ * Years likely stale in an AI instruction context.
+ * Must not be immediately preceded or followed by "/" or "-" (avoids ISO dates
+ * like 2022-01-01 or paths like /2022/report) — those are not year references.
+ *
+ * Rebuilt only when the calendar year changes, so a long-running process that
+ * crosses midnight on New Year's Eve picks up the new window.
+ */
+function staleYearPattern(): RegExp {
+  const year = currentYear();
+  if (cachedYearRe && cachedYear === year) return cachedYearRe;
+
+  const years: string[] = [];
+  for (let y = year - STALE_YEAR_WINDOW; y <= year - 1; y++) years.push(String(y));
+
+  cachedYear = year;
+  cachedYearRe = new RegExp(`(?<![/-])\\b(${years.join('|')})\\b(?![/-])`, 'g');
+  return cachedYearRe;
+}
 
 /**
  * BUG-A1: Section headings that indicate historical records rather than active
@@ -136,7 +170,9 @@ function collectOldHtmlTodoMatches(text: string): string[] {
   const cloned = new RegExp(HTML_COMMENT_DATED_TODO_RE.source, HTML_COMMENT_DATED_TODO_RE.flags);
   while ((m = cloned.exec(text)) !== null) {
     const year = Number(m[2]);
-    if (year <= 2025) {
+    // BUG-14: was `year <= 2025`. Anything before the current year is a dated
+    // marker that has already come due; the current year has not.
+    if (year < currentYear()) {
       matches.push(m[0]);
     }
   }
@@ -232,7 +268,7 @@ export function detectStaleInstructions(files: InstructionFile[]): PromptCiIssue
       const sectionKey = `${file.path}:${section.startLine}`;
 
       // 1. Stale years — only in prose, not inside code blocks (confidence 0.6)
-      const yearMatches = collectMatches(textNoCode, STALE_YEAR_RE);
+      const yearMatches = collectMatches(textNoCode, staleYearPattern());
       if (yearMatches.length > 0) {
         evidence.push(`Year reference(s) that may be outdated: ${[...new Set(yearMatches)].join(', ')}`);
         confidence = Math.max(confidence, 0.6);
@@ -296,6 +332,14 @@ export function detectStaleInstructions(files: InstructionFile[]): PromptCiIssue
         recommendation:
           'Review this section for accuracy. Update any outdated version numbers, tool references, ' +
           'or remove temporary notes that are no longer relevant.',
+        // BUG-14: advisory only. This finding is deliberately NOT auto-fixable —
+        // a year in an instruction file may be a copyright line, a release date,
+        // a version pin, or a prose reference, and rewriting it to the current
+        // year corrupts every one of those.
+        fixRecipe:
+          'Edit each flagged reference by hand: replace outdated version pins and tool names with ' +
+          'current ones, and delete temporary notes that no longer apply. Leave copyright lines, ' +
+          'release dates, and historical references as they are.',
         confidence,
       });
     }

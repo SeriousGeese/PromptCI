@@ -287,3 +287,29 @@ describe('parseSections — code block awareness', () => {
     expect(section!.endLine).toBe(3);
   });
 });
+
+// BUG-19: `.windsurfrules` was in DEFAULT_PATTERNS but had no branch in
+// deriveFileType, so it was read (and counted toward context-bloat totals) and
+// then skipped by every filetype-gated detector.
+describe('scanFiles — .windsurfrules typing', () => {
+  let wsTmpDir: string;
+
+  beforeAll(() => {
+    wsTmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'promptci-scanner-ws-'));
+    fs.writeFileSync(
+      path.join(wsTmpDir, '.windsurfrules'),
+      '## Rules\nAlways run the test suite before finishing.\n',
+    );
+  });
+
+  afterAll(() => {
+    fs.rmSync(wsTmpDir, { recursive: true, force: true });
+  });
+
+  it('types .windsurfrules as windsurf, not unknown', async () => {
+    const files = await scanFiles({ repoPath: wsTmpDir });
+    const windsurf = files.find((f) => path.basename(f.path) === '.windsurfrules');
+    expect(windsurf).toBeDefined();
+    expect(windsurf!.fileType).toBe('windsurf');
+  });
+});
