@@ -1,6 +1,6 @@
 /** Root export for @promptci/core */
 export * from './types.js';
-export { scanFiles } from './scanner.js';
+export { scanFiles, parseSections } from './scanner.js';
 export { detectProjectType, detectProjectTypeFromContent } from './project-type.js';
 export { detectDuplicates, detectDuplicateHeadings, normalizeSection } from './duplicates.js';
 export { detectConflicts, detectVersionConflicts, detectCompetingTechConflicts } from './conflicts.js';

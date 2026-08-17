@@ -110,18 +110,16 @@ describe('runContextOptimize', () => {
     expect(stdoutOutput).toContain('No cache optimization changes needed.');
   });
 
+  const VOLATILE_AGENTS_MD = '# Rules\n\n## Tasks\nCurrent Branch: main\nActive Task: caching';
+
   it('outputs a diff of proposed changes in dry-run mode without modifying files', async () => {
-    await fs.writeFile(
-      path.join(tmpDir, 'AGENTS.md'),
-      '# Rules\n\n## Tasks\nCurrent Branch: main\nActive Task: caching',
-      'utf-8'
-    );
+    await fs.writeFile(path.join(tmpDir, 'AGENTS.md'), VOLATILE_AGENTS_MD, 'utf-8');
 
     const { runContextOptimize } = await import('../src/commands/context.js');
     await runContextOptimize({ scanPath: tmpDir, dryRun: true });
 
     expect(stdoutOutput).toContain('Proposed caching optimization changes');
-    expect(stdoutOutput).toContain('[Dry Run] Simulating optimization for');
+    expect(stdoutOutput).toContain('would be rewritten');
 
     // original file should not have been updated on disk
     const content = await fs.readFile(path.join(tmpDir, 'AGENTS.md'), 'utf-8');
@@ -132,15 +130,62 @@ describe('runContextOptimize', () => {
     expect(docsFileExists).toBe(false);
   });
 
-  it('applies optimization changes to files on disk when dry-run is false', async () => {
+  // BUG-18: this was the ONLY writing command with no confirmation — the sole
+  // gate was --dry-run, so the destructive path was the default.
+  it('previews without writing when neither --write nor --dry-run is given', async () => {
+    await fs.writeFile(path.join(tmpDir, 'AGENTS.md'), VOLATILE_AGENTS_MD, 'utf-8');
+
+    const { runContextOptimize } = await import('../src/commands/context.js');
+    await runContextOptimize({ scanPath: tmpDir });
+
+    expect(stdoutOutput).toContain('Proposed caching optimization changes');
+    expect(stdoutOutput).toContain('Re-run with --write to apply them.');
+    expect(stdoutOutput).not.toContain('Applied change to');
+
+    const content = await fs.readFile(path.join(tmpDir, 'AGENTS.md'), 'utf-8');
+    expect(content).toBe(VOLATILE_AGENTS_MD);
+
+    const docsFileExists = await fs
+      .access(path.join(tmpDir, 'Docs', 'tasks.md'))
+      .then(() => true)
+      .catch(() => false);
+    expect(docsFileExists).toBe(false);
+  });
+
+  it('rejects --write combined with --dry-run', async () => {
+    await fs.writeFile(path.join(tmpDir, 'AGENTS.md'), VOLATILE_AGENTS_MD, 'utf-8');
+
+    const { runContextOptimize } = await import('../src/commands/context.js');
+    await expect(
+      runContextOptimize({ scanPath: tmpDir, dryRun: true, write: true }),
+    ).rejects.toThrow('process.exit(1)');
+
+    const content = await fs.readFile(path.join(tmpDir, 'AGENTS.md'), 'utf-8');
+    expect(content).toBe(VOLATILE_AGENTS_MD);
+  });
+
+  // README.md is a human-facing document; `context optimize` must not
+  // restructure it even though the scanner reads it for context cost.
+  it('never rewrites README.md', async () => {
     await fs.writeFile(
-      path.join(tmpDir, 'AGENTS.md'),
-      '# Rules\n\n## Tasks\nCurrent Branch: main\nActive Task: caching',
+      path.join(tmpDir, 'README.md'),
+      '# Project\n\n## Status\nCurrent Branch: main\nActive Task: caching',
       'utf-8'
     );
 
     const { runContextOptimize } = await import('../src/commands/context.js');
-    await runContextOptimize({ scanPath: tmpDir, dryRun: false });
+    await runContextOptimize({ scanPath: tmpDir, write: true });
+
+    expect(stdoutOutput).toContain('No cache optimization changes needed.');
+    const content = await fs.readFile(path.join(tmpDir, 'README.md'), 'utf-8');
+    expect(content).toContain('Current Branch: main');
+  });
+
+  it('applies optimization changes to files on disk when --write is given', async () => {
+    await fs.writeFile(path.join(tmpDir, 'AGENTS.md'), VOLATILE_AGENTS_MD, 'utf-8');
+
+    const { runContextOptimize } = await import('../src/commands/context.js');
+    await runContextOptimize({ scanPath: tmpDir, write: true });
 
     expect(stdoutOutput).toContain('Applying caching optimization changes');
     expect(stdoutOutput).toContain('Applied change to');

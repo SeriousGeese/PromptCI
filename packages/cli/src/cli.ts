@@ -160,11 +160,15 @@ contextCommand
 
 contextCommand
   .command('optimize')
-  .description('Automatically refactor instruction files by splitting volatile or large sections')
+  .description(
+    'Preview a refactor of instruction files that splits volatile or large sections ' +
+      '(previews by default; pass --write to apply)',
+  )
   .option('--path <dir>', 'target directory to optimize (default: current directory)')
-  .option('--dry-run', 'output a diff of what would change without modifying files')
-  .action(async (opts: { path?: string; dryRun?: boolean }) => {
-    await runContextOptimize({ scanPath: opts.path, dryRun: opts.dryRun });
+  .option('--write', 'apply the changes to disk (without this, only a diff is printed)')
+  .option('--dry-run', 'print the diff without modifying files (the default)')
+  .action(async (opts: { path?: string; dryRun?: boolean; write?: boolean }) => {
+    await runContextOptimize({ scanPath: opts.path, dryRun: opts.dryRun, write: opts.write });
   });
 
 program
