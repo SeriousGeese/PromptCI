@@ -1,4 +1,4 @@
-# promptci
+# @promptci/cli
 
 Instruction health for AI coding workflows. Scans AI coding instruction files
 (`CLAUDE.md`, `AGENTS.md`, `.cursorrules`, Copilot instructions, and more) and produces
@@ -11,7 +11,7 @@ output for identical input.
 ## Usage
 
 ```bash
-npx promptci scan
+npx @promptci/cli scan
 ```
 
 Writes `.promptci/latest.md` (human-readable) and `.promptci/report.json` (machine-readable),
@@ -20,10 +20,10 @@ and prints a summary with a health score and top fixes.
 Common commands:
 
 ```bash
-npx promptci scan --path /path/to/repo   # scan a specific repo
-npx promptci init                        # create .promptci/config.json
-npx promptci explain                     # explain findings (BYO OpenAI/Anthropic key)
-npx promptci review-diff --base origin/main   # CI: fail on instruction regressions
+npx @promptci/cli scan --path /path/to/repo   # scan a specific repo
+npx @promptci/cli init                        # create .promptci/config.json
+npx @promptci/cli explain                     # explain findings (BYO OpenAI/Anthropic key)
+npx @promptci/cli review-diff --base origin/main   # CI: fail on instruction regressions
 ```
 
 Full documentation: https://github.com/SeriousGeese/PromptCI

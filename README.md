@@ -25,7 +25,7 @@ PromptCI treats instruction files like maintainable engineering artifacts.
 Requires Node.js 22+.
 
 ```bash
-npx promptci scan
+npx @promptci/cli scan
 ```
 
 The scan writes two files and prints a summary with a health score and top fixes:
@@ -36,11 +36,11 @@ The scan writes two files and prints a summary with a health score and top fixes
 Common commands:
 
 ```bash
-npx promptci scan --path /path/to/repo    # scan a specific repo
-npx promptci init                         # create .promptci/config.json
-npx promptci explain                      # explain findings (BYO OpenAI/Anthropic key)
-npx promptci fix                          # apply deterministic fix recipes
-npx promptci doctor                       # diagnose setup problems
+npx @promptci/cli scan --path /path/to/repo    # scan a specific repo
+npx @promptci/cli init                         # create .promptci/config.json
+npx @promptci/cli explain                      # explain findings (BYO OpenAI/Anthropic key)
+npx @promptci/cli fix                          # apply deterministic fix recipes
+npx @promptci/cli doctor                       # diagnose setup problems
 ```
 
 See [Docs/cli-reference.md](Docs/cli-reference.md) for the full command reference and
@@ -60,7 +60,7 @@ Fail pull requests that make instruction files worse:
 Or run the CLI directly:
 
 ```bash
-npx promptci review-diff --base origin/main --fail-on-regression
+npx @promptci/cli review-diff --base origin/main --fail-on-regression
 ```
 
 ## What gets detected

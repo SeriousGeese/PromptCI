@@ -1,6 +1,6 @@
 # @promptci/core
 
-Scanner engine behind [`promptci`](https://www.npmjs.com/package/promptci): detectors,
+Scanner engine behind [`@promptci/cli`](https://www.npmjs.com/package/@promptci/cli): detectors,
 scoring, and report generation for AI coding instruction files (`CLAUDE.md`, `AGENTS.md`,
 `.cursorrules`, Copilot instructions, and more).
 
@@ -20,7 +20,7 @@ console.log(report.healthScore, report.issues.length);
 Most consumers want the CLI instead:
 
 ```bash
-npx promptci scan
+npx @promptci/cli scan
 ```
 
 Full documentation: https://github.com/SeriousGeese/PromptCI

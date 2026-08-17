@@ -36,12 +36,12 @@ runs:
       run: |
         if [ "${{ inputs.fail_on_regression }}" = "true" ]; then
           echo "Running PromptCI Branch Review (compared to origin/${{ inputs.base_branch }})..."
-          npx promptci review-diff --base "origin/${{ inputs.base_branch }}" --path "${{ inputs.path }}" --fail-on-regression
+          npx @promptci/cli review-diff --base "origin/${{ inputs.base_branch }}" --path "${{ inputs.path }}" --fail-on-regression
         else
           echo "Running PromptCI Scan..."
           ARGS="--path ${{ inputs.path }}"
           if [ -n "${{ inputs.fail_on }}" ]; then
             ARGS="$ARGS --fail-on ${{ inputs.fail_on }}"
           fi
-          npx promptci scan $ARGS
+          npx @promptci/cli scan $ARGS
         fi

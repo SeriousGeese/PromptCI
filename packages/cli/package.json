@@ -1,5 +1,5 @@
 {
-  "name": "promptci",
+  "name": "@promptci/cli",
   "version": "0.0.1",
   "description": "Instruction health for AI coding workflows — scan CLAUDE.md, AGENTS.md, .cursorrules and more for duplicates, conflicts, staleness, and context bloat",
   "license": "Apache-2.0",
@@ -45,5 +45,8 @@
     "esbuild": "^0.25.0",
     "typescript": "*",
     "vitest": "*"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }
