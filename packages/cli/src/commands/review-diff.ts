@@ -1,166 +1,166 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { scan, filterNewIssues, createBaseline } from '@promptci/core';
-import type { PromptCiIssue, ProjectType } from '@promptci/core';
-import { loadConfig } from '../config.js';
+import type { PromptCiIssue } from '@promptci/core';
+import { loadConfig, type CliConfig } from '../config.js';
 
 export type ReviewDiffOptions = {
   baseBranch: string;
   scanPath?: string;
   json: boolean;
   failOnRegression: boolean;
+  /**
+   * Compare the working tree (including uncommitted edits) instead of the HEAD
+   * commit. Useful locally; wrong in CI, where uncommitted noise would be
+   * reported as a regression introduced by the PR.
+   */
+  workingTree?: boolean;
 };
 
 /**
- * Checks if a file path is relevant to the scanner configuration and detectors.
+ * Runs git with an argument vector — never a shell string. Branch names reach
+ * this command from `--base`, and the previous implementation interpolated
+ * them into `execSync` strings.
  */
-function isScannerFile(filePath: string): boolean {
-  const normalized = filePath.replace(/\\/g, '/').toLowerCase();
-  
-  const parts = normalized.split('/');
-  const ignoredDirs = ['.git', 'node_modules', 'dist', 'build', 'temp', 'tmp', 'bin', 'obj', 'library'];
-  if (parts.some(p => ignoredDirs.includes(p))) {
-    return false;
-  }
+function git(args: string[], cwd: string): string {
+  return execFileSync('git', args, {
+    cwd,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    encoding: 'utf8',
+    maxBuffer: 32 * 1024 * 1024,
+  }).trim();
+}
 
-  if (normalized.endsWith('.md')) {
-    return true;
-  }
+/**
+ * Checks out `commit` into a throwaway worktree.
+ *
+ * This replaces the old approach of copying an allowlist of "scanner-relevant"
+ * files into an otherwise empty temp directory. Detectors like
+ * dead-references, command-validity and security-pack do live filesystem
+ * existence checks against the scan root, so in a skeleton directory nearly
+ * every referenced source file looked missing: the base side fabricated
+ * findings, which inflated "resolved" and suppressed real "new" — feeding
+ * --fail-on-regression, the GitHub Action's headline gate.
+ */
+function addWorktree(repoRoot: string, commit: string, dir: string): void {
+  git(['worktree', 'add', '--detach', dir, commit], repoRoot);
+}
 
-  const exactFiles = [
-    '.cursorrules',
-    '.windsurfrules',
-    'package.json',
-    'pyproject.toml',
-    '.gitignore',
-    'tsconfig.json',
-  ];
-  if (normalized.endsWith('.promptci/config.json') || normalized === '.promptci/config.json') {
-    return true;
+function removeWorktree(repoRoot: string, dir: string): void {
+  try {
+    git(['worktree', 'remove', '--force', dir], repoRoot);
+  } catch {
+    // Fall through to the plain rm below; `worktree prune` cleans the metadata.
   }
-
-  const baseName = path.basename(normalized);
-  if (exactFiles.includes(baseName)) {
-    return true;
-  }
-
-  if (normalized.startsWith('.github/workflows/')) {
-    return normalized.endsWith('.yml') || normalized.endsWith('.yaml');
-  }
-
-  if (normalized.startsWith('supabase/migrations/')) {
-    return true;
-  }
-
-  if (normalized.endsWith('.sln') || normalized.endsWith('.csproj')) {
-    return true;
-  }
-
-  if (normalized === 'assets/projectsettings/projectversion.txt') {
-    return true;
-  }
-
-  return false;
 }
 
 export async function runReviewDiff(options: ReviewDiffOptions): Promise<void> {
   const rawPath = options.scanPath ?? process.cwd();
   const resolvedPath = path.resolve(rawPath);
 
-  // 1. Verify Git Repository
+  // 1. Verify git repository and locate its root
+  let repoRoot: string;
   try {
-    const isGit = execSync('git rev-parse --is-inside-work-tree', {
-      cwd: resolvedPath,
-      stdio: ['ignore', 'pipe', 'ignore'],
-      encoding: 'utf8',
-    }).trim();
-    if (isGit !== 'true') {
-      throw new Error();
-    }
+    repoRoot = path.resolve(git(['rev-parse', '--show-toplevel'], resolvedPath));
   } catch {
     console.error(`Error: Path "${resolvedPath}" is not inside a git repository, or git is not installed.`);
     process.exit(1);
   }
 
-  // 2. Retrieve Base Branch Files
-  let baseFilesRaw: string;
+  // Scanning a subdirectory must scan the matching subdirectory on the base
+  // side, not the whole checkout.
+  const relFromRoot = path.relative(repoRoot, resolvedPath);
+
+  // 2. Resolve the base ref to a concrete commit
+  let baseCommit: string;
   try {
-    baseFilesRaw = execSync(`git ls-tree -r --name-only ${options.baseBranch}`, {
-      cwd: resolvedPath,
-      stdio: ['ignore', 'pipe', 'ignore'],
-      encoding: 'utf8',
-    });
+    baseCommit = git(['rev-parse', '--verify', `${options.baseBranch}^{commit}`], repoRoot);
   } catch {
-    console.error(`Error: Could not retrieve file list for base branch/commit "${options.baseBranch}".`);
+    console.error(`Error: Could not resolve base branch/commit "${options.baseBranch}".`);
     process.exit(1);
   }
 
-  const baseFilesList = baseFilesRaw.split('\n').map(f => f.trim()).filter(Boolean);
-  const relevantBaseFiles = baseFilesList.filter(isScannerFile);
-
-  // 3. Stream Base Files into a Temporary Directory
-  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'promptci-review-'));
-  
-  try {
-    for (const relFile of relevantBaseFiles) {
-      try {
-        const fileContent = execSync(`git show ${options.baseBranch}:${relFile}`, {
-          cwd: resolvedPath,
-          stdio: ['ignore', 'pipe', 'ignore'],
-          maxBuffer: 10 * 1024 * 1024,
-        });
-        
-        const tempFilePath = path.join(tempDir, relFile);
-        await fs.mkdir(path.dirname(tempFilePath), { recursive: true });
-        await fs.writeFile(tempFilePath, fileContent);
-      } catch {
-        // Skip files that failed to show (e.g. symlinks, submodules, or missing)
-      }
-    }
-
-    // 4. Scan Base Branch Temp Repo
-    const baseReport = await scan({
-      repoPath: tempDir,
-      projectType: 'auto' as ProjectType,
-    });
-
-    // 5. Load Current Branch Config and Scan Current Repo
-    let config;
+  // 3. Resolve the head side. Default is the HEAD commit — scanning the working
+  //    tree made every uncommitted edit look like a regression the PR introduced.
+  let headCommit: string | undefined;
+  if (!options.workingTree) {
     try {
-      config = await loadConfig(resolvedPath);
+      headCommit = git(['rev-parse', '--verify', 'HEAD^{commit}'], repoRoot);
     } catch {
-      config = { projectType: 'auto' as ProjectType };
+      console.error('Error: Could not resolve HEAD. Use --working-tree to compare uncommitted files.');
+      process.exit(1);
+    }
+  }
+
+  // 4. Load the project config ONCE and scan both sides with it. The base scan
+  //    used to hardcode projectType 'auto' with no include/exclude while the
+  //    head scan used the project config — asymmetric inputs on two sides of a
+  //    diff produce differences that are purely configuration artifacts.
+  let config: CliConfig;
+  try {
+    config = await loadConfig(resolvedPath);
+  } catch (err) {
+    console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(1);
+  }
+
+  const tempParent = await fs.mkdtemp(path.join(os.tmpdir(), 'promptci-review-'));
+  const baseWorktree = path.join(tempParent, 'base');
+  const headWorktree = path.join(tempParent, 'head');
+  const createdWorktrees: string[] = [];
+
+  try {
+    try {
+      addWorktree(repoRoot, baseCommit, baseWorktree);
+      createdWorktrees.push(baseWorktree);
+      if (headCommit) {
+        addWorktree(repoRoot, headCommit, headWorktree);
+        createdWorktrees.push(headWorktree);
+      }
+    } catch (err) {
+      console.error(
+        `Error: Could not check out a temporary worktree: ` +
+          `${err instanceof Error ? err.message : String(err)}`,
+      );
+      process.exit(1);
     }
 
-    const currentReport = await scan({
-      repoPath: resolvedPath,
-      projectType: config.projectType as ProjectType,
+    const baseScanRoot = path.join(baseWorktree, relFromRoot);
+    const headScanRoot = headCommit ? path.join(headWorktree, relFromRoot) : resolvedPath;
+
+    const scanOptions = {
+      projectType: config.projectType,
       include: config.include,
       exclude: config.exclude,
-    });
+    };
 
-    // 6. Compute Deltas
+    const baseReport = await scan({ repoPath: baseScanRoot, ...scanOptions });
+    const currentReport = await scan({ repoPath: headScanRoot, ...scanOptions });
+
+    // 5. Compute Deltas
+    //
+    // Fingerprints include file paths, so both sides must normalise to the
+    // same strings. Not every detector reports absolute paths (security-pack
+    // emits a bare '.gitignore', for example) — running those through
+    // path.relative() resolves them against process.cwd() and produces a
+    // different '../..' prefix per scan root, which made identical findings
+    // fingerprint differently on the two sides of the diff.
+    const toRelative = (filePath: string, rootPath: string): string => {
+      const rel = path.isAbsolute(filePath) ? path.relative(rootPath, filePath) : filePath;
+      return rel.replace(/\\/g, '/');
+    };
+
     const makeIssuesRelative = (issues: PromptCiIssue[], rootPath: string): PromptCiIssue[] => {
-      return issues.map(issue => {
-        const relativeFilePaths = issue.filePaths.map(fp => {
-          const rel = path.relative(rootPath, fp);
-          return rel.replace(/\\/g, '/');
-        });
-        const relativeLocations = issue.locations.map(loc => {
-          const rel = path.relative(rootPath, loc.filePath);
-          return {
-            ...loc,
-            filePath: rel.replace(/\\/g, '/'),
-          };
-        });
-        return {
-          ...issue,
-          filePaths: relativeFilePaths,
-          locations: relativeLocations,
-        };
-      });
+      return issues.map(issue => ({
+        ...issue,
+        filePaths: issue.filePaths.map(fp => toRelative(fp, rootPath)),
+        locations: issue.locations.map(loc => ({
+          ...loc,
+          filePath: toRelative(loc.filePath, rootPath),
+        })),
+      }));
     };
 
     const makeIssuesAbsolute = (issues: PromptCiIssue[], rootPath: string): PromptCiIssue[] => {
@@ -178,8 +178,8 @@ export async function runReviewDiff(options: ReviewDiffOptions): Promise<void> {
       });
     };
 
-    const relativeBaseIssues = makeIssuesRelative(baseReport.issues, tempDir);
-    const relativeCurrentIssues = makeIssuesRelative(currentReport.issues, resolvedPath);
+    const relativeBaseIssues = makeIssuesRelative(baseReport.issues, baseScanRoot);
+    const relativeCurrentIssues = makeIssuesRelative(currentReport.issues, headScanRoot);
 
     const baseScore = baseReport.healthScore;
     const currentScore = currentReport.healthScore;
@@ -191,10 +191,11 @@ export async function runReviewDiff(options: ReviewDiffOptions): Promise<void> {
     const { newIssues: relativeNewIssues } = filterNewIssues(relativeCurrentIssues, baseBaseline);
     const { newIssues: relativeResolvedIssues } = filterNewIssues(relativeBaseIssues, currentBaseline);
 
+    // Report paths against the user's real checkout, not the temporary worktree.
     const newIssues = makeIssuesAbsolute(relativeNewIssues, resolvedPath);
     const resolvedIssues = makeIssuesAbsolute(relativeResolvedIssues, resolvedPath);
 
-    // 7. Output Results
+    // 6. Output Results
     if (options.json) {
       const output = {
         baseScore,
@@ -222,7 +223,7 @@ export async function runReviewDiff(options: ReviewDiffOptions): Promise<void> {
     } else {
       console.log(`PromptCI Branch Review (compared to ${options.baseBranch})`);
       console.log('--------------------------------------------------');
-      
+
       let scoreColor = '\x1b[32m'; // green
       if (scoreDelta < 0) scoreColor = '\x1b[31m'; // red
       else if (scoreDelta === 0) scoreColor = '\x1b[0m'; // normal
@@ -230,14 +231,14 @@ export async function runReviewDiff(options: ReviewDiffOptions): Promise<void> {
       console.log(`Health Score:  ${baseScore} -> ${currentScore} (${scoreColor}${scoreDelta >= 0 ? '+' : ''}${scoreDelta}\x1b[0m points)`);
       console.log(`New Issues:    ${newIssues.length}`);
       console.log(`Resolved:      ${resolvedIssues.length}`);
-      
+
       if (newIssues.length > 0) {
         console.log('\n[+] New Issues:');
         for (const issue of newIssues) {
-          const locStr = issue.locations.length > 0 
+          const locStr = issue.locations.length > 0
             ? `${issue.locations[0].filePath}:${issue.locations[0].startLine ?? ''}`
             : issue.filePaths.join(', ');
-          
+
           const sevColor = issue.severity === 'critical' || issue.severity === 'high' ? '\x1b[31m' : '\x1b[33m';
           console.log(`  - ${sevColor}${issue.severity.toUpperCase()}\x1b[0m: ${issue.title} (${locStr})`);
           console.log(`    Summary:   ${issue.summary}`);
@@ -253,7 +254,7 @@ export async function runReviewDiff(options: ReviewDiffOptions): Promise<void> {
       }
     }
 
-    // 8. Exit Code Regression Enforcement
+    // 7. Exit Code Regression Enforcement
     if (options.failOnRegression) {
       if (scoreDelta < 0 || newIssues.length > 0) {
         if (!options.json) {
@@ -263,9 +264,17 @@ export async function runReviewDiff(options: ReviewDiffOptions): Promise<void> {
       }
     }
   } finally {
-    // 9. Clean up temp directory
+    // 8. Clean up worktrees and the temp directory
+    for (const dir of createdWorktrees) {
+      removeWorktree(repoRoot, dir);
+    }
     try {
-      await fs.rm(tempDir, { recursive: true, force: true });
+      await fs.rm(tempParent, { recursive: true, force: true });
+    } catch {
+      // ignore
+    }
+    try {
+      git(['worktree', 'prune'], repoRoot);
     } catch {
       // ignore
     }
