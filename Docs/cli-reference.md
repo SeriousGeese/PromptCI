@@ -11,7 +11,7 @@ promptci scan --output <file>               # write markdown report to this path
 promptci scan --fail-on <severity>          # exit 1 if any issues meet/exceed severity (info|warning|high|critical)
 promptci scan --baseline <path>             # load baseline file to ignore existing issues
 promptci scan --update-baseline             # run scan and save findings as the new baseline
-promptci scan --fail-on-new <severity>      # exit 1 only if NEW issues (not in baseline) meet this threshold
+promptci scan --fail-on-new <severity>      # exit 1 only if NEW issues (not in baseline) meet this threshold (requires --baseline)
 promptci scan --fail-on-budget              # exit 1 if any context bloat issues are found
 promptci scan --context-budget <chars>      # override total context budget (in characters)
 promptci scan --file-context-budget <chars> # override per-file context budget (in characters)
@@ -95,6 +95,11 @@ The temporary worktrees are removed when the command exits, including on failure
 `--baseline` / `--update-baseline` / `--fail-on-new` read and write
 `.promptci/baseline.json`. The ratchet only holds if that file is **committed** — CI checks out
 the repo and has nothing else to compare against.
+
+`--fail-on-new` is meaningless on its own: without `--baseline` there is nothing to diff
+against, so the flag is rejected rather than passing silently. Always pair them:
+`promptci scan --baseline .promptci/baseline.json --fail-on-new warning`. If the baseline file
+does not exist yet, it is treated as empty — every finding counts as new.
 
 So ignore the generated reports without ignoring the baseline:
 

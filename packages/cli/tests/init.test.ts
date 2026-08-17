@@ -3,6 +3,10 @@ import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { runInit, resolveSafePath } from '../src/commands/init.js';
+import { loadConfig } from '../src/config.js';
+
+// The interactive menu omits 'auto' — it is reached by accepting the detected type.
+const PROJECT_TYPES = ['typescript', 'nextjs', 'unity', 'dotnet', 'python', 'go', 'rust', 'unknown'] as const;
 
 async function makeTempDir(): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), 'promptci-init-test-'));
@@ -89,6 +93,26 @@ describe('runInit', () => {
     expect(templateContent).toContain('Go (Golang)');
     expect(templateContent).toContain('go test');
   });
+
+  // BUG-15: init offered python/go/rust but the CLI's config validator did not
+  // know them, so the config init wrote was rejected by the very next scan.
+  // Menu index N must select PROJECT_TYPES[N-1] and survive a loadConfig round trip.
+  it.each(PROJECT_TYPES.map((t, i) => [String(i + 1), t] as const))(
+    'writes a config loadConfig accepts when menu choice %s (%s) is selected',
+    async (choice, expectedType) => {
+      await runInit(tmpDir, {
+        interactive: true,
+        // 1. Confirm detected type? 'n' (override)  2. menu choice  3. template? 'n'
+        answers: ['n', choice, 'n'],
+      });
+
+      const config = JSON.parse(
+        await fs.readFile(path.join(tmpDir, '.promptci', 'config.json'), 'utf-8'),
+      );
+      expect(config.projectType).toBe(expectedType);
+      await expect(loadConfig(tmpDir)).resolves.toMatchObject({ projectType: expectedType });
+    },
+  );
 
   it('does not overwrite existing instruction files', async () => {
     // Write existing AGENTS.md
