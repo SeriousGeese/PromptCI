@@ -49,7 +49,7 @@ promptci doctor                             # verify config, .gitignore, and sys
 promptci doctor --path <dir>                # check a specific directory
 
 # Setup
-promptci init                               # create .promptci/config.json
+promptci init                               # create .promptci/config.json and add the .promptci/ ignore rules
 
 # Dashboard (optional)
 promptci login                              # open browser for GitHub OAuth sign-in
@@ -64,4 +64,32 @@ promptci update --source <dir>              # set the source directory (first ru
 
 promptci --version
 promptci --help
+```
+
+## Baselines and the CI ratchet
+
+`--baseline` / `--update-baseline` / `--fail-on-new` read and write
+`.promptci/baseline.json`. The ratchet only holds if that file is **committed** — CI checks out
+the repo and has nothing else to compare against.
+
+So ignore the generated reports without ignoring the baseline:
+
+```gitignore
+# PromptCI: ignore generated reports, keep the shared baseline and config
+**/.promptci/*
+!**/.promptci/baseline.json
+!**/.promptci/config.json
+```
+
+`promptci init` and `promptci fix` both write exactly this. Two details matter: `.promptci/*`
+rather than `.promptci/` (git does not descend into an ignored *directory*, so a trailing slash
+leaves the negations unreachable), and the leading `**/` (a pattern containing a slash is
+otherwise anchored to the repo root and misses nested packages).
+
+A typical flow:
+
+```bash
+promptci scan --update-baseline    # accept today's findings as the starting point
+git add .promptci/baseline.json && git commit -m "chore: add promptci baseline"
+promptci scan --fail-on-new warning   # in CI: fail only on findings added since
 ```

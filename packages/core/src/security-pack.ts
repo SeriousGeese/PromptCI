@@ -4,6 +4,7 @@ import * as fs from 'node:fs';
 import type { PromptCiIssue } from './types.js';
 import type { RepoContext } from './repo-context.js';
 import { matchEvidence } from './evidence.js';
+import { PROMPTCI_GITIGNORE_BLOCK, PROMPTCI_GITIGNORE_LINES } from './promptci-gitignore.js';
 
 interface SecurityCheck {
   id: string;
@@ -334,8 +335,16 @@ export function detectSecurityPack(context: RepoContext): PromptCiIssue[] {
       filePaths: ['.gitignore'],
       locations: [],
       evidence: ['.promptci/ entry not found in .gitignore'],
-      recommendation: 'Add `.promptci/` to your `.gitignore` file to prevent committing generated reports.',
-      fixRecipe: 'echo ".promptci/" >> .gitignore',
+      // BUG-7: recommend the carve-out, not a bare `.promptci/`. Ignoring the
+      // whole directory also ignores baseline.json, and `--baseline` /
+      // `--fail-on-new` need that file committed and readable in CI.
+      recommendation:
+        'Add the following to `.gitignore` so generated reports stay out of git while the shared ' +
+        'baseline and config remain committed:\n' +
+        PROMPTCI_GITIGNORE_LINES.map((l) => `    ${l}`).join('\n') +
+        '\n\nUse `.promptci/*` rather than `.promptci/` — git does not descend into an ignored ' +
+        'directory, so the `!` negations only work against the directory\'s contents.',
+      fixRecipe: PROMPTCI_GITIGNORE_BLOCK,
       confidence: 0.9,
     });
   }

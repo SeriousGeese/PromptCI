@@ -1,6 +1,7 @@
 import * as path from 'node:path';
 import * as fs from 'node:fs/promises';
 import type { PromptCiIssue } from './types.js';
+import { renderPromptCiGitignore } from './promptci-gitignore.js';
 
 export interface FileChange {
   filePath: string; // Absolute path
@@ -45,9 +46,12 @@ export async function applyFixRecipe(
 
     if (!content.includes('.promptci/')) {
       const lineEnding = content.includes('\r\n') ? '\r\n' : '\n';
+      // BUG-7: write the baseline-preserving stanza, not a bare `.promptci/`
+      // — the latter also ignores baseline.json and breaks the CI ratchet.
+      const block = renderPromptCiGitignore(lineEnding);
       const suffix = content.endsWith('\n') || content.endsWith('\r')
-        ? `.promptci/${lineEnding}`
-        : `${lineEnding}.promptci/${lineEnding}`;
+        ? block
+        : `${lineEnding}${block}`;
       changes.push({
         filePath: gitignorePath,
         originalContent: content,

@@ -37,6 +37,20 @@ The scan writes two files and prints a summary with a health score and top fixes
 - `.promptci/latest.md` — human-readable Markdown report
 - `.promptci/report.json` — machine-readable JSON
 
+Ignore the generated reports but keep `baseline.json` and `config.json` committed — the CI
+ratchet (`--baseline` / `--fail-on-new`) reads the baseline from the checkout. `promptci init`
+writes this for you:
+
+```gitignore
+**/.promptci/*
+!**/.promptci/baseline.json
+!**/.promptci/config.json
+```
+
+Both details matter: `.promptci/*` rather than `.promptci/`, because git does not descend into
+an ignored directory and the `!` lines would never take effect; and the leading `**/`, because a
+pattern containing a slash is otherwise anchored to the repo root and would miss nested packages.
+
 Common commands:
 
 ```bash

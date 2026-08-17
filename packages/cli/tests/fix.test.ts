@@ -36,8 +36,12 @@ describe('runFix CLI command', () => {
     await runFix({ scanPath: tmpDir, interactive: false });
 
     const content = await fs.readFile(gitignorePath, 'utf-8');
-    expect(content).toContain('.promptci/');
     expect(content).toContain('node_modules/');
+    // BUG-7: report files are ignored, but the shared baseline stays committed
+    // so `scan --baseline` / `--fail-on-new` work in CI.
+    expect(content).toContain('**/.promptci/*');
+    expect(content).toContain('!**/.promptci/baseline.json');
+    expect(content).toContain('!**/.promptci/config.json');
   });
 
   it('automatically ignores unignored output directories in non-interactive mode', async () => {
