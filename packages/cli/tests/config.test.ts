@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { PROJECT_TYPES } from '@promptci/core';
 import { loadConfig } from '../src/config.js';
 
 async function makeTempDir(): Promise<string> {
@@ -80,6 +81,19 @@ describe('loadConfig', () => {
       'utf-8',
     );
     await expect(loadConfig(tmpDir)).rejects.toThrow('projectType');
+  });
+
+  // BUG-15: config.ts kept a stale copy of the project-type list, so `promptci
+  // init` could write python/go/rust and every later `promptci scan` would then
+  // hard-error on the config init had just produced.
+  it.each(PROJECT_TYPES)('accepts every core projectType (%s)', async (projectType) => {
+    await fs.writeFile(
+      path.join(tmpDir, '.promptci', 'config.json'),
+      JSON.stringify({ projectType }),
+      'utf-8',
+    );
+    const config = await loadConfig(tmpDir);
+    expect(config.projectType).toBe(projectType);
   });
 
   it('throws when include is not a string array', async () => {

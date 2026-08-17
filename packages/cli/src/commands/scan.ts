@@ -61,6 +61,25 @@ export async function runScan(options: ScanOptions): Promise<void> {
     process.exit(1);
   }
 
+  if (options.failOnNew !== undefined && !isValidSeverity(options.failOnNew)) {
+    console.error(
+      `Error: invalid --fail-on-new value "${options.failOnNew}". Must be one of: ${SEVERITY_VALUES.join(', ')}`,
+    );
+    process.exit(1);
+  }
+
+  // --fail-on-new compares against a baseline; without one there is nothing to
+  // diff against and the gate can never fire. Fail loudly rather than running
+  // green on a CI check that does not exist.
+  if (options.failOnNew && !options.baseline) {
+    console.error(
+      'Error: --fail-on-new requires a baseline to compare against. ' +
+        'Pass --baseline <path> (e.g. --baseline .promptci/baseline.json), ' +
+        'or create one first with "promptci scan --update-baseline".',
+    );
+    process.exit(1);
+  }
+
   // Load baseline if requested
   let baseline: Baseline | undefined;
   if (options.baseline) {
@@ -88,11 +107,14 @@ export async function runScan(options: ScanOptions): Promise<void> {
         process.exit(1);
       }
     } catch (err) {
-      // ENOENT: baseline file does not exist yet — treat as empty baseline
+      // ENOENT: baseline file does not exist yet — treat as an *empty* baseline
+      // rather than no baseline at all, so --fail-on-new still evaluates (with
+      // every finding counting as new) instead of silently doing nothing.
       if ((err as { code?: string }).code !== 'ENOENT') {
         console.error(`Error loading baseline: ${err instanceof Error ? err.message : String(err)}`);
         process.exit(1);
       }
+      baseline = [];
     }
   }
 
@@ -156,11 +178,13 @@ export async function runScan(options: ScanOptions): Promise<void> {
     process.exit(1);
   }
 
-  // Fail-on-new check
+  // Fail-on-new check. A baseline is guaranteed above, so newIssues is always
+  // populated here (empty array when nothing is new).
   const failOnNew = options.failOnNew;
-  if (failOnNew && report.newIssues) {
-    if (anyIssuesMeetThreshold({ ...report, issues: report.newIssues }, failOnNew)) {
-      const matching = report.newIssues.filter(
+  if (failOnNew) {
+    const reportedNewIssues = report.newIssues ?? [];
+    if (anyIssuesMeetThreshold({ ...report, issues: reportedNewIssues }, failOnNew)) {
+      const matching = reportedNewIssues.filter(
         (i: PromptCiIssue) =>
           isValidSeverity(i.severity) &&
           anyIssuesMeetThreshold({ ...report, issues: [i] }, failOnNew),
