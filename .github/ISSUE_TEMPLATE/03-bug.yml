@@ -16,9 +16,8 @@ body:
       options:
         - CLI (packages/cli)
         - Scanner / detectors (packages/core)
-        - Web dashboard (apps/web)
+        - Hosted dashboard
         - GitHub Action (action.yml)
-        - Docker image
         - Not sure
     validations:
       required: true
