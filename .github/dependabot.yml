@@ -38,9 +38,11 @@ updates:
       - "dependencies"
       - "javascript"
     commit-message:
+      # No `include: "scope"` here. It appends the scope to the prefix, and
+      # these prefixes already carry one — the combination produced subjects
+      # like "chore(deps-dev)(deps-dev): Bump ...".
       prefix: "chore(deps)"
       prefix-development: "chore(deps-dev)"
-      include: "scope"
     groups:
       npm-minor-patch:
         update-types:

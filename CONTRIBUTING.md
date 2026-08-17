@@ -41,18 +41,25 @@ pnpm test packages/core/tests/duplicates.test.ts
 `pnpm build` still runs before `pnpm test` in CI so that a build failure surfaces as a failed
 build rather than as a confusing test error.
 
-## Dependency pins
-
-`pnpm.overrides` in the root `package.json` pins `vite` and `esbuild` above the versions named
-in their security advisories. Both are dev-only and never reach a published artifact, but
-vitest's own range (`vite ^5 || ^6 || ^7`) is wide enough that pnpm would otherwise keep
-resolving a flagged version. Drop an override once the range that pulls it in has moved past the
-patched version on its own.
+## Dependency updates
 
 Dependabot config lives in `.github/dependabot.yml` and covers two ecosystems: `npm` (which is
 the correct key for a pnpm workspace — there is no separate `pnpm` value) and `github-actions`.
 Routine minor/patch updates are grouped into one PR per ecosystem per week; majors get their own
 PR so each is reviewed against its own release notes.
+
+There are currently **no `pnpm.overrides`**. A pair of them once pinned `vite` and `esbuild`
+above their security advisories, because vitest's range was wide enough that pnpm kept resolving
+a flagged version. Both declared ranges have since moved past the patched versions on their own,
+so the overrides were removed — they had begun blocking the very updates Dependabot was opening.
+
+If you add an override for a future advisory, say so here and state the condition for removing
+it. An override that outlives its advisory silently caps a dependency.
+
+Anything imported by a config file at the repo root must be a **declared** devDependency.
+`eslint.config.mjs` imports `@eslint/js`, which resolved for a long time only because pnpm's
+default `public-hoist-pattern` includes `*eslint*` and ESLint 9 happened to depend on it. ESLint
+10 does not, and lint broke until it was declared explicitly.
 
 ## GitHub Actions pins
 
