@@ -2,6 +2,9 @@
 
 > Instruction health for AI coding workflows.
 
+<!-- promptci-ignore-start: structure
+     reason: This intro names CLAUDE.md and AGENTS.md as the file types PromptCI scans.
+     They are product terminology here, not references to files in this repository. -->
 PromptCI scans AI coding instruction files (`CLAUDE.md`, `AGENTS.md`, `.cursorrules`, Copilot
 instructions, README-style context, and more) and produces actionable health reports so you can
 catch instruction rot before it costs you.
@@ -17,6 +20,7 @@ AI coding workflows accumulate rot:
 - `AGENTS.md` and Copilot instructions repeat each other
 - Old project decisions linger after the codebase moved on
 - Nobody knows which guidance is helping, hurting, ignored, or stale
+<!-- promptci-ignore-end -->
 
 PromptCI treats instruction files like maintainable engineering artifacts.
 
