@@ -48,7 +48,7 @@ export async function runDoctor(options: DoctorOptions): Promise<void> {
   const isNodeOk = major >= MIN_NODE_MAJOR;
 
   // 2. Global executable check
-  let cliVersionStr = '';
+  let cliVersionStr: string;
   let cliLinked = false;
   try {
     const out = execSync('promptci --version', { stdio: ['ignore', 'pipe', 'ignore'], encoding: 'utf8' }).trim();
@@ -60,7 +60,7 @@ export async function runDoctor(options: DoctorOptions): Promise<void> {
 
   // 3. Config schema validation
   let configOk = true;
-  let configMsg = '';
+  let configMsg: string;
   const configPath = path.join(resolvedPath, '.promptci', 'config.json');
   try {
     await fs.access(configPath);
@@ -82,7 +82,7 @@ export async function runDoctor(options: DoctorOptions): Promise<void> {
   //   - .gitignore without the rule → failure; reports would be committed
   type GitignoreState = 'ok' | 'missing-rule' | 'no-gitignore' | 'not-a-repo';
   let gitignoreState: GitignoreState;
-  let gitignoreMsg = '';
+  let gitignoreMsg: string;
   const isGitRepo = await pathExists(path.join(resolvedPath, '.git'));
   const gitignorePath = path.join(resolvedPath, '.gitignore');
   try {

@@ -39,6 +39,7 @@ promptci review-diff --base <branch>        # compare against a specific base br
 promptci review-diff --path <dir>           # target a specific directory
 promptci review-diff --json                 # print structured comparison JSON to stdout
 promptci review-diff --fail-on-regression   # exit 1 if score decreases or new issues are introduced
+promptci review-diff --working-tree         # compare uncommitted work instead of the HEAD commit
 
 # Explain
 promptci explain                            # generate a prioritized LLM-written cleanup plan
@@ -83,6 +84,29 @@ Resolution order, first match wins:
 If none is set, `login` and `upload` exit 1 with instructions, and `doctor` reports the
 dashboard check as skipped instead of contacting anything. The value must be an absolute
 `http`/`https` URL.
+
+## How `review-diff` compares two revisions
+
+Both sides are real checkouts. `review-diff` creates a temporary `git worktree` for the base
+commit — and, by default, for `HEAD` too — then scans each with the **same** project config
+from `.promptci/config.json`. Symmetry is the whole point: a difference in the report has to
+come from the code, not from the two sides being scanned differently.
+
+Two consequences worth knowing:
+
+- **It compares commits, not your working tree.** Uncommitted edits are invisible by default,
+  so local scratch work is not reported as a regression your branch introduced. Pass
+  `--working-tree` to include it.
+- **The base commit must exist locally.** In CI that means fetching history —
+  `actions/checkout` defaults to a depth-1 clone, where `origin/main` may not be present:
+
+  ```yaml
+  - uses: actions/checkout@v5
+    with:
+      fetch-depth: 0
+  ```
+
+The temporary worktrees are removed when the command exits, including on failure.
 
 ## Baselines and the CI ratchet
 
