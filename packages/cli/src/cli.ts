@@ -33,7 +33,7 @@ program
   .option('--update-baseline', 'run scan and write result as the new baseline')
   .option(
     '--fail-on-new <severity>',
-    'exit non-zero only if NEW issues (not in baseline) meet this threshold',
+    'exit non-zero only if NEW issues (not in baseline) meet this threshold; requires --baseline',
   )
   .option('--fail-on-budget', 'exit non-zero if any context bloat issue is found')
   .option('--context-budget <chars>', 'override total context budget (in characters)')
