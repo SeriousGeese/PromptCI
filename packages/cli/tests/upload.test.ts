@@ -10,6 +10,11 @@ vi.mock('../src/lib/ensure-fresh-token.js', () => ({
 
 import { runUpload } from '../src/commands/upload.js';
 import * as freshToken from '../src/lib/ensure-fresh-token.js';
+import * as globalConfig from '../src/global-config.js';
+
+// Isolate from the developer's real ~/.promptci/global.json, which would
+// otherwise supply an apiUrl and mask the "no URL configured" path.
+vi.mock('../src/global-config.js');
 
 const SAMPLE_REPORT = {
   schemaVersion: '0.1',
@@ -49,6 +54,8 @@ describe('runUpload', () => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
     // Reset to default: authenticated with a valid token
     vi.mocked(freshToken.ensureFreshToken).mockResolvedValue('test-jwt-token');
+    vi.mocked(globalConfig.readGlobalConfig).mockResolvedValue({});
+    vi.mocked(globalConfig.writeGlobalConfig).mockResolvedValue(undefined as unknown as void);
   });
 
   afterEach(async () => {
@@ -140,6 +147,56 @@ describe('runUpload', () => {
     );
   });
 
+  // BUG-4: upload used to fall back to http://localhost:3000, so a user with no
+  // dashboard silently POSTed at their own machine and got connection-refused.
+  it('exits 1 when no dashboard URL is configured anywhere', async () => {
+    await writeReport(tmpDir, SAMPLE_REPORT);
+    const mockFetch = vi.fn();
+    vi.stubGlobal('fetch', mockFetch);
+
+    await expect(runUpload({ uploadPath: tmpDir })).rejects.toThrow('process.exit(1)');
+
+    expect(mockFetch).not.toHaveBeenCalled();
+    const errMsg = vi.mocked(console.error).mock.calls.flat().join(' ');
+    expect(errMsg).toContain('no dashboard URL configured');
+    expect(errMsg).toContain('PROMPTCI_API_URL');
+  });
+
+  it('exits 1 when the configured URL is not an absolute http(s) URL', async () => {
+    await writeReport(tmpDir, SAMPLE_REPORT);
+    const mockFetch = vi.fn();
+    vi.stubGlobal('fetch', mockFetch);
+
+    await expect(runUpload({ uploadPath: tmpDir, url: 'not-a-url' })).rejects.toThrow(
+      'process.exit(1)',
+    );
+
+    expect(mockFetch).not.toHaveBeenCalled();
+    const errMsg = vi.mocked(console.error).mock.calls.flat().join(' ');
+    expect(errMsg).toContain('Invalid dashboard URL');
+  });
+
+  it('reads apiUrl from .promptci/config.json when no flag or env is set', async () => {
+    await writeReport(tmpDir, SAMPLE_REPORT);
+    await fs.writeFile(
+      path.join(tmpDir, '.promptci', 'config.json'),
+      JSON.stringify({ apiUrl: 'http://project-server:8080' }),
+      'utf-8',
+    );
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ scanId: 'p', url: 'http://project-server:8080/scans/p' }),
+    });
+    vi.stubGlobal('fetch', mockFetch);
+
+    await runUpload({ uploadPath: tmpDir });
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      'http://project-server:8080/api/upload',
+      expect.anything(),
+    );
+  });
+
   it('exits 1 on non-200 response', async () => {
     await writeReport(tmpDir, SAMPLE_REPORT);
     vi.stubGlobal(
@@ -194,7 +251,9 @@ describe('runUpload', () => {
     );
     await writeReport(tmpDir, SAMPLE_REPORT);
 
-    await expect(runUpload({ uploadPath: tmpDir })).rejects.toThrow('process.exit(1)');
+    await expect(
+      runUpload({ uploadPath: tmpDir, url: 'http://localhost:3000' }),
+    ).rejects.toThrow('process.exit(1)');
     const errMsg = vi.mocked(console.error).mock.calls.flat().join(' ');
     expect(errMsg).toContain('Not logged in');
   });

@@ -3,10 +3,27 @@ import * as path from 'node:path';
 import { execSync } from 'node:child_process';
 import { loadConfig } from '../config.js';
 import { readAuthConfig } from '../auth-config.js';
+import { API_URL_ENV, resolveApiUrl } from '../api-url.js';
 
 export type DoctorOptions = {
   scanPath?: string;
 };
+
+/**
+ * Must match `engines.node` in packages/cli/package.json — doctor previously
+ * green-lit Node 20/21, which pnpm then refuses to install under.
+ * `doctor.test.ts` asserts the two stay in sync.
+ */
+export const MIN_NODE_MAJOR = 22;
+
+async function pathExists(p: string): Promise<boolean> {
+  try {
+    await fs.access(p);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 export async function runDoctor(options: DoctorOptions): Promise<void> {
   const rawPath = options.scanPath ?? process.cwd();
@@ -28,7 +45,7 @@ export async function runDoctor(options: DoctorOptions): Promise<void> {
 
   // 1. Node.js version check
   const major = parseInt(process.versions.node.split('.')[0], 10);
-  const isNodeOk = major >= 20;
+  const isNodeOk = major >= MIN_NODE_MAJOR;
 
   // 2. Global executable check
   let cliVersionStr: string;
@@ -44,16 +61,12 @@ export async function runDoctor(options: DoctorOptions): Promise<void> {
   // 3. Config schema validation
   let configOk = true;
   let configMsg: string;
-  let apiUrl = 'http://localhost:3000';
   const configPath = path.join(resolvedPath, '.promptci', 'config.json');
   try {
     await fs.access(configPath);
     try {
-      const config = await loadConfig(resolvedPath);
+      await loadConfig(resolvedPath);
       configMsg = 'Valid configuration file found';
-      if (config.apiUrl) {
-        apiUrl = config.apiUrl;
-      }
     } catch (err: unknown) {
       configOk = false;
       configMsg = `Invalid configuration: ${err instanceof Error ? err.message : String(err)}`;
@@ -62,9 +75,15 @@ export async function runDoctor(options: DoctorOptions): Promise<void> {
     configMsg = 'No configuration file found (using default rules)';
   }
 
-  // 4. Gitignore ignore check
-  let gitignoreOk = false;
+  // 4. Gitignore ignore check.
+  // Three outcomes, only one of which is a real misconfiguration:
+  //   - not a git repo         → skip; there is nothing to ignore
+  //   - git repo, no .gitignore → advisory; `promptci init` offers to add one
+  //   - .gitignore without the rule → failure; reports would be committed
+  type GitignoreState = 'ok' | 'missing-rule' | 'no-gitignore' | 'not-a-repo';
+  let gitignoreState: GitignoreState;
   let gitignoreMsg: string;
+  const isGitRepo = await pathExists(path.join(resolvedPath, '.git'));
   const gitignorePath = path.join(resolvedPath, '.gitignore');
   try {
     const content = await fs.readFile(gitignorePath, 'utf-8');
@@ -79,13 +98,20 @@ export async function runDoctor(options: DoctorOptions): Promise<void> {
       );
     });
     if (hasIgnore) {
-      gitignoreOk = true;
+      gitignoreState = 'ok';
       gitignoreMsg = '.promptci/ is ignored in .gitignore';
     } else {
+      gitignoreState = 'missing-rule';
       gitignoreMsg = '.promptci/ is not ignored in .gitignore';
     }
   } catch {
-    gitignoreMsg = 'No .gitignore file found in target path';
+    if (isGitRepo) {
+      gitignoreState = 'no-gitignore';
+      gitignoreMsg = 'No .gitignore file found (run "promptci init" to add the .promptci/ rules)';
+    } else {
+      gitignoreState = 'not-a-repo';
+      gitignoreMsg = 'Not a git repository — .promptci/ ignore check skipped';
+    }
   }
 
   // 5. LLM Keys check
@@ -98,24 +124,34 @@ export async function runDoctor(options: DoctorOptions): Promise<void> {
   const now = Math.floor(Date.now() / 1000);
   const hasToken = !!authConfig.access_token && (!authConfig.expires_at || authConfig.expires_at > now);
 
-  // 7. Dashboard connection check
+  // 7. Dashboard connection check.
+  // Only reached when a URL is actually configured — doctor used to fetch
+  // localhost:3000/api/health on every run, including for the majority of
+  // users who never touch the dashboard.
+  const resolvedApiUrl = await resolveApiUrl({ scanPath: resolvedPath });
   let dashboardConnected = false;
-  let dashboardMessage: string;
-  try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 3000);
-    const res = await globalThis.fetch(`${apiUrl}/api/health`, {
-      signal: controller.signal,
-    });
-    clearTimeout(timeoutId);
-    if (res.ok) {
-      dashboardConnected = true;
-      dashboardMessage = `Connected to dashboard at ${apiUrl}`;
-    } else {
-      dashboardMessage = `Dashboard at ${apiUrl} returned status ${res.status}`;
+  const dashboardConfigured = resolvedApiUrl !== undefined;
+  let dashboardMessage =
+    `No dashboard URL configured — skipped (set ${API_URL_ENV} or "apiUrl" in .promptci/config.json to check it)`;
+
+  if (resolvedApiUrl) {
+    const apiUrl = resolvedApiUrl.url;
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 3000);
+      const res = await globalThis.fetch(`${apiUrl}/api/health`, {
+        signal: controller.signal,
+      });
+      clearTimeout(timeoutId);
+      if (res.ok) {
+        dashboardConnected = true;
+        dashboardMessage = `Connected to dashboard at ${apiUrl}`;
+      } else {
+        dashboardMessage = `Dashboard at ${apiUrl} returned status ${res.status}`;
+      }
+    } catch (err) {
+      dashboardMessage = `Could not connect to ${apiUrl}: ${err instanceof Error ? err.message : String(err)}`;
     }
-  } catch (err) {
-    dashboardMessage = `Could not connect to ${apiUrl}: ${err instanceof Error ? err.message : String(err)}`;
   }
 
   console.log('PromptCI System Diagnostics (Doctor)');
@@ -123,9 +159,12 @@ export async function runDoctor(options: DoctorOptions): Promise<void> {
 
   // Print results
   if (isNodeOk) {
-    console.log(`\x1b[32m[✓]\x1b[0m Node.js version >= 20 (${process.version})`);
+    console.log(`\x1b[32m[✓]\x1b[0m Node.js version >= ${MIN_NODE_MAJOR} (${process.version})`);
   } else {
-    console.log(`\x1b[31m[✗]\x1b[0m Node.js version is too old (${process.version}). Upgrade to Node 20+`);
+    console.log(
+      `\x1b[31m[✗]\x1b[0m Node.js version is too old (${process.version}). ` +
+        `Upgrade to Node ${MIN_NODE_MAJOR}+`,
+    );
     criticalFailure = true;
   }
 
@@ -142,20 +181,24 @@ export async function runDoctor(options: DoctorOptions): Promise<void> {
     criticalFailure = true;
   }
 
-  if (gitignoreOk) {
+  if (gitignoreState === 'ok') {
     console.log(`\x1b[32m[✓]\x1b[0m Gitignore protection: ${gitignoreMsg}`);
-  } else {
+  } else if (gitignoreState === 'missing-rule') {
     console.log(`\x1b[31m[✗]\x1b[0m Gitignore protection: ${gitignoreMsg}`);
     criticalFailure = true;
+  } else if (gitignoreState === 'no-gitignore') {
+    console.log(`\x1b[33m[!]\x1b[0m Gitignore protection: ${gitignoreMsg}`);
+  } else {
+    console.log(`\x1b[36m[i]\x1b[0m Gitignore protection: ${gitignoreMsg}`);
   }
 
+  // `fix --llm` and `explain` call the model provider directly from this
+  // process, so a dashboard login is no substitute for a local key.
   if (hasKeys) {
     const keysUsed = [openaiKey ? 'OpenAI' : '', anthropicKey ? 'Anthropic' : ''].filter(Boolean).join(', ');
     console.log(`\x1b[32m[✓]\x1b[0m LLM API Keys: Configured (${keysUsed})`);
-  } else if (hasToken) {
-    console.log(`\x1b[36m[i]\x1b[0m LLM API Keys: Local keys not configured (LLM features will use the dashboard server-side API)`);
   } else {
-    console.log(`\x1b[33m[!]\x1b[0m LLM API Keys: Neither OPENAI_API_KEY nor ANTHROPIC_API_KEY is configured (explain/fix LLM features disabled)`);
+    console.log(`\x1b[33m[!]\x1b[0m LLM API Keys: Neither OPENAI_API_KEY nor ANTHROPIC_API_KEY is configured (explain/fix --llm run locally and are disabled without one)`);
   }
 
   if (hasToken) {
@@ -166,8 +209,10 @@ export async function runDoctor(options: DoctorOptions): Promise<void> {
 
   if (dashboardConnected) {
     console.log(`\x1b[32m[✓]\x1b[0m Dashboard connection: ${dashboardMessage}`);
-  } else {
+  } else if (dashboardConfigured) {
     console.log(`\x1b[33m[!]\x1b[0m Dashboard connection: ${dashboardMessage}`);
+  } else {
+    console.log(`\x1b[36m[i]\x1b[0m Dashboard connection: ${dashboardMessage}`);
   }
 
   console.log('--------------------------------------------------');

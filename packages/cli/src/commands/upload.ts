@@ -1,9 +1,9 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import type { ScanReportJson } from '@promptci/core';
-import { loadConfig } from '../config.js';
 import { ensureFreshToken } from '../lib/ensure-fresh-token.js';
 import { readGlobalConfig, writeGlobalConfig } from '../global-config.js';
+import { API_URL_HELP, assertUsableApiUrl, resolveApiUrl } from '../api-url.js';
 
 export type UploadOptions = {
   uploadPath?: string;
@@ -15,29 +15,6 @@ export async function runUpload(options: UploadOptions): Promise<void> {
   const outputDir = path.join(resolvedPath, '.promptci');
   const jsonPath = path.join(outputDir, 'report.json');
   const mdPath = path.join(outputDir, 'latest.md');
-
-  let config;
-  try {
-    config = await loadConfig(resolvedPath);
-  } catch {
-    config = {};
-  }
-
-  const globalConfig = await readGlobalConfig();
-
-  // Priority: --url flag > PROMPTCI_API_URL env > project config > global config > localhost
-  const apiUrl = (
-    options.url ??
-    process.env.PROMPTCI_API_URL ??
-    config.apiUrl ??
-    globalConfig.apiUrl ??
-    'http://localhost:3000'
-  ).replace(/\/$/, '');
-
-  // Persist an explicitly-provided URL so future commands don't need --url
-  if (options.url) {
-    await writeGlobalConfig({ ...globalConfig, apiUrl });
-  }
 
   // Read report.json
   let reportJson: string;
@@ -65,6 +42,30 @@ export async function runUpload(options: UploadOptions): Promise<void> {
     markdown = await fs.readFile(mdPath, 'utf-8');
   } catch {
     // fine
+  }
+
+  // Priority: --url flag > PROMPTCI_API_URL env > project config > global config.
+  // Resolved after the local report checks so a missing report is still the
+  // first thing reported.
+  const resolved = await resolveApiUrl({ flag: options.url, scanPath: resolvedPath });
+  if (!resolved) {
+    console.error('Error: no dashboard URL configured.');
+    console.error(API_URL_HELP);
+    process.exit(1);
+  }
+
+  const apiUrl = resolved.url;
+  try {
+    assertUsableApiUrl(apiUrl);
+  } catch (err) {
+    console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(1);
+  }
+
+  // Persist an explicitly-provided URL so future commands don't need --url
+  if (options.url) {
+    const globalConfig = await readGlobalConfig();
+    await writeGlobalConfig({ ...globalConfig, apiUrl });
   }
 
   const repoName = path.basename(report.repoPath) || 'unknown';
