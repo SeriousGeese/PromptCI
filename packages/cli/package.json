@@ -40,11 +40,11 @@
   },
   "devDependencies": {
     "@promptci/core": "workspace:*",
-    "@types/node": "^25.9.1",
-    "commander": "^12.1.0",
-    "esbuild": "^0.25.0",
+    "@types/node": "^26.2.0",
+    "commander": "^15.0.0",
+    "esbuild": "^0.28.2",
     "typescript": "*",
-    "vitest": "^3.2.6"
+    "vitest": "^4.1.10"
   },
   "publishConfig": {
     "access": "public"

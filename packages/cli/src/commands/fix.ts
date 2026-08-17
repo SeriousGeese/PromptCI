@@ -50,7 +50,7 @@ export async function runFix(options: FixOptions): Promise<void> {
     exclude: config.exclude,
   });
 
-  let targetIssues: PromptCiIssue[] = [];
+  let targetIssues: PromptCiIssue[];
 
   if (options.llm) {
     if (!options.issueId) {

@@ -27,21 +27,46 @@ runs:
   using: 'composite'
   steps:
     - name: Set up Node.js
-      uses: actions/setup-node@v4
+      # Pinned to a full commit SHA. This matters more here than in our own CI:
+      # a composite action runs inside every consumer's repository, so a moved
+      # tag would propagate to all of them at once. Kept current by the
+      # github-actions entry in .github/dependabot.yml, which scans this file
+      # as well as .github/workflows.
+      uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
       with:
         node-version: 22
 
     - name: Run PromptCI
       shell: bash
+      # Inputs reach the script through `env:` instead of being interpolated
+      # into it with ${{ }}. A composite action executes in the CALLER's
+      # workflow, so `${{ inputs.base_branch }}` spliced directly into a shell
+      # line is a script-injection sink: a consumer who wires an
+      # attacker-influenced value into it — a fork PR's head ref, say — gets
+      # arbitrary commands run on their own runner. Passed via env the value is
+      # data and never code.
+      #
+      # The quoting is load-bearing too. The previous version accumulated
+      # arguments into an unquoted `ARGS` string, so any path containing a
+      # space was word-split into two broken arguments.
+      env:
+        PROMPTCI_PATH: ${{ inputs.path }}
+        PROMPTCI_FAIL_ON: ${{ inputs.fail_on }}
+        PROMPTCI_FAIL_ON_REGRESSION: ${{ inputs.fail_on_regression }}
+        PROMPTCI_BASE_BRANCH: ${{ inputs.base_branch }}
       run: |
-        if [ "${{ inputs.fail_on_regression }}" = "true" ]; then
-          echo "Running PromptCI Branch Review (compared to origin/${{ inputs.base_branch }})..."
-          npx @promptci/cli review-diff --base "origin/${{ inputs.base_branch }}" --path "${{ inputs.path }}" --fail-on-regression
+        set -euo pipefail
+        if [ "$PROMPTCI_FAIL_ON_REGRESSION" = "true" ]; then
+          echo "Running PromptCI Branch Review (compared to origin/$PROMPTCI_BASE_BRANCH)..."
+          npx @promptci/cli review-diff \
+            --base "origin/$PROMPTCI_BASE_BRANCH" \
+            --path "$PROMPTCI_PATH" \
+            --fail-on-regression
         else
           echo "Running PromptCI Scan..."
-          ARGS="--path ${{ inputs.path }}"
-          if [ -n "${{ inputs.fail_on }}" ]; then
-            ARGS="$ARGS --fail-on ${{ inputs.fail_on }}"
+          if [ -n "$PROMPTCI_FAIL_ON" ]; then
+            npx @promptci/cli scan --path "$PROMPTCI_PATH" --fail-on "$PROMPTCI_FAIL_ON"
+          else
+            npx @promptci/cli scan --path "$PROMPTCI_PATH"
           fi
-          npx @promptci/cli scan $ARGS
         fi

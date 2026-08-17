@@ -103,17 +103,23 @@ program
   .option('--path <dir>', 'target directory (default: current directory)')
   .option('--json', 'print structured comparison JSON to stdout')
   .option('--fail-on-regression', 'exit non-zero if score decreases or new issues are introduced')
+  .option(
+    '--working-tree',
+    'compare the working tree instead of the HEAD commit (includes uncommitted edits)',
+  )
   .action(async (opts: {
     base?: string;
     path?: string;
     json?: boolean;
     failOnRegression?: boolean;
+    workingTree?: boolean;
   }) => {
     await runReviewDiff({
       baseBranch: opts.base || 'main',
       scanPath: opts.path,
       json: opts.json || false,
       failOnRegression: opts.failOnRegression || false,
+      workingTree: opts.workingTree || false,
     });
   });
 

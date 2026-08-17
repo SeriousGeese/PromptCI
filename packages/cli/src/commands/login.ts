@@ -29,7 +29,7 @@ type DeviceTokenError = {
  * authorizes it there.
  */
 export async function runLogin(options: { url?: string }): Promise<void> {
-  let config: { apiUrl?: string } = {};
+  let config: { apiUrl?: string };
   try {
     config = await loadConfig(process.cwd());
   } catch {
