@@ -1,8 +1,7 @@
-import { loadConfig } from '../config.js';
 import { readGlobalConfig, writeGlobalConfig } from '../global-config.js';
 import { writeAuthConfig, getJwtExpiry } from '../auth-config.js';
+import { API_URL_HELP, assertUsableApiUrl, resolveApiUrl } from '../api-url.js';
 
-const DEFAULT_APP_URL = 'http://localhost:3000';
 const MIN_POLL_TIMEOUT_MS = 60_000;
 
 type DeviceInitResponse = {
@@ -29,26 +28,27 @@ type DeviceTokenError = {
  * authorizes it there.
  */
 export async function runLogin(options: { url?: string }): Promise<void> {
-  let config: { apiUrl?: string } = {};
-  try {
-    config = await loadConfig(process.cwd());
-  } catch {
-    config = {};
+  // Priority: --url flag > PROMPTCI_API_URL env > project config > global config
+  const resolved = await resolveApiUrl({ flag: options.url, scanPath: process.cwd() });
+  if (!resolved) {
+    console.error('Error: no dashboard URL configured.');
+    console.error(API_URL_HELP);
+    process.exitCode = 1;
+    return;
   }
 
-  const globalConfig = await readGlobalConfig();
-
-  // Priority: --url flag > PROMPTCI_API_URL env > project config > global config > localhost
-  const baseUrl = (
-    options.url ??
-    process.env.PROMPTCI_API_URL ??
-    config.apiUrl ??
-    globalConfig.apiUrl ??
-    DEFAULT_APP_URL
-  ).replace(/\/$/, '');
+  const baseUrl = resolved.url;
+  try {
+    assertUsableApiUrl(baseUrl);
+  } catch (err) {
+    console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+    process.exitCode = 1;
+    return;
+  }
 
   // Persist an explicitly-provided URL so future commands don't need --url
   if (options.url) {
+    const globalConfig = await readGlobalConfig();
     await writeGlobalConfig({ ...globalConfig, apiUrl: baseUrl });
   }
 

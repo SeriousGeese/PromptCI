@@ -5,10 +5,13 @@ import { detectProjectType, renderPromptCiGitignore, type ProjectType } from '@p
 
 const PROJECT_TYPES: ProjectType[] = ['typescript', 'nextjs', 'unity', 'dotnet', 'python', 'go', 'rust', 'unknown'];
 
+// BUG-4: this used to seed every generated config with
+// `apiUrl: 'http://localhost:3000'`, which pointed `upload`/`login` at the
+// user's own machine. `apiUrl` is now omitted — set it only when you actually
+// run a dashboard (see Docs/cli-reference.md).
 const DEFAULT_CONFIG = {
   severityThreshold: 'warning',
   projectType: 'auto',
-  apiUrl: 'http://localhost:3000',
 };
 
 export interface InitOptions {

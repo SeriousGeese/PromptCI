@@ -51,8 +51,9 @@ promptci doctor --path <dir>                # check a specific directory
 # Setup
 promptci init                               # create .promptci/config.json and add the .promptci/ ignore rules
 
-# Dashboard (optional)
+# Dashboard (optional — requires an explicit URL, see below)
 promptci login                              # open browser for GitHub OAuth sign-in
+promptci login --url <url>                  # point at a dashboard and remember it
 promptci auth set-token <token>             # store a token retrieved from the dashboard
 promptci auth status                        # show whether a token is configured
 promptci auth logout                        # clear the stored token
@@ -65,6 +66,23 @@ promptci update --source <dir>              # set the source directory (first ru
 promptci --version
 promptci --help
 ```
+
+## Dashboard URL
+
+`login`, `upload`, and `doctor`'s connectivity check need a dashboard endpoint. There is
+**no built-in default** — the hosted dashboard has no public domain yet, and defaulting to
+`http://localhost:3000` only produced connection-refused errors against the user's own machine.
+
+Resolution order, first match wins:
+
+1. `--url <url>` (`login` and `upload`)
+2. `PROMPTCI_API_URL`
+3. `apiUrl` in the project's `.promptci/config.json`
+4. `apiUrl` in `~/.promptci/global.json` (written by `promptci login --url ...`)
+
+If none is set, `login` and `upload` exit 1 with instructions, and `doctor` reports the
+dashboard check as skipped instead of contacting anything. The value must be an absolute
+`http`/`https` URL.
 
 ## Baselines and the CI ratchet
 

@@ -54,7 +54,9 @@ describe('runLogin', () => {
     mockConsoleLog = vi.spyOn(console, 'log').mockImplementation(() => {});
     mockConsoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
     vi.mocked(config.loadConfig).mockResolvedValue({});
-    vi.mocked(globalConfig.readGlobalConfig).mockResolvedValue({});
+    // A URL must be configured somewhere — there is no built-in default any
+    // more (BUG-4). These tests stand in for a self-hosted dashboard.
+    vi.mocked(globalConfig.readGlobalConfig).mockResolvedValue({ apiUrl: 'http://localhost:3000' });
     vi.mocked(globalConfig.writeGlobalConfig).mockResolvedValue(undefined as unknown as void);
     vi.mocked(authConfig.writeAuthConfig).mockResolvedValue(undefined);
     vi.mocked(authConfig.getJwtExpiry).mockReturnValue(null);
@@ -167,6 +169,53 @@ describe('runLogin', () => {
 
     expect(mockConsoleLog).toHaveBeenCalledWith(
       expect.stringContaining('Could not open a browser automatically'),
+    );
+
+    await vi.advanceTimersByTimeAsync(2000);
+    await promise;
+  });
+
+  // BUG-4: login used to fall back to http://localhost:3000, so a user who
+  // installed the CLI from npm got connection-refused against their own machine.
+  it('exits with an error when no dashboard URL is configured anywhere', async () => {
+    vi.mocked(globalConfig.readGlobalConfig).mockResolvedValue({});
+
+    await runLogin({});
+
+    expect(process.exitCode).toBe(1);
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(mockConsoleError).toHaveBeenCalledWith(
+      expect.stringContaining('no dashboard URL configured'),
+    );
+    expect(mockConsoleError).toHaveBeenCalledWith(expect.stringContaining('PROMPTCI_API_URL'));
+    process.exitCode = 0;
+  });
+
+  it('rejects a --url that is not an absolute http(s) URL', async () => {
+    await runLogin({ url: 'promptci.dev' });
+
+    expect(process.exitCode).toBe(1);
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(mockConsoleError).toHaveBeenCalledWith(expect.stringContaining('Invalid dashboard URL'));
+    process.exitCode = 0;
+  });
+
+  it('reads apiUrl from the project config when no flag or env is set', async () => {
+    vi.mocked(globalConfig.readGlobalConfig).mockResolvedValue({});
+    vi.mocked(config.loadConfig).mockResolvedValue({ apiUrl: 'https://project.promptci.test' });
+    mockFetch
+      .mockResolvedValueOnce(
+        jsonResponse({ deviceCode: 'secret-device-code', userCode: 'IIII-JJJJ', expiresIn: 600, interval: 2 }),
+      )
+      .mockResolvedValueOnce(jsonResponse({ accessToken: 'eyAccessToken', refreshToken: 'refresh123' }));
+
+    const promise = runLogin({});
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(mockFetch).toHaveBeenNthCalledWith(
+      1,
+      'https://project.promptci.test/api/cli/device/init',
+      { method: 'POST' },
     );
 
     await vi.advanceTimersByTimeAsync(2000);

@@ -31,6 +31,16 @@ To reduce noise, raise the `severityThreshold` in config to `warning` or `high` 
 
 The exit code is 1 whenever any issue meets or exceeds the threshold. Use `--fail-on high` (not `warning`) for a less strict CI gate while you're cleaning up existing findings.
 
+### "Error: no dashboard URL configured"
+
+`login` and `upload` talk to a dashboard that has no public endpoint yet, so they will not
+guess one. Pass `--url https://your-dashboard`, set `PROMPTCI_API_URL`, or add `apiUrl` to
+`.promptci/config.json`. `promptci login --url <url>` remembers the value in
+`~/.promptci/global.json` for later runs.
+
+Everything else — `scan`, `fix`, `context`, `review-diff`, `doctor` — works without a
+dashboard.
+
 ### Windows path separators in report output
 
 File paths in the report reflect the OS path separator. This is expected on Windows.
