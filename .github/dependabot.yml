@@ -1,0 +1,60 @@
+version: 2
+
+updates:
+  # GitHub Actions.
+  #
+  # This entry is not optional housekeeping — .github/workflows pins every
+  # action to a full commit SHA, and a SHA is immutable by design. Without
+  # Dependabot watching this ecosystem, those pins would silently freeze at
+  # whatever version they were introduced at and never receive security fixes.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "ci"
+    commit-message:
+      prefix: "chore(actions)"
+    groups:
+      # Routine action churn arrives as one reviewable PR. Majors stay
+      # ungrouped so each gets its own PR and its own release notes.
+      actions-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
+
+  # JavaScript. "npm" is the correct ecosystem for a pnpm workspace — there is
+  # no separate "pnpm" value; Dependabot reads pnpm-lock.yaml under this key.
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "javascript"
+    commit-message:
+      prefix: "chore(deps)"
+      prefix-development: "chore(deps-dev)"
+      include: "scope"
+    groups:
+      npm-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
+      # Security updates are triggered by advisories, so they ignore both the
+      # weekly schedule and open-pull-requests-limit above. Grouping them means
+      # one advisory sweep is one PR rather than one PR per package.
+      npm-security:
+        applies-to: security-updates
+        patterns:
+          - "*"
+
+# Note on cooldown: Dependabot now waits three days after a release before
+# opening a version-update PR, by default and without configuration, so there
+# is deliberately no `cooldown:` block here. Security updates are never subject
+# to cooldown. Add one only to widen that window beyond the default.
