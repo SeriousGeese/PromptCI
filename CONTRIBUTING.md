@@ -23,10 +23,10 @@ node packages/cli/dist/cli.cjs scan --path /path/to/some/repo
 
 ## Verification
 
-All four must pass before a PR is ready. CI runs the same set.
+All four must pass before a PR is ready. CI runs the same set, in this order.
 
 ```bash
-pnpm lint && pnpm typecheck && pnpm test && pnpm build
+pnpm lint && pnpm typecheck && pnpm build && pnpm test
 ```
 
 Run a single test file while iterating:
@@ -34,6 +34,20 @@ Run a single test file while iterating:
 ```bash
 pnpm test packages/core/tests/duplicates.test.ts
 ```
+
+`pnpm test` does not require a build first — vitest aliases `@promptci/core` to
+`packages/core/src/index.ts`, so unit tests run against source. The one exception is
+`packages/cli/tests/cli-e2e.test.ts`, which spawns the compiled binary and builds it itself.
+`pnpm build` still runs before `pnpm test` in CI so that a build failure surfaces as a failed
+build rather than as a confusing test error.
+
+## Dependency pins
+
+`pnpm.overrides` in the root `package.json` pins `vite` and `esbuild` above the versions named
+in their security advisories. Both are dev-only and never reach a published artifact, but
+vitest's own range (`vite ^5 || ^6 || ^7`) is wide enough that pnpm would otherwise keep
+resolving a flagged version. Drop an override once the range that pulls it in has moved past the
+patched version on its own.
 
 ## Changing a detector
 
