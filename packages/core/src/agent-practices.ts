@@ -306,6 +306,10 @@ function isCursorRulesFile(file: InstructionFile): boolean {
   );
 }
 
+function isWindsurfRulesFile(file: InstructionFile): boolean {
+  return file.fileType === 'windsurf' || path.basename(file.path).toLowerCase() === '.windsurfrules';
+}
+
 function isClaudeInstructionsFile(file: InstructionFile): boolean {
   const normalizedPath = normalizedFilePath(file.path);
   const baseName = path.basename(file.path).toLowerCase();
@@ -319,6 +323,12 @@ function isClaudeInstructionsFile(file: InstructionFile): boolean {
 function perFileBehaviorTarget(file: InstructionFile): { label: string; agent: string } | undefined {
   if (isCursorRulesFile(file)) {
     return { label: 'Cursor rules file', agent: 'Cursor agents' };
+  }
+
+  // BUG-19: `.windsurfrules` is scanned but previously typed 'unknown', so it
+  // never matched a per-agent target and the per-file behavior checks skipped it.
+  if (isWindsurfRulesFile(file)) {
+    return { label: '.windsurfrules', agent: 'Windsurf agents' };
   }
 
   if (isClaudeInstructionsFile(file)) {

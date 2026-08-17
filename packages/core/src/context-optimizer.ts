@@ -170,7 +170,7 @@ export async function optimizeContext(
 
   // Focus only on instruction files
   const targetFiles = files.filter((f) =>
-    ['claude', 'agents', 'cursor', 'copilot', 'readme', 'prompt'].includes(f.fileType)
+    ['claude', 'agents', 'cursor', 'windsurf', 'copilot', 'readme', 'prompt'].includes(f.fileType)
   );
 
   for (const file of targetFiles) {

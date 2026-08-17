@@ -324,7 +324,7 @@ const STALE_SOURCE_REF_RE = /(?:^|[/\\])(?:legacy|old|deprecated|archive|archive
  * BUG-002, not an oversight.
  */
 const SKIP_SOURCE_BACKTICK_FILE_TYPES = new Set([
-  'readme', 'claude', 'agents', 'cursor', 'copilot', 'docs', 'prompt', 'unknown',
+  'readme', 'claude', 'agents', 'cursor', 'windsurf', 'copilot', 'docs', 'prompt', 'unknown',
 ]);
 
 /** Minimum confidence to emit a dead-reference issue. Below this the signal is too noisy. */

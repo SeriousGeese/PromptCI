@@ -19,7 +19,10 @@ const BASIC_FIXTURE = path.join(FIXTURES, 'fixture-basic');
 const PROJECT_ROOT = path.resolve(__dirname, '../../..');
 
 beforeAll(() => {
-  execSync('pnpm --filter @promptci/core build && pnpm --filter promptci build', {
+  // The CLI package is named @promptci/cli — the old `--filter promptci`
+  // matched nothing, pnpm exited 0 without building, and every test below then
+  // failed on a missing dist/cli.cjs.
+  execSync('pnpm --filter @promptci/core build && pnpm --filter @promptci/cli build', {
     cwd: PROJECT_ROOT,
     stdio: 'pipe',
   });

@@ -35,7 +35,7 @@ export function detectOutputVerbosity(files: InstructionFile[]): PromptCiIssue[]
   const issues: PromptCiIssue[] = [];
 
   const targetFiles = files.filter((f) =>
-    ['claude', 'agents', 'cursor', 'copilot', 'prompt'].includes(f.fileType)
+    ['claude', 'agents', 'cursor', 'windsurf', 'copilot', 'prompt'].includes(f.fileType)
   );
 
   if (targetFiles.length === 0) {

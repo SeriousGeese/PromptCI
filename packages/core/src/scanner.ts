@@ -53,6 +53,11 @@ function deriveFileType(absPath: string): FileType {
 
   if (base === 'AGENTS.md') return 'agents';
   if (base === '.cursorrules' || norm.includes('/.cursor/rules/')) return 'cursor';
+  // BUG-19: `.windsurfrules` is in DEFAULT_PATTERNS above, so it was always read
+  // and counted toward context-bloat totals — but with no branch here it fell
+  // through to 'unknown', which every filetype-gated detector's allowlist omits.
+  // The file was scanned and then silently ignored by ~6 detectors.
+  if (base === '.windsurfrules') return 'windsurf';
   if (base === 'copilot-instructions.md' || norm.includes('/.github/instructions/')) return 'copilot';
   if (base === 'CLAUDE.md' || norm.includes('/.claude/')) return 'claude';
   if (base === 'README.md') return 'readme';

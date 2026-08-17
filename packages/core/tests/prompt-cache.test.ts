@@ -88,3 +88,47 @@ describe('detectPromptCacheFriendliness', () => {
     expect(matches[0]!.id).not.toBe(matches[1]!.id);
   });
 });
+
+// BUG-19 / BUG-20: filetype gating and evidence formatting.
+describe('detectPromptCacheFriendliness — file typing and evidence', () => {
+  function windsurfFile(content: string): InstructionFile {
+    return {
+      path: '/repo/.windsurfrules',
+      fileType: 'windsurf',
+      content,
+      sections: [],
+      lineCount: content.split('\n').length,
+      charCount: content.length,
+      estimatedTokens: Math.round(content.length / 4),
+    };
+  }
+
+  it('analyses .windsurfrules files (BUG-19: previously typed unknown and skipped)', () => {
+    const issues = detectPromptCacheFriendliness([
+      windsurfFile('# Rules\nLast updated: 2026-02-11\n'),
+    ]);
+    expect(issues.some((i) => i.title === 'Volatile timestamp in instruction file')).toBe(true);
+  });
+
+  it('evidence quotes the matched instruction text, never the regex source', () => {
+    const issues = detectPromptCacheFriendliness([
+      windsurfFile('# Rules\nLast updated: 2026-02-11\nCurrent branch: feat/login\n'),
+    ]);
+    expect(issues.length).toBeGreaterThan(0);
+
+    for (const issue of issues) {
+      for (const line of issue.evidence) {
+        expect(line).not.toContain('Matched pattern:');
+        // A regex literal serialises with delimiting slashes and escape
+        // sequences; neither may reach a report reader.
+        expect(line).not.toMatch(/\[bsdw]|\(\?:/);
+      }
+    }
+
+    const timestamp = issues.find((i) => i.title === 'Volatile timestamp in instruction file');
+    expect(timestamp!.evidence[0]).toContain('Last updated: 2026-02-11');
+
+    const branch = issues.find((i) => i.title === 'Volatile branch or task status in instructions');
+    expect(branch!.evidence[0]).toContain('Current branch: feat/login');
+  });
+});

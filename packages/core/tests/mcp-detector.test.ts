@@ -306,3 +306,20 @@ describe('detectMcpTooling — all expensive patterns', () => {
     expect(matches[0]!.id).not.toBe(matches[1]!.id);
   });
 });
+
+// BUG-20: report readers were shown the detector's own regex source as the
+// justification for a finding.
+describe('detectMcpTooling — evidence formatting', () => {
+  it('quotes the offending instruction text instead of the regex source', () => {
+    vi.mocked(fs.existsSync).mockReturnValue(false);
+
+    const file = makeFile('# Rules\nBefore answering, load the entire codebase into context.\n');
+    const issues = detectMcpTooling({ ...mockContext, files: [file] });
+
+    expect(issues.length).toBeGreaterThan(0);
+    const evidence = issues[0].evidence[0];
+    expect(evidence).toContain('load the entire codebase');
+    expect(evidence).not.toContain('Matched pattern:');
+    expect(evidence).not.toMatch(/\[bsdw]|\(\?:/);
+  });
+});
