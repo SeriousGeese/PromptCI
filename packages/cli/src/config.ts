@@ -1,5 +1,6 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
+import { PROJECT_TYPES } from '@promptci/core';
 import type { IssueSeverity, ProjectType } from '@promptci/core';
 
 export type CliConfig = {
@@ -15,14 +16,16 @@ export type CliConfig = {
 const CONFIG_FILE = path.join('.promptci', 'config.json');
 
 const VALID_SEVERITIES: IssueSeverity[] = ['info', 'warning', 'high', 'critical'];
-const VALID_PROJECT_TYPES: ProjectType[] = ['auto', 'typescript', 'nextjs', 'unity', 'dotnet', 'unknown'];
+// Derived from core so `promptci init` can never write a projectType that
+// `loadConfig` then rejects.
+const VALID_PROJECT_TYPES: readonly ProjectType[] = PROJECT_TYPES;
 
 function isIssueSeverity(v: unknown): v is IssueSeverity {
   return typeof v === 'string' && (VALID_SEVERITIES as string[]).includes(v);
 }
 
 function isProjectType(v: unknown): v is ProjectType {
-  return typeof v === 'string' && (VALID_PROJECT_TYPES as string[]).includes(v);
+  return typeof v === 'string' && (VALID_PROJECT_TYPES as readonly string[]).includes(v);
 }
 
 function isStringArray(v: unknown): v is string[] {

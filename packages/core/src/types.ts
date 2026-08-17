@@ -58,7 +58,23 @@ export type TopFix = {
   suggestedAction: string;
 };
 
-export type ProjectType = 'auto' | 'typescript' | 'nextjs' | 'unity' | 'dotnet' | 'python' | 'go' | 'rust' | 'unknown';
+// Single source of truth: consumers that need to *validate* a project type at
+// runtime (the CLI's config loader, `promptci init`) import this array rather
+// than keeping their own copy, which is how `python`/`go`/`rust` previously
+// ended up writable by `init` but rejected by `loadConfig`.
+export const PROJECT_TYPES = [
+  'auto',
+  'typescript',
+  'nextjs',
+  'unity',
+  'dotnet',
+  'python',
+  'go',
+  'rust',
+  'unknown',
+] as const;
+
+export type ProjectType = (typeof PROJECT_TYPES)[number];
 
 export type ScanTrend = {
   previousScanDate?: string;

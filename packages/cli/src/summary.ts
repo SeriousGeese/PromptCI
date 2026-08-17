@@ -62,7 +62,7 @@ export function formatSummary(report: ScanReport, options: SummaryOptions = {}):
   if (report.trend) {
     const t = report.trend;
     const diff = t.scoreDelta;
-    let deltaStr = '';
+    let deltaStr: string;
     if (diff > 0) deltaStr = `\x1b[32m(+${diff} vs last scan)\x1b[0m`;
     else if (diff < 0) deltaStr = `\x1b[31m(${diff} vs last scan)\x1b[0m`;
     else deltaStr = `\x1b[90m(+0 vs last scan)\x1b[0m`;

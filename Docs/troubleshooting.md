@@ -31,6 +31,17 @@ To reduce noise, raise the `severityThreshold` in config to `warning` or `high` 
 
 The exit code is 1 whenever any issue meets or exceeds the threshold. Use `--fail-on high` (not `warning`) for a less strict CI gate while you're cleaning up existing findings.
 
+### review-diff: "Could not resolve base branch/commit"
+
+The base ref has to exist in the local clone. In CI, `actions/checkout` makes a depth-1 clone
+by default, so `origin/main` often is not there — set `fetch-depth: 0` on the checkout step.
+
+### review-diff reports no changes for edits I just made
+
+By default `review-diff` compares the **HEAD commit** against the base, so uncommitted work is
+not counted (that is what keeps local scratch edits out of a PR's regression report). Commit
+first, or pass `--working-tree`.
+
 ### Windows path separators in report output
 
 File paths in the report reflect the OS path separator. This is expected on Windows.

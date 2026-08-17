@@ -133,7 +133,7 @@ export async function applyFixRecipe(
       const filePath = resolveSafePath(repoRoot, loc.filePath);
       if (filePath === canonicalPath) continue; // skip canonical file
 
-      let content = '';
+      let content: string;
       try {
         content = await fs.readFile(filePath, 'utf-8');
       } catch {

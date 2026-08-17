@@ -33,7 +33,7 @@ program
   .option('--update-baseline', 'run scan and write result as the new baseline')
   .option(
     '--fail-on-new <severity>',
-    'exit non-zero only if NEW issues (not in baseline) meet this threshold',
+    'exit non-zero only if NEW issues (not in baseline) meet this threshold; requires --baseline',
   )
   .option('--fail-on-budget', 'exit non-zero if any context bloat issue is found')
   .option('--context-budget <chars>', 'override total context budget (in characters)')
@@ -103,17 +103,23 @@ program
   .option('--path <dir>', 'target directory (default: current directory)')
   .option('--json', 'print structured comparison JSON to stdout')
   .option('--fail-on-regression', 'exit non-zero if score decreases or new issues are introduced')
+  .option(
+    '--working-tree',
+    'compare the working tree instead of the HEAD commit (includes uncommitted edits)',
+  )
   .action(async (opts: {
     base?: string;
     path?: string;
     json?: boolean;
     failOnRegression?: boolean;
+    workingTree?: boolean;
   }) => {
     await runReviewDiff({
       baseBranch: opts.base || 'main',
       scanPath: opts.path,
       json: opts.json || false,
       failOnRegression: opts.failOnRegression || false,
+      workingTree: opts.workingTree || false,
     });
   });
 

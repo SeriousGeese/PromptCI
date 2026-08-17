@@ -1,9 +1,11 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import * as readline from 'node:readline';
-import { detectProjectType, renderPromptCiGitignore, type ProjectType } from '@promptci/core';
+import { detectProjectType, renderPromptCiGitignore, PROJECT_TYPES as CORE_PROJECT_TYPES, type ProjectType } from '@promptci/core';
 
-const PROJECT_TYPES: ProjectType[] = ['typescript', 'nextjs', 'unity', 'dotnet', 'python', 'go', 'rust', 'unknown'];
+// Every core project type except 'auto', which is offered implicitly by
+// accepting the detected type rather than as a menu entry.
+const PROJECT_TYPES: ProjectType[] = CORE_PROJECT_TYPES.filter((t) => t !== 'auto');
 
 const DEFAULT_CONFIG = {
   severityThreshold: 'warning',
@@ -311,20 +313,14 @@ export async function runInit(targetPath: string, options?: InitOptions): Promis
       let attempts = 0;
       while (!valid && attempts < 5) {
         attempts++;
+        const menu = PROJECT_TYPES.map((t, i) => `${i + 1}: ${t}`).join('\n');
         const choice = await askQuestion(
           `Select project type:\n` +
-          `1: typescript\n` +
-          `2: nextjs\n` +
-          `3: unity\n` +
-          `4: dotnet\n` +
-          `5: python\n` +
-          `6: go\n` +
-          `7: rust\n` +
-          `8: unknown\n` +
-          `Enter choice (1-8 or name): `
+          `${menu}\n` +
+          `Enter choice (1-${PROJECT_TYPES.length} or name): `
         );
         const num = parseInt(choice, 10);
-        if (num >= 1 && num <= 8) {
+        if (num >= 1 && num <= PROJECT_TYPES.length) {
           selectedType = PROJECT_TYPES[num - 1]!;
           valid = true;
         } else {
@@ -448,7 +444,7 @@ export async function runInit(targetPath: string, options?: InitOptions): Promis
     });
 
     if (!hasIgnore) {
-      let confirmGitignore = false;
+      let confirmGitignore: boolean;
       if (isInteractive) {
         const answer = await askQuestion(
           'Ignore .promptci/ reports in .gitignore (keeping baseline.json and config.json committed)? (recommended) [Y/n]: '

@@ -292,6 +292,93 @@ describe('runScan — baseline behaviour', () => {
     expect(stderrOutput.toLowerCase()).toContain('format');
   });
 
+  // BUG-16: --fail-on-new only ever consulted report.newIssues, which core
+  // populates solely when a baseline was supplied. Passing the flag alone made
+  // CI run green on a gate that could never fire.
+  it('rejects --fail-on-new when no --baseline is given', async () => {
+    await writeFile(tmpDir, 'CLAUDE.md', 'Be helpful.\nDo good work.\nWrite code.');
+    const { runScan } = await import('../src/commands/scan.js');
+
+    let threw = false;
+    try {
+      await runScan({ scanPath: tmpDir, failOnNew: 'warning' });
+    } catch {
+      threw = true;
+    }
+
+    expect(threw).toBe(true);
+    expect(exitCode).toBe(1);
+    expect(stderrOutput).toContain('--fail-on-new requires a baseline');
+    // The gate must reject before scanning, so no report is written.
+    const wrote = await fs
+      .access(path.join(tmpDir, '.promptci', 'report.json'))
+      .then(() => true)
+      .catch(() => false);
+    expect(wrote).toBe(false);
+  });
+
+  it('rejects an invalid --fail-on-new severity', async () => {
+    const { runScan } = await import('../src/commands/scan.js');
+
+    let threw = false;
+    try {
+      await runScan({
+        scanPath: tmpDir,
+        baseline: '.promptci/baseline.json',
+        failOnNew: 'extreme' as never,
+      });
+    } catch {
+      threw = true;
+    }
+
+    expect(threw).toBe(true);
+    expect(exitCode).toBe(1);
+    expect(stderrOutput).toContain('invalid --fail-on-new value');
+  });
+
+  it('--fail-on-new fires against a missing baseline file (everything is new)', async () => {
+    await writeFile(tmpDir, 'CLAUDE.md', 'Be helpful.\nDo good work.\nWrite code.');
+    const { runScan } = await import('../src/commands/scan.js');
+
+    let threw = false;
+    try {
+      await runScan({
+        scanPath: tmpDir,
+        baseline: '.promptci/baseline.json',
+        failOnNew: 'info',
+      });
+    } catch {
+      threw = true;
+    }
+
+    expect(threw).toBe(true);
+    expect(exitCode).toBe(1);
+    expect(stderrOutput).toContain('NEW issue(s)');
+  });
+
+  it('--fail-on-new passes once the findings are baselined', async () => {
+    await writeFile(tmpDir, 'CLAUDE.md', 'Be helpful.\nDo good work.\nWrite code.');
+    // Create .promptci/ up front: several detectors key off its presence, so a
+    // baseline captured before the first run creates it would otherwise show a
+    // spurious "new" finding on the second run.
+    await writeConfig(tmpDir, {});
+    const { runScan } = await import('../src/commands/scan.js');
+
+    await runScan({
+      scanPath: tmpDir,
+      baseline: '.promptci/baseline.json',
+      updateBaseline: true,
+    });
+
+    await runScan({
+      scanPath: tmpDir,
+      baseline: '.promptci/baseline.json',
+      failOnNew: 'info',
+    });
+
+    expect(exitCode).toBeUndefined();
+  });
+
   it('--update-baseline respects a custom --baseline path', async () => {
     const customPath = path.join(tmpDir, 'custom-baseline.json');
     const { runScan } = await import('../src/commands/scan.js');
