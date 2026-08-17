@@ -7,10 +7,13 @@ import { detectProjectType, renderPromptCiGitignore, PROJECT_TYPES as CORE_PROJE
 // accepting the detected type rather than as a menu entry.
 const PROJECT_TYPES: ProjectType[] = CORE_PROJECT_TYPES.filter((t) => t !== 'auto');
 
+// BUG-4: this used to seed every generated config with
+// `apiUrl: 'http://localhost:3000'`, which pointed `upload`/`login` at the
+// user's own machine. `apiUrl` is now omitted — set it only when you actually
+// run a dashboard (see Docs/cli-reference.md).
 const DEFAULT_CONFIG = {
   severityThreshold: 'warning',
   projectType: 'auto',
-  apiUrl: 'http://localhost:3000',
 };
 
 export interface InitOptions {

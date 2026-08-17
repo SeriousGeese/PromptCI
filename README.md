@@ -131,6 +131,10 @@ A hosted dashboard (scan history, improvement metrics, LLM-assisted fixes, GitHu
 integration) is developed separately and is not part of this repository. The
 `login`, `auth`, and `upload` CLI commands connect to it; everything else works without it.
 
+There is no public endpoint yet, so those commands need one supplied explicitly — via
+`--url`, the `PROMPTCI_API_URL` environment variable, or `apiUrl` in
+`.promptci/config.json`. They error out rather than guessing a default.
+
 ## Contributing
 
 Bug reports, false-positive reports, and detector proposals are welcome — see

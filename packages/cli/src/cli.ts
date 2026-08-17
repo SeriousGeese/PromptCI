@@ -145,7 +145,7 @@ program
   .option('--path <dir>', 'repo directory containing .promptci/ (default: current directory)')
   .option(
     '--url <url>',
-    'dashboard API URL (overrides PROMPTCI_API_URL and config; default: http://localhost:3000)',
+    'dashboard API URL (overrides PROMPTCI_API_URL and config; required if neither is set)',
   )
   .action(async (opts: { path?: string; url?: string }) => {
     await runUpload({ uploadPath: opts.path, url: opts.url });
@@ -178,7 +178,7 @@ program
   .description('Authenticate the CLI with your PromptCI dashboard via GitHub OAuth')
   .option(
     '--url <url>',
-    'dashboard URL (overrides PROMPTCI_API_URL; default: http://localhost:3000)',
+    'dashboard URL (overrides PROMPTCI_API_URL and config; required if neither is set)',
   )
   .action(async (opts: { url?: string }) => {
     await runLogin({ url: opts.url });
