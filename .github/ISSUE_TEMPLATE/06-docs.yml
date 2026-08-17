@@ -1,0 +1,29 @@
+name: 📚 Documentation
+description: Something in the docs is wrong, missing, or confusing.
+title: "[Docs] "
+labels: ["documentation", "needs-triage"]
+body:
+  - type: input
+    id: location
+    attributes:
+      label: Where
+      description: File path or URL — e.g. `README.md`, `Docs/cli-reference.md`, `Docs/troubleshooting.md`.
+      placeholder: Docs/cli-reference.md
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What's wrong or missing?
+      description: Quote the current text if it's inaccurate, or describe what you went looking for and couldn't find.
+    validations:
+      required: true
+
+  - type: textarea
+    id: suggestion
+    attributes:
+      label: Suggested wording
+      description: Optional, but a concrete draft is the fastest path to a merge.
+    validations:
+      required: false

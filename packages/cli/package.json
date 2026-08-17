@@ -1,0 +1,49 @@
+{
+  "name": "promptci",
+  "version": "0.0.1",
+  "description": "Instruction health for AI coding workflows — scan CLAUDE.md, AGENTS.md, .cursorrules and more for duplicates, conflicts, staleness, and context bloat",
+  "license": "Apache-2.0",
+  "type": "module",
+  "bin": {
+    "promptci": "./dist/cli.cjs"
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SeriousGeese/PromptCI.git",
+    "directory": "packages/cli"
+  },
+  "homepage": "https://github.com/SeriousGeese/PromptCI#readme",
+  "bugs": {
+    "url": "https://github.com/SeriousGeese/PromptCI/issues"
+  },
+  "keywords": [
+    "ai",
+    "claude",
+    "cli",
+    "copilot",
+    "cursor",
+    "instructions",
+    "lint",
+    "prompt",
+    "scanner"
+  ],
+  "scripts": {
+    "build": "esbuild src/cli.ts --bundle --platform=node --format=cjs --minify --outfile=dist/cli.cjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "prepublishOnly": "pnpm run build"
+  },
+  "devDependencies": {
+    "@promptci/core": "workspace:*",
+    "@types/node": "^25.9.1",
+    "commander": "^12.1.0",
+    "esbuild": "^0.25.0",
+    "typescript": "*",
+    "vitest": "*"
+  }
+}

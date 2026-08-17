@@ -1,0 +1,291 @@
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import * as fs from 'node:fs/promises';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { runDoctor } from '../src/commands/doctor.js';
+import * as authConfig from '../src/auth-config.js';
+
+vi.mock('../src/auth-config.js');
+
+async function makeTempDir(): Promise<string> {
+  return fs.mkdtemp(path.join(os.tmpdir(), 'promptci-doctor-test-'));
+}
+
+describe('promptci doctor CLI command', () => {
+  let tmpDir: string;
+  let stdoutOutput: string;
+  let stderrOutput: string;
+  let exitCode: number | undefined;
+  let originalVersions: typeof process.versions;
+  let originalEnv: Record<string, string | undefined>;
+
+  beforeEach(async () => {
+    tmpDir = await makeTempDir();
+    stdoutOutput = '';
+    stderrOutput = '';
+    exitCode = undefined;
+    originalVersions = { ...process.versions };
+    originalEnv = { ...process.env };
+
+    vi.spyOn(process, 'exit').mockImplementation((code?: number | string) => {
+      exitCode = typeof code === 'number' ? code : 0;
+      throw new Error(`process.exit(${code})`);
+    });
+
+    vi.spyOn(console, 'log').mockImplementation((...msg) => {
+      stdoutOutput += msg.join(' ') + '\n';
+    });
+
+    vi.spyOn(console, 'error').mockImplementation((...msg) => {
+      stderrOutput += msg.join(' ') + '\n';
+    });
+
+    vi.mocked(authConfig.readAuthConfig).mockResolvedValue({});
+    vi.mocked(authConfig.getAuthToken).mockResolvedValue(null);
+  });
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    Object.defineProperty(process, 'versions', {
+      value: originalVersions,
+      configurable: true,
+    });
+    process.env = originalEnv;
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  it('passes cleanly when Node version, config, gitignore, and keys are configured', async () => {
+    // 1. Set up Node version to 22
+    Object.defineProperty(process, 'versions', {
+      value: { node: '22.0.0' },
+      configurable: true,
+    });
+
+    // 2. Set up valid config
+    const configDir = path.join(tmpDir, '.promptci');
+    await fs.mkdir(configDir, { recursive: true });
+    await fs.writeFile(
+      path.join(configDir, 'config.json'),
+      JSON.stringify({ severityThreshold: 'warning', projectType: 'typescript' }),
+      'utf-8'
+    );
+
+    // 3. Set up gitignore containing .promptci/
+    await fs.writeFile(path.join(tmpDir, '.gitignore'), 'node_modules/\n.promptci/\n', 'utf-8');
+
+    // 4. Set up mock env keys and auth
+    process.env.OPENAI_API_KEY = 'mock-key';
+    
+    // Mock global fetch
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+      return { ok: true } as Response;
+    });
+
+    await runDoctor({ scanPath: tmpDir });
+
+    expect(stdoutOutput).toContain('Node.js version >= 20');
+    expect(stdoutOutput).toContain('Config file schema: Valid configuration file found');
+    expect(stdoutOutput).toContain('Gitignore protection: .promptci/ is ignored in .gitignore');
+    expect(stdoutOutput).toContain('LLM API Keys: Configured');
+    expect(stdoutOutput).toContain('Diagnostics passed: Local setup is healthy!');
+  });
+
+  it('fails if Node.js version is < 20', async () => {
+    Object.defineProperty(process, 'versions', {
+      value: { node: '18.12.0' },
+      configurable: true,
+    });
+
+    // Valid config
+    const configDir = path.join(tmpDir, '.promptci');
+    await fs.mkdir(configDir, { recursive: true });
+    await fs.writeFile(
+      path.join(configDir, 'config.json'),
+      JSON.stringify({ severityThreshold: 'warning' }),
+      'utf-8'
+    );
+    await fs.writeFile(path.join(tmpDir, '.gitignore'), '.promptci/\n', 'utf-8');
+
+    let errorThrown = false;
+    try {
+      await runDoctor({ scanPath: tmpDir });
+    } catch {
+      errorThrown = true;
+    }
+
+    expect(errorThrown).toBe(true);
+    expect(exitCode).toBe(1);
+    expect(stdoutOutput).toContain('Node.js version is too old');
+    expect(stderrOutput).toContain('Diagnostics failed: Critical configuration issues detected.');
+  });
+
+  it('fails if .promptci/config.json is invalid JSON', async () => {
+    Object.defineProperty(process, 'versions', {
+      value: { node: '22.0.0' },
+      configurable: true,
+    });
+
+    // Invalid config file
+    const configDir = path.join(tmpDir, '.promptci');
+    await fs.mkdir(configDir, { recursive: true });
+    await fs.writeFile(path.join(configDir, 'config.json'), '{ invalid json }', 'utf-8');
+    await fs.writeFile(path.join(tmpDir, '.gitignore'), '.promptci/\n', 'utf-8');
+
+    let errorThrown = false;
+    try {
+      await runDoctor({ scanPath: tmpDir });
+    } catch {
+      errorThrown = true;
+    }
+
+    expect(errorThrown).toBe(true);
+    expect(exitCode).toBe(1);
+    expect(stdoutOutput).toContain('Config file schema: Invalid configuration');
+    expect(stderrOutput).toContain('Diagnostics failed: Critical configuration issues detected.');
+  });
+
+  it('fails if .promptci/ is not ignored in .gitignore', async () => {
+    Object.defineProperty(process, 'versions', {
+      value: { node: '22.0.0' },
+      configurable: true,
+    });
+
+    // Valid config but gitignore is empty
+    const configDir = path.join(tmpDir, '.promptci');
+    await fs.mkdir(configDir, { recursive: true });
+    await fs.writeFile(
+      path.join(configDir, 'config.json'),
+      JSON.stringify({ severityThreshold: 'warning' }),
+      'utf-8'
+    );
+    await fs.writeFile(path.join(tmpDir, '.gitignore'), 'node_modules/\n', 'utf-8');
+
+    let errorThrown = false;
+    try {
+      await runDoctor({ scanPath: tmpDir });
+    } catch {
+      errorThrown = true;
+    }
+
+    expect(errorThrown).toBe(true);
+    expect(exitCode).toBe(1);
+    expect(stdoutOutput).toContain('Gitignore protection: .promptci/ is not ignored in .gitignore');
+  });
+
+  it('passes if .gitignore ignores .promptci in different valid patterns', async () => {
+    Object.defineProperty(process, 'versions', {
+      value: { node: '22.0.0' },
+      configurable: true,
+    });
+
+    const configDir = path.join(tmpDir, '.promptci');
+    await fs.mkdir(configDir, { recursive: true });
+    await fs.writeFile(
+      path.join(configDir, 'config.json'),
+      JSON.stringify({ severityThreshold: 'warning' }),
+      'utf-8'
+    );
+
+    // Test with /.promptci (without trailing slash, absolute from root)
+    await fs.writeFile(path.join(tmpDir, '.gitignore'), '/.promptci\n', 'utf-8');
+
+    await runDoctor({ scanPath: tmpDir });
+
+    expect(stdoutOutput).toContain('Gitignore protection: .promptci/ is ignored in .gitignore');
+  });
+
+  it('reports warning if dashboard connection pings fail', async () => {
+    Object.defineProperty(process, 'versions', {
+      value: { node: '22.0.0' },
+      configurable: true,
+    });
+
+    const configDir = path.join(tmpDir, '.promptci');
+    await fs.mkdir(configDir, { recursive: true });
+    await fs.writeFile(
+      path.join(configDir, 'config.json'),
+      JSON.stringify({ severityThreshold: 'warning' }),
+      'utf-8'
+    );
+    await fs.writeFile(path.join(tmpDir, '.gitignore'), '.promptci/\n', 'utf-8');
+
+    // Mock global fetch to throw error
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+      throw new Error('Connection refused');
+    });
+
+    await runDoctor({ scanPath: tmpDir });
+
+    expect(stdoutOutput).toContain('Dashboard connection: Could not connect');
+    expect(stdoutOutput).toContain('Diagnostics passed: Local setup is healthy!'); // Only warning, does not fail!
+  });
+
+  it('downgrades missing LLM keys warning to INFO if dashboard authenticated', async () => {
+    Object.defineProperty(process, 'versions', {
+      value: { node: '22.0.0' },
+      configurable: true,
+    });
+
+    const configDir = path.join(tmpDir, '.promptci');
+    await fs.mkdir(configDir, { recursive: true });
+    await fs.writeFile(
+      path.join(configDir, 'config.json'),
+      JSON.stringify({ severityThreshold: 'warning' }),
+      'utf-8'
+    );
+    await fs.writeFile(path.join(tmpDir, '.gitignore'), '.promptci/\n', 'utf-8');
+
+    // Mock dashboard auth to be valid
+    vi.mocked(authConfig.readAuthConfig).mockResolvedValue({
+      access_token: 'valid-token',
+      expires_at: Math.floor(Date.now() / 1000) + 3600,
+    });
+    vi.mocked(authConfig.getAuthToken).mockResolvedValue('valid-token');
+
+    // Mock global fetch
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+      return { ok: true } as Response;
+    });
+
+    await runDoctor({ scanPath: tmpDir });
+
+    expect(stdoutOutput).toContain('LLM API Keys: Local keys not configured (LLM features will use the dashboard server-side API)');
+    expect(stdoutOutput).not.toContain('Neither OPENAI_API_KEY nor ANTHROPIC_API_KEY is configured');
+    expect(stdoutOutput).toContain('Dashboard Authentication: Authenticated');
+    expect(stdoutOutput).toContain('Diagnostics passed: Local setup is healthy!');
+  });
+
+  it('warns about missing LLM keys and not authenticated if auth token is expired', async () => {
+    Object.defineProperty(process, 'versions', {
+      value: { node: '22.0.0' },
+      configurable: true,
+    });
+
+    const configDir = path.join(tmpDir, '.promptci');
+    await fs.mkdir(configDir, { recursive: true });
+    await fs.writeFile(
+      path.join(configDir, 'config.json'),
+      JSON.stringify({ severityThreshold: 'warning' }),
+      'utf-8'
+    );
+    await fs.writeFile(path.join(tmpDir, '.gitignore'), '.promptci/\n', 'utf-8');
+
+    // Mock dashboard auth to be expired
+    vi.mocked(authConfig.readAuthConfig).mockResolvedValue({
+      access_token: 'expired-token',
+      expires_at: Math.floor(Date.now() / 1000) - 3600,
+    });
+    vi.mocked(authConfig.getAuthToken).mockResolvedValue('expired-token');
+
+    // Mock global fetch
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+      return { ok: true } as Response;
+    });
+
+    await runDoctor({ scanPath: tmpDir });
+
+    expect(stdoutOutput).toContain('LLM API Keys: Neither OPENAI_API_KEY nor ANTHROPIC_API_KEY is configured');
+    expect(stdoutOutput).toContain('Dashboard Authentication: Not authenticated');
+    expect(stdoutOutput).toContain('Diagnostics passed: Local setup is healthy!');
+  });
+});

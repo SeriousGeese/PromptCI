@@ -1,0 +1,79 @@
+name: 🐛 Bug report
+description: Something crashed, errored, or behaved incorrectly.
+title: "[Bug] "
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For a detector reporting the *wrong result* (rather than misbehaving), please use the
+        **False positive** or **False negative** template instead — they collect the right details.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - CLI (packages/cli)
+        - Scanner / detectors (packages/core)
+        - Web dashboard (apps/web)
+        - GitHub Action (action.yml)
+        - Docker image
+        - Not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: Include the exact command you ran and the full output or stack trace.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected instead
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      value: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: PromptCI version
+      description: Output of `promptci --version`, or the commit SHA you built from.
+      placeholder: 0.0.1
+    validations:
+      required: true
+
+  - type: input
+    id: env
+    attributes:
+      label: Environment
+      description: OS, Node version, pnpm version. PromptCI targets Node 22+ and pnpm 9+.
+      placeholder: "macOS 15.3, Node 22.11.0, pnpm 9.15.9"
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues.
+          required: true
+        - label: I reproduced this on the latest `main`.
+          required: false

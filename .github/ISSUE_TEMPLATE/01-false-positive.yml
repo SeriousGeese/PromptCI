@@ -1,0 +1,88 @@
+name: 🔍 False positive
+description: PromptCI flagged something that isn't actually a problem.
+title: "[FP] "
+labels: ["false-positive", "detector", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Detectors are heuristic and cautiously worded by design, so some noise is expected.
+        Still, a finding that is *confidently wrong* is a bug worth fixing. Thanks for reporting it.
+
+  - type: input
+    id: issue-id
+    attributes:
+      label: Issue ID
+      description: >-
+        The `id` field from the finding in `.promptci/report.json`
+        (e.g. `security-pack-no-promptci-gitignore`, `vague-a1b2c3`, `dup-...`).
+      placeholder: vague-a1b2c3
+    validations:
+      required: true
+
+  - type: dropdown
+    id: category
+    attributes:
+      label: Category
+      description: The `category` field on the same finding.
+      options:
+        - duplicate
+        - conflict
+        - context_bloat
+        - missing_context
+        - stale_instruction
+        - vague_guidance
+        - structure
+        - command_validity
+        - agent_practices
+        - security
+        - not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: finding
+    attributes:
+      label: The finding
+      description: Paste the finding — either the JSON object from `report.json` or its section from `.promptci/latest.md`.
+      render: json
+    validations:
+      required: true
+
+  - type: textarea
+    id: source
+    attributes:
+      label: Instruction text that triggered it
+      description: >-
+        The relevant lines from your `CLAUDE.md` / `AGENTS.md` / `.cursorrules` / etc.
+        Redact anything private — a minimal reproduction is more useful than a full file.
+      render: markdown
+    validations:
+      required: true
+
+  - type: textarea
+    id: why
+    attributes:
+      label: Why this is a false positive
+      description: What did the detector misread? What would a correct result have been — no finding at all, or a lower severity?
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: PromptCI version
+      description: Output of `promptci --version`, or the commit SHA you built from.
+      placeholder: 0.0.1
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues for this finding.
+          required: true
+        - label: I confirmed this isn't solved by a suppression rule in `.promptci/config.json`.
+          required: false

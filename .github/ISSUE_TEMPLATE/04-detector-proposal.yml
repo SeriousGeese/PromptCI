@@ -1,0 +1,89 @@
+name: 🧪 New detector proposal
+description: Propose a new rule for the scanner to check.
+title: "[Detector] "
+labels: ["detector", "enhancement", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Ground rule:** detectors are deterministic and rule-based. Proposals that require an LLM
+        call inside detector code are out of scope — the scanner must produce identical output for
+        identical input, offline. See [AGENTS.md](https://github.com/SeriousGeese/PromptCI/blob/main/AGENTS.md).
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What instruction-file problem does this catch?
+      description: Describe the rot pattern, and what it costs someone when it goes unnoticed.
+    validations:
+      required: true
+
+  - type: textarea
+    id: examples
+    attributes:
+      label: Examples that SHOULD be flagged
+      description: Two or three realistic snippets. These become test fixtures.
+      render: markdown
+    validations:
+      required: true
+
+  - type: textarea
+    id: counter-examples
+    attributes:
+      label: Examples that should NOT be flagged
+      description: >-
+        Near-misses that look similar but are fine. This is the part that keeps the detector from
+        becoming noisy, so please give it real thought.
+      render: markdown
+    validations:
+      required: true
+
+  - type: dropdown
+    id: category
+    attributes:
+      label: Best-fit category
+      description: From `IssueCategory` in `packages/core/src/types.ts`. Pick the closest, or propose a new one below.
+      options:
+        - duplicate
+        - conflict
+        - context_bloat
+        - missing_context
+        - stale_instruction
+        - vague_guidance
+        - structure
+        - command_validity
+        - agent_practices
+        - security
+        - needs a new category
+    validations:
+      required: true
+
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Suggested default severity
+      options:
+        - info
+        - warning
+        - high
+        - critical
+    validations:
+      required: true
+
+  - type: textarea
+    id: recommendation
+    attributes:
+      label: What should the recommendation say?
+      description: Findings must be cautiously worded and actionable. Draft the text a user would see.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: This rule is deterministic — no LLM call required to evaluate it.
+          required: true
+        - label: I checked the existing detectors in `packages/core/src/` for overlap.
+          required: true

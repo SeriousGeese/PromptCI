@@ -1,0 +1,55 @@
+{
+  "name": "@promptci/core",
+  "version": "0.0.1",
+  "description": "Deterministic scanner for AI coding instruction files (CLAUDE.md, AGENTS.md, .cursorrules) — detectors, scoring, and report generation",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SeriousGeese/PromptCI.git",
+    "directory": "packages/core"
+  },
+  "homepage": "https://github.com/SeriousGeese/PromptCI#readme",
+  "bugs": {
+    "url": "https://github.com/SeriousGeese/PromptCI/issues"
+  },
+  "keywords": [
+    "ai",
+    "claude",
+    "copilot",
+    "cursor",
+    "instructions",
+    "lint",
+    "prompt",
+    "scanner"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "prepublishOnly": "pnpm run build"
+  },
+  "devDependencies": {
+    "@types/node": "*",
+    "typescript": "*"
+  },
+  "dependencies": {
+    "fast-glob": "^3.3.3"
+  }
+}

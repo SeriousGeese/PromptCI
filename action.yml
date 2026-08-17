@@ -1,0 +1,47 @@
+name: 'PromptCI Instruction Health Auditor'
+description: 'Audit CLAUDE.md, AGENTS.md, and .cursorrules for duplicates, conflicts, and cost bloat in PRs'
+author: 'SeriousGeese'
+branding:
+  icon: 'shield'
+  color: 'green'
+
+inputs:
+  path:
+    description: 'Path to scanned repo'
+    required: false
+    default: '.'
+  fail_on:
+    description: 'Fail threshold severity (info/warning/high/critical)'
+    required: false
+    default: ''
+  fail_on_regression:
+    description: 'Fail on PR instruction regressions'
+    required: false
+    default: 'true'
+  base_branch:
+    description: 'Base branch to compare against'
+    required: false
+    default: 'main'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: 22
+
+    - name: Run PromptCI
+      shell: bash
+      run: |
+        if [ "${{ inputs.fail_on_regression }}" = "true" ]; then
+          echo "Running PromptCI Branch Review (compared to origin/${{ inputs.base_branch }})..."
+          npx promptci review-diff --base "origin/${{ inputs.base_branch }}" --path "${{ inputs.path }}" --fail-on-regression
+        else
+          echo "Running PromptCI Scan..."
+          ARGS="--path ${{ inputs.path }}"
+          if [ -n "${{ inputs.fail_on }}" ]; then
+            ARGS="$ARGS --fail-on ${{ inputs.fail_on }}"
+          fi
+          npx promptci scan $ARGS
+        fi

@@ -1,0 +1,71 @@
+name: 🕳️ False negative (missed problem)
+description: PromptCI should have flagged something and didn't.
+title: "[FN] "
+labels: ["false-negative", "detector", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Missed detections are the most valuable reports we get — they're much harder for us
+        to find than false positives. Please include the instruction text so we can add a fixture.
+
+  - type: textarea
+    id: source
+    attributes:
+      label: Instruction text that should have been flagged
+      description: >-
+        A minimal snippet that reproduces the miss. Redact anything private.
+      render: markdown
+    validations:
+      required: true
+
+  - type: dropdown
+    id: category
+    attributes:
+      label: Which category should have caught it?
+      options:
+        - duplicate
+        - conflict
+        - context_bloat
+        - missing_context
+        - stale_instruction
+        - vague_guidance
+        - structure
+        - command_validity
+        - agent_practices
+        - security
+        - none of these — needs a new detector
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What should PromptCI have said?
+      description: Roughly what finding and severity would have been correct, and why it matters in practice.
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: What it reported instead
+      description: The scan summary, or the relevant slice of `report.json`. Say "nothing" if the scan was clean.
+    validations:
+      required: false
+
+  - type: input
+    id: version
+    attributes:
+      label: PromptCI version
+      placeholder: 0.0.1
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues for this gap.
+          required: true

@@ -1,0 +1,26 @@
+{
+  "name": "promptci-monorepo",
+  "private": true,
+  "version": "0.0.1",
+  "packageManager": "pnpm@9.15.9",
+  "engines": {
+    "node": ">=22",
+    "pnpm": ">=9"
+  },
+  "scripts": {
+    "lint": "eslint packages",
+    "typecheck": "pnpm --filter @promptci/core build && pnpm -r run typecheck",
+    "test": "vitest run",
+    "build": "pnpm -r run build",
+    "dev": "vitest"
+  },
+  "devDependencies": {
+    "@typescript-eslint/eslint-plugin": "^8.0.0",
+    "@typescript-eslint/parser": "^8.0.0",
+    "eslint": "^9.0.0",
+    "globals": "^17.6.0",
+    "prettier": "^3.0.0",
+    "typescript": "^5.5.0",
+    "vitest": "^2.0.0"
+  }
+}

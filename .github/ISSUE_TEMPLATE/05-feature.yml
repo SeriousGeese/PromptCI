@@ -1,0 +1,57 @@
+name: ✨ Feature request
+description: Suggest a capability outside the scanner rules themselves.
+title: "[Feature] "
+labels: ["enhancement", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Proposing a new *scanner rule*? Use the **New detector proposal** template instead.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - CLI (packages/cli)
+        - Scanner engine / reporting (packages/core)
+        - Web dashboard (apps/web)
+        - GitHub Action (action.yml)
+        - Config & suppression
+        - Not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you trying to solve?
+      description: Describe the situation you hit, not the solution you have in mind. What did you want to do and what stopped you?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What you'd like PromptCI to do. Sketch the command, flag, or output shape if you have one in mind.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you've considered
+      description: Including workarounds you're using today.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues and discussions.
+          required: true
+        - label: I'd be willing to work on this.
+          required: false
