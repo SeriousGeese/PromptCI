@@ -31,7 +31,7 @@ export async function runDoctor(options: DoctorOptions): Promise<void> {
   const isNodeOk = major >= 20;
 
   // 2. Global executable check
-  let cliVersionStr = '';
+  let cliVersionStr: string;
   let cliLinked = false;
   try {
     const out = execSync('promptci --version', { stdio: ['ignore', 'pipe', 'ignore'], encoding: 'utf8' }).trim();
@@ -43,7 +43,7 @@ export async function runDoctor(options: DoctorOptions): Promise<void> {
 
   // 3. Config schema validation
   let configOk = true;
-  let configMsg = '';
+  let configMsg: string;
   let apiUrl = 'http://localhost:3000';
   const configPath = path.join(resolvedPath, '.promptci', 'config.json');
   try {
@@ -64,7 +64,7 @@ export async function runDoctor(options: DoctorOptions): Promise<void> {
 
   // 4. Gitignore ignore check
   let gitignoreOk = false;
-  let gitignoreMsg = '';
+  let gitignoreMsg: string;
   const gitignorePath = path.join(resolvedPath, '.gitignore');
   try {
     const content = await fs.readFile(gitignorePath, 'utf-8');
@@ -100,7 +100,7 @@ export async function runDoctor(options: DoctorOptions): Promise<void> {
 
   // 7. Dashboard connection check
   let dashboardConnected = false;
-  let dashboardMessage = '';
+  let dashboardMessage: string;
   try {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 3000);

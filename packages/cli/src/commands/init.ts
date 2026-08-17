@@ -448,7 +448,7 @@ export async function runInit(targetPath: string, options?: InitOptions): Promis
     });
 
     if (!hasIgnore) {
-      let confirmGitignore = false;
+      let confirmGitignore: boolean;
       if (isInteractive) {
         const answer = await askQuestion(
           'Ignore .promptci/ reports in .gitignore (keeping baseline.json and config.json committed)? (recommended) [Y/n]: '
