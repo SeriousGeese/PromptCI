@@ -1,7 +1,7 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import * as readline from 'node:readline';
-import { detectProjectType, type ProjectType } from '@promptci/core';
+import { detectProjectType, renderPromptCiGitignore, type ProjectType } from '@promptci/core';
 
 const PROJECT_TYPES: ProjectType[] = ['typescript', 'nextjs', 'unity', 'dotnet', 'python', 'go', 'rust', 'unknown'];
 
@@ -450,17 +450,22 @@ export async function runInit(targetPath: string, options?: InitOptions): Promis
     if (!hasIgnore) {
       let confirmGitignore = false;
       if (isInteractive) {
-        const answer = await askQuestion('Add .promptci/ to .gitignore? (recommended) [Y/n]: ');
+        const answer = await askQuestion(
+          'Ignore .promptci/ reports in .gitignore (keeping baseline.json and config.json committed)? (recommended) [Y/n]: '
+        );
         confirmGitignore = answer === '' || answer.toLowerCase() === 'y' || answer.toLowerCase() === 'yes';
       } else {
         confirmGitignore = true;
       }
 
       if (confirmGitignore) {
+        // BUG-7: ignore the generated reports but keep baseline.json committed —
+        // `scan --baseline` / `--fail-on-new` need it readable in CI.
+        const lineEnding = gitignoreContent.includes('\r\n') ? '\r\n' : '\n';
         const needsNewline = gitignoreContent.length > 0 && !gitignoreContent.endsWith('\n');
-        const appendText = `${needsNewline ? '\n' : ''}.promptci/\n`;
+        const appendText = `${needsNewline ? lineEnding : ''}${renderPromptCiGitignore(lineEnding)}`;
         await fs.appendFile(gitignorePath, appendText, 'utf-8');
-        console.log('✔ Added .promptci/ to .gitignore');
+        console.log('✔ Added .promptci/ report ignore to .gitignore (baseline.json and config.json stay committed)');
       }
     }
   }

@@ -235,6 +235,55 @@ describe('detectSecurityPack', () => {
       expect(issues.some(i => i.id === 'security-pack-no-promptci-gitignore')).toBe(false);
     });
 
+    // BUG-7: the recommended pattern carves out baseline.json so the CI
+    // ratchet (--baseline / --fail-on-new) can still read it.
+    it('accepts the baseline-preserving .promptci/* carve-out', () => {
+      vi.mocked(fs.existsSync).mockImplementation((p: string) => {
+        const normalized = p.replace(/\\/g, '/');
+        if (normalized.endsWith('.gitignore')) return true;
+        return false;
+      });
+      vi.mocked(fs.readFileSync).mockImplementation((p: unknown) => {
+        const normalized = String(p).replace(/\\/g, '/');
+        if (normalized.endsWith('.gitignore')) {
+          return '**/.promptci/*\n!**/.promptci/baseline.json\n!**/.promptci/config.json\nnode_modules/';
+        }
+        return '';
+      });
+
+      const context = {
+        ...mockContext,
+        files: [makeFile('# Rules\nUse TypeScript.')],
+      };
+      const issues = detectSecurityPack(context);
+      expect(issues.some(i => i.id === 'security-pack-no-promptci-gitignore')).toBe(false);
+    });
+
+    it('recommends carving out baseline.json rather than ignoring .promptci wholesale', () => {
+      vi.mocked(fs.existsSync).mockImplementation((p: string) => {
+        const normalized = p.replace(/\\/g, '/');
+        if (normalized.endsWith('.gitignore')) return true;
+        return false;
+      });
+      vi.mocked(fs.readFileSync).mockImplementation((p: unknown) => {
+        const normalized = String(p).replace(/\\/g, '/');
+        if (normalized.endsWith('.gitignore')) return 'node_modules/';
+        return '';
+      });
+
+      const context = {
+        ...mockContext,
+        files: [makeFile('# Rules\nUse TypeScript.')],
+      };
+      const issue = detectSecurityPack(context).find(
+        i => i.id === 'security-pack-no-promptci-gitignore',
+      );
+      expect(issue).toBeDefined();
+      expect(issue!.recommendation).toContain('!**/.promptci/baseline.json');
+      expect(issue!.fixRecipe).toContain('**/.promptci/*');
+      expect(issue!.fixRecipe).toContain('!**/.promptci/baseline.json');
+    });
+
     it('flags unignored build/coverage directories', () => {
       vi.mocked(fs.existsSync).mockImplementation((p: string) => {
         const normalized = p.replace(/\\/g, '/');

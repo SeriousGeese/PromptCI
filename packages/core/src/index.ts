@@ -30,3 +30,8 @@ export { optimizeContext } from './context-optimizer.js';
 export type { OptimizeOptions, OptimizeResult } from './context-optimizer.js';
 
 
+export {
+  PROMPTCI_GITIGNORE_LINES,
+  PROMPTCI_GITIGNORE_BLOCK,
+  renderPromptCiGitignore,
+} from './promptci-gitignore.js';

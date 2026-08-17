@@ -2,5 +2,8 @@ node_modules/
 dist/
 *.tsbuildinfo
 coverage/
-.promptci/
+# PromptCI: ignore generated reports, keep the shared baseline and config
+**/.promptci/*
+!**/.promptci/baseline.json
+!**/.promptci/config.json
 .DS_Store

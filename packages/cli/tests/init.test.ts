@@ -143,14 +143,26 @@ describe('runInit', () => {
     expect(hasAgents).toBe(false);
   });
 
-  it('appends .promptci/ to .gitignore in non-interactive mode', async () => {
+  // BUG-7: the appended rule must ignore generated reports WITHOUT ignoring
+  // baseline.json — `scan --baseline` / `--fail-on-new` read it from the CI
+  // checkout, so a wholesale `.promptci/` defeats the ratchet.
+  const EXPECTED_IGNORE =
+    '# PromptCI: ignore generated reports, keep the shared baseline and config\n' +
+    '**/.promptci/*\n' +
+    '!**/.promptci/baseline.json\n' +
+    '!**/.promptci/config.json\n';
+
+  it('appends the baseline-preserving .promptci rules to .gitignore in non-interactive mode', async () => {
     const gitignorePath = path.join(tmpDir, '.gitignore');
     await fs.writeFile(gitignorePath, 'node_modules/\n', 'utf-8');
 
     await runInit(tmpDir, { interactive: false });
 
     const content = await fs.readFile(gitignorePath, 'utf-8');
-    expect(content).toBe('node_modules/\n.promptci/\n');
+    expect(content).toBe(`node_modules/\n${EXPECTED_IGNORE}`);
+    // `.promptci/*` (contents), not `.promptci/` (directory) — git skips
+    // ignored directories entirely, which would make the negations dead.
+    expect(content).not.toMatch(/^\.promptci\/$/m);
   });
 
   it('prompts and appends .promptci/ to .gitignore in interactive mode if confirmed', async () => {
@@ -167,7 +179,7 @@ describe('runInit', () => {
     });
 
     const content = await fs.readFile(gitignorePath, 'utf-8');
-    expect(content).toBe('node_modules/\n.promptci/\n');
+    expect(content).toBe(`node_modules/\n${EXPECTED_IGNORE}`);
   });
 
   it('prompts and does not append .promptci/ to .gitignore in interactive mode if rejected', async () => {
@@ -195,5 +207,16 @@ describe('runInit', () => {
 
     const content = await fs.readFile(gitignorePath, 'utf-8');
     expect(content).toBe('node_modules/\n.promptci/\n');
+  });
+
+  it('is idempotent — re-running init does not append the rules twice', async () => {
+    const gitignorePath = path.join(tmpDir, '.gitignore');
+    await fs.writeFile(gitignorePath, 'node_modules/\n', 'utf-8');
+
+    await runInit(tmpDir, { interactive: false });
+    await runInit(tmpDir, { interactive: false });
+
+    const content = await fs.readFile(gitignorePath, 'utf-8');
+    expect(content).toBe(`node_modules/\n${EXPECTED_IGNORE}`);
   });
 });
