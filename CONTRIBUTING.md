@@ -49,6 +49,36 @@ vitest's own range (`vite ^5 || ^6 || ^7`) is wide enough that pnpm would otherw
 resolving a flagged version. Drop an override once the range that pulls it in has moved past the
 patched version on its own.
 
+Dependabot config lives in `.github/dependabot.yml` and covers two ecosystems: `npm` (which is
+the correct key for a pnpm workspace — there is no separate `pnpm` value) and `github-actions`.
+Routine minor/patch updates are grouped into one PR per ecosystem per week; majors get their own
+PR so each is reviewed against its own release notes.
+
+## GitHub Actions pins
+
+Every action in `.github/workflows` **and in the published `action.yml`** is pinned to a full
+commit SHA, with the readable version in a trailing comment:
+
+```yaml
+- uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+```
+
+A tag is a mutable pointer — whoever can push to the action's repo can move `v7` to different
+code, and every workflow referencing it picks that up on the next run. A SHA cannot be
+repointed. This matters most in `action.yml`, which runs inside every consumer's repository.
+
+Don't replace a SHA with a tag for readability; the `github-actions` Dependabot entry updates
+the SHA and its comment together. When adding a step, resolve the SHA from the action's own
+repository (not a fork):
+
+```bash
+gh api repos/actions/checkout/commits/v7.0.1 --jq .sha
+```
+
+Also in `action.yml`: pass inputs to `run:` steps through `env:`, never by interpolating
+`${{ inputs.x }}` into the script. A composite action executes in the caller's workflow, so a
+value spliced into a shell line is a script-injection sink.
+
 ## Changing a detector
 
 Detector changes shift results for every user, so they carry extra requirements.
