@@ -33,8 +33,13 @@ jobs:
       - name: Typecheck
         run: pnpm typecheck
 
-      - name: Test
-        run: pnpm test
-
+      # Build before Test. Previously Test ran first, so nothing had built the
+      # CLI and cli-e2e.test.ts had to shell out to a build inside beforeAll —
+      # which is why a stale `--filter promptci` (dead after the rename to
+      # @promptci/cli) went unnoticed: a build failing inside a test's setup is
+      # far quieter than a failing Build step.
       - name: Build
         run: pnpm build
+
+      - name: Test
+        run: pnpm test
