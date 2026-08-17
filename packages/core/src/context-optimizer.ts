@@ -1,5 +1,6 @@
 import * as path from 'node:path';
 import { existsSync } from 'node:fs';
+import { parseSections } from './scanner.js';
 import type { InstructionFile, InstructionSection } from './types.js';
 import type { FileChange } from './fix-engine.js';
 
@@ -9,13 +10,17 @@ const DATE_PATTERNS = [
   /\b(?:january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{1,2}(?:st|nd|rd|th)?,\s+\d{4}\b/i,
 ];
 
+// These must match *pasted scan output*, never prose that merely mentions
+// PromptCI. `/promptci\s+report/i`, `/latest\s+scan\s+results/i` and
+// `/scan\s+history/i` used to be in this list, so any repo documenting PromptCI
+// — this one's own README included — had those sections torn out into a
+// generated docs file. Every surviving pattern requires a concrete artifact:
+// a number the scanner emitted, or the exact title/footer of a generated report.
 const SCAN_REPORT_PATTERNS = [
   /health\s+score\s*:\s*\d+/i,
-  /files\s+scanned\s*:\s*\d+/i,
-  /promptci\s+report/i,
-  /\bgenerated\s+by\s+promptci\b/i,
-  /latest\s+scan\s+results/i,
-  /scan\s+history/i,
+  /files\s+scanned\s*:\s*\**\s*\d+/i,
+  /^#{1,6}\s*promptci\s+health\s+report\s*$/im,
+  /\bgenerated\s+by\s+\[?promptci\b/i,
 ];
 
 const BRANCH_TASK_PATTERNS = [
@@ -79,62 +84,6 @@ function slugify(text: string): string {
     .replace(/^-+|-+$/g, '');
 }
 
-function parseSections(content: string, filePath: string): InstructionSection[] {
-  const lines = content.replace(/\r\n/g, '\n').split('\n');
-  const sections: InstructionSection[] = [];
-
-  let currentHeading: string | undefined = undefined;
-  let currentStartLine = 1;
-  let currentLines: string[] = [];
-
-  const flush = (endLine: number) => {
-    const text = currentLines.join('\n');
-    const id = currentHeading !== undefined ? slugify(currentHeading) : `${filePath}:0`;
-    sections.push({
-      id,
-      filePath,
-      heading: currentHeading,
-      startLine: currentStartLine,
-      endLine,
-      text,
-      normalizedText: text.toLowerCase().trim(),
-    });
-  };
-
-  let inCodeBlock = false;
-
-  for (let i = 0; i < lines.length; i++) {
-    const lineNum = i + 1;
-    const line = lines[i] ?? '';
-
-    // Track fenced code blocks so bash comments (`# text`) are not treated as headings.
-    if (/^[`~]{3}/.test(line)) {
-      inCodeBlock = !inCodeBlock;
-      currentLines.push(line);
-      continue;
-    }
-
-    const headingMatch = !inCodeBlock && /^(#{1,3})\s+(.+)/.exec(line);
-
-    if (headingMatch) {
-      if (currentLines.length > 0 || currentHeading !== undefined) {
-        flush(lineNum - 1);
-      }
-      currentHeading = headingMatch[2].trim();
-      currentStartLine = lineNum;
-      currentLines = [line];
-    } else {
-      currentLines.push(line);
-    }
-  }
-
-  if (currentLines.length > 0 || currentHeading !== undefined) {
-    flush(lines.length);
-  }
-
-  return sections;
-}
-
 export interface OptimizeOptions {
   repoRoot: string;
   characterLimit?: number;
@@ -168,9 +117,12 @@ export async function optimizeContext(
   const generatedFilenames = new Set<string>();
   const changes: FileChange[] = [];
 
-  // Focus only on instruction files
+  // Focus only on agent instruction files. 'readme' is deliberately absent:
+  // README.md is a human-facing document that happens to be scanned for
+  // context cost, and restructuring someone's README is never what they asked
+  // for when they ran `promptci context optimize`.
   const targetFiles = files.filter((f) =>
-    ['claude', 'agents', 'cursor', 'windsurf', 'copilot', 'readme', 'prompt'].includes(f.fileType)
+    ['claude', 'agents', 'cursor', 'windsurf', 'copilot', 'prompt'].includes(f.fileType)
   );
 
   for (const file of targetFiles) {

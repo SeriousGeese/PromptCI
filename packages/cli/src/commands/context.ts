@@ -91,10 +91,24 @@ export async function runContextAnalyze(options: ContextAnalyzeOptions): Promise
 
 export type ContextOptimizeOptions = {
   scanPath?: string;
+  /** Accepted for compatibility; previewing is the default. */
   dryRun?: boolean;
+  /** Required to actually modify files. */
+  write?: boolean;
 };
 
 export async function runContextOptimize(options: ContextOptimizeOptions): Promise<void> {
+  // `context optimize` rewrites instruction files in place and moves whole
+  // sections into new documents, with no undo. It used to do that by default
+  // with only --dry-run to opt out; previewing is now the default and --write
+  // is the explicit opt-in.
+  const apply = options.write === true && options.dryRun !== true;
+
+  if (options.write && options.dryRun) {
+    console.error('Error: --write and --dry-run cannot be combined.');
+    process.exit(1);
+  }
+
   const resolvedPath = await validateDirectory(options.scanPath ?? process.cwd());
 
   let config;
@@ -119,10 +133,10 @@ export async function runContextOptimize(options: ContextOptimizeOptions): Promi
     return;
   }
 
-  if (options.dryRun) {
-    print(`\nProposed caching optimization changes (${changes.length} change(s)):`);
-  } else {
+  if (apply) {
     print(`\nApplying caching optimization changes (${changes.length} change(s)):`);
+  } else {
+    print(`\nProposed caching optimization changes (${changes.length} change(s)):`);
   }
 
   for (const change of changes) {
@@ -130,19 +144,19 @@ export async function runContextOptimize(options: ContextOptimizeOptions): Promi
     showDiffPreview(change, resolvedPath);
     print('--------------------------------------------------------------------------------');
 
-    if (options.dryRun) {
-      print(`[Dry Run] Simulating optimization for ${path.relative(resolvedPath, change.filePath)}. No changes written.`);
-    } else {
+    if (apply) {
       await fs.mkdir(path.dirname(change.filePath), { recursive: true });
       await fs.writeFile(change.filePath, change.newContent, 'utf-8');
       print(`Applied change to ${path.relative(resolvedPath, change.filePath)}`);
+    } else {
+      print(`[Preview] ${path.relative(resolvedPath, change.filePath)} would be rewritten. No changes written.`);
     }
   }
 
-  if (options.dryRun) {
-    print('\nDry run complete. No changes were made.');
-  } else {
+  if (apply) {
     print('\nOptimization complete.');
+  } else {
+    print('\nPreview only — no changes were made. Re-run with --write to apply them.');
   }
 }
 
