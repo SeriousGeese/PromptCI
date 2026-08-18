@@ -546,7 +546,7 @@ function checkMissingScripts(context: RepoContext): PromptCiIssue[] {
     'exec', 'dlx', 'i', 'help', 'run', 'run-script', 'ci', 'audit', 'update',
     'outdated', 'publish', 'create', 'link', 'why', 'workspace', 'workspaces',
     'store', 'ls', 'list', 'pack', 'unlink', 'uninstall', 'up', 'prune',
-    'package', 'packages', 'project', 'repo', 'repository',
+    'package', 'packages', 'project', 'repo', 'repository', 'version',
   ]);
   const ENGLISH_FILLER_WORDS = new Set([
     'instead', 'of', 'packages', 'package', 'scripts', 'script', 'ecosystem',

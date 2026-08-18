@@ -138,18 +138,18 @@ const PNPM_BUILTINS = new Set([
   'install', 'i', 'add', 'remove', 'uninstall', 'test', 'it', 'init',
   'create', 'publish', 'link', 'unlink', 'outdated', 'audit', 'update',
   'up', 'exec', 'dlx', 'run', 'store', 'list', 'ls', 'why', 'pack',
-  'recursive', 'm', 'multi', 'prune',
+  'recursive', 'm', 'multi', 'prune', 'version',
 ]);
 
 const NPM_BUILTINS = new Set([
   'install', 'i', 'ci', 'uninstall', 'remove', 'update', 'outdated',
   'audit', 'start', 'stop', 'restart', 'test', 'it', 'init', 'create',
-  'publish', 'link', 'unlink', 'pack', 'exec', 'run',
+  'publish', 'link', 'unlink', 'pack', 'exec', 'run', 'version',
 ]);
 
 const YARN_BUILTINS = new Set([
   'install', 'add', 'remove', 'upgrade', 'outdated', 'audit', 'init',
-  'create', 'publish', 'link', 'unlink', 'why', 'pack', 'run',
+  'create', 'publish', 'link', 'unlink', 'why', 'pack', 'run', 'version',
 ]);
 
 // ── Command extraction ────────────────────────────────────────────────────────
