@@ -3,6 +3,7 @@ import * as path from 'node:path';
 import * as crypto from 'node:crypto';
 import type { RepoContext } from './repo-context.js';
 import type { PromptCiIssue } from './types.js';
+import { fencedBlocks, scanFencedLines } from './markdown-fences.js';
 
 /**
  * Command Validity Detector
@@ -236,79 +237,50 @@ const SHELL_FENCE_LANGS = new Set([
 /** Extracts commands from a single instruction-file content string. */
 function extractCommands(content: string): ExtractedCommand[] {
   const commands: ExtractedCommand[] = [];
-  const lines = content.split(/\r?\n/);
 
-  // CV1: track fence char + length (matching scanner.ts/vague-guidance.ts/
-  // stale-instructions.ts/conflicts.ts) so we know we're inside SOME fence
-  // even for languages we don't scan for commands. The old regex only
-  // recognized bare ``` or a fixed shell-language list as an OPENER — a
-  // ```json fence's opener didn't match, so its bare ``` CLOSER was misread
-  // as a NEW opener, inverting inBlock state for the rest of the file.
-  let inBlock = false;
-  let inShellBlock = false;
-  let fenceChar: string | null = null;
-  let fenceLen = 0;
-  let blockStartLine = -1;
-  // CV2: keep the block's raw (untrimmed) lines so each entry's index still
-  // corresponds 1:1 to its physical line offset from blockStartLine. The old
-  // code joined the block into one string and called `.trim()` on it before
-  // re-splitting — that silently dropped leading/trailing blank lines, so
-  // blockLines[j] no longer matched the physical line blockStartLine + j + 1
-  // whenever the fenced block had leading blank lines.
-  let blockContent: string[] = [];
+  // Fenced blocks first, prose second, then sorted back into document order
+  // below — findings quote the first occurrence of a command, so the order the
+  // two passes produce has to match the order a single interleaved pass did.
+  //
+  // Only CLOSED blocks contribute: an unclosed fence is a malformed document,
+  // and its tail was never meant to read as example commands. Non-shell fences
+  // (```json, ```ts, …) are skipped by language — tracking them at all is what
+  // keeps a ```json block's bare ``` closer from being misread as an opener,
+  // which used to invert the in-block state for the rest of the file.
+  for (const block of fencedBlocks(content)) {
+    const isShell = block.lang === '' || SHELL_FENCE_LANGS.has(block.lang);
+    if (!isShell || !block.closed) continue;
 
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i]!;
-
-    if (!inBlock) {
-      const openMatch = /^ {0,3}([`~]{3,})\s*([a-zA-Z0-9_-]*)/.exec(line);
-      if (openMatch) {
-        inBlock = true;
-        fenceChar = openMatch[1]![0] ?? null;
-        fenceLen = openMatch[1]!.length;
-        const lang = (openMatch[2] ?? '').toLowerCase();
-        inShellBlock = lang === '' || SHELL_FENCE_LANGS.has(lang);
-        blockStartLine = i + 1;
-        blockContent = [];
-        continue;
-      }
-    } else {
-      const closeMatch = /^ {0,3}([`~]{3,})\s*$/.exec(line);
-      if (closeMatch && closeMatch[1]![0] === fenceChar && closeMatch[1]!.length >= fenceLen) {
-        inBlock = false;
-        if (inShellBlock) {
-          for (let j = 0; j < blockContent.length; j++) {
-            const raw = blockContent[j]!;
-            const rawTrimmed = raw.trim();
-            if (rawTrimmed.startsWith('#')) continue;
-            const trimmed = rawTrimmed.replace(/^\$\s*/, '');
-            if (!trimmed) continue;
-            // CV6: each documented line is treated as an independent example run
-            // from the repo root, so `cd` only affects commands chained after it
-            // on the SAME line (e.g. `cd apps/web && pnpm test:e2e`). Setup blocks
-            // are written this way — repeating `cd apps/web` on separate lines —
-            // so a standalone `cd` must not bleed into later lines.
-            let lineCwd: string | null = '.';
-            for (const seg of splitOnAmpersand(trimmed)) {
-              const cdMatch = /^cd\s+(.+)$/.exec(seg);
-              if (cdMatch) {
-                lineCwd = resolveCwd(lineCwd, cdMatch[1]!.trim());
-              }
-              commands.push({ text: seg, line: blockStartLine + j + 1, cwd: lineCwd });
-            }
-          }
+    // Each entry's index corresponds 1:1 to its physical line offset from the
+    // block's first content line, so blank leading lines cannot shift the
+    // reported line number.
+    for (let j = 0; j < block.lines.length; j++) {
+      const rawTrimmed = block.lines[j]!.trim();
+      if (rawTrimmed.startsWith('#')) continue;
+      const trimmed = rawTrimmed.replace(/^\$\s*/, '');
+      if (!trimmed) continue;
+      // CV6: each documented line is treated as an independent example run
+      // from the repo root, so `cd` only affects commands chained after it
+      // on the SAME line (e.g. `cd apps/web && pnpm test:e2e`). Setup blocks
+      // are written this way — repeating `cd apps/web` on separate lines —
+      // so a standalone `cd` must not bleed into later lines.
+      let lineCwd: string | null = '.';
+      for (const seg of splitOnAmpersand(trimmed)) {
+        const cdMatch = /^cd\s+(.+)$/.exec(seg);
+        if (cdMatch) {
+          lineCwd = resolveCwd(lineCwd, cdMatch[1]!.trim());
         }
-        inShellBlock = false;
-        fenceChar = null;
-        fenceLen = 0;
-        continue;
+        commands.push({ text: seg, line: block.contentStartLine + j, cwd: lineCwd });
       }
-      // Still inside the fence — accumulate only if it's a shell-ish block;
-      // non-shell fences (```json, ```ts, …) are tracked for state but their
-      // content is never scanned for commands.
-      if (inShellBlock) blockContent.push(line);
-      continue;
     }
+  }
+
+  for (const fenceLine of scanFencedLines(content)) {
+    if (fenceLine.inFence) continue;
+    const i = fenceLine.lineNumber - 1;
+    // A trailing CR would block the prose patterns below: `.` does not match
+    // it, so the end-of-line lookahead never fires on a CRLF file.
+    const line = fenceLine.text.replace(/\r$/, '');
 
     // Inline backticks
     for (const m of line.matchAll(/`([^`]+)`/g)) {
@@ -338,7 +310,8 @@ function extractCommands(content: string): ExtractedCommand[] {
     }
   }
 
-  return commands;
+  // Stable sort: segments split from one line keep their left-to-right order.
+  return commands.sort((a, b) => a.line - b.line);
 }
 
 // ── Command validation ────────────────────────────────────────────────────────

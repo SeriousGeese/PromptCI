@@ -21,6 +21,7 @@
 import * as crypto from 'node:crypto';
 import * as path from 'node:path';
 import type { InstructionFile, PromptCiIssue } from './types.js';
+import { stripCodeBlocks } from './markdown-fences.js';
 
 // ── Practice checks ──────────────────────────────────────────────────────────
 
@@ -252,35 +253,6 @@ function stripChecklistLines(content: string): string {
     .join('\n');
 }
 
-function stripCodeBlocks(content: string): string {
-  const lines = content.split('\n');
-  const kept: string[] = [];
-  let inBlock = false;
-  let fenceChar: string | null = null;
-  let fenceLen = 0;
-
-  for (const line of lines) {
-    if (!inBlock) {
-      const openMatch = /^ {0,3}([`~]{3,})/.exec(line);
-      if (openMatch) {
-        inBlock = true;
-        fenceChar = openMatch[1]![0] ?? null;
-        fenceLen = openMatch[1]!.length;
-        continue;
-      }
-      kept.push(line);
-    } else {
-      const closeMatch = /^ {0,3}([`~]{3,})\s*$/.exec(line);
-      if (closeMatch && closeMatch[1]![0] === fenceChar && closeMatch[1]!.length >= fenceLen) {
-        inBlock = false;
-        fenceChar = null;
-        fenceLen = 0;
-      }
-    }
-  }
-
-  return kept.join('\n');
-}
 
 function normalizedFilePath(filePath: string): string {
   return filePath.replace(/\\/g, '/').toLowerCase();

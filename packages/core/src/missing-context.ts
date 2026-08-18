@@ -13,6 +13,7 @@
 
 import * as crypto from 'node:crypto';
 import type { InstructionFile, ProjectType, PromptCiIssue } from './types.js';
+import { fencedBlockContents } from './markdown-fences.js';
 
 const PROJECT_TYPE_RULES: Record<
   Exclude<ProjectType, 'auto' | 'unknown'>,
@@ -84,59 +85,6 @@ function keywordPresent(content: string, keyword: string): boolean {
 
 // ── Global checks (independent of project type) ───────────────────────────────
 
-/**
- * MC2: extracts the CONTENT of closed fenced code blocks (``` or ~~~,
- * matching fence char/length per CommonMark) so setup-command patterns can be
- * tested against real block content only.
- *
- * The old approach used a single regex per pattern like
- * `` ` ```[\s\S]*?command` `` (non-greedy but unbounded) — it could skip
- * straight past the block's OWN closing fence and match a command mentioned
- * arbitrarily later in the file, in prose or in a completely different code
- * block. A tempered-dot rewrite (`` `(?:(?!```)[\s\S])*?` ``) looked like a
- * fix but has the same underlying flaw for a file with an EVEN number of
- * fences: the regex engine, unable to start a match at the true opening
- * fence (blocked by the closing fence ahead), backtracks to start at the
- * CLOSING fence instead and treats IT as a new opener — with no third fence
- * left to bound it, everything after is fair game again. Regex alone can't
- * reliably track "am I inside a block" across a variable number of fences;
- * a real line-by-line scan (the same fence-tracking approach used 5x
- * elsewhere in this codebase) does.
- */
-function extractFencedBlockContents(content: string): string {
-  const lines = content.split('\n');
-  const blocks: string[] = [];
-  let inBlock = false;
-  let fenceChar: string | null = null;
-  let fenceLen = 0;
-  let current: string[] = [];
-
-  for (const line of lines) {
-    if (!inBlock) {
-      const openMatch = /^ {0,3}([`~]{3,})/.exec(line);
-      if (openMatch) {
-        inBlock = true;
-        fenceChar = openMatch[1]![0] ?? null;
-        fenceLen = openMatch[1]!.length;
-        current = [];
-      }
-      continue;
-    }
-    const closeMatch = /^ {0,3}([`~]{3,})\s*$/.exec(line);
-    if (closeMatch && closeMatch[1]![0] === fenceChar && closeMatch[1]!.length >= fenceLen) {
-      inBlock = false;
-      blocks.push(current.join('\n'));
-      fenceChar = null;
-      fenceLen = 0;
-      continue;
-    }
-    current.push(line);
-  }
-  // An unclosed trailing fence's partial content is intentionally excluded —
-  // this check only counts CONFIRMED, closed blocks as real documentation.
-
-  return blocks.join('\n');
-}
 
 /** Patterns that only count when found INSIDE a fenced code block's content. */
 const FENCED_SETUP_COMMAND_PATTERNS = [
@@ -206,7 +154,7 @@ const SECURITY_PATTERNS = [
 
 function checkSetupCommands(files: InstructionFile[]): PromptCiIssue | null {
   const combined = files.map((f) => f.content).join('\n');
-  const fencedContent = extractFencedBlockContents(combined);
+  const fencedContent = fencedBlockContents(combined);
   const hasSetup =
     FENCED_SETUP_COMMAND_PATTERNS.some((p) => p.test(fencedContent)) ||
     PROSE_SETUP_COMMAND_PATTERNS.some((p) => p.test(combined));

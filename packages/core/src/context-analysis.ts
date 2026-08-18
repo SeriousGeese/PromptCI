@@ -17,7 +17,11 @@ export type ContextAnalysis = {
 
 export async function analyzeContext(input: ScanInput): Promise<ContextAnalysis> {
   const context = await buildRepoContext(input);
-  const issues = runDetectors(context, 'context');
+  // `promptci context` reports what the instruction context costs, so it takes
+  // the context_bloat findings out of the one detector set. This used to be a
+  // DetectorGroup enum whose 'context' group had exactly one member — a
+  // registry-level mechanism standing in for a category filter.
+  const issues = runDetectors(context).filter((issue) => issue.category === 'context_bloat');
 
   return {
     generatedAt: new Date().toISOString(),
