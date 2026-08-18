@@ -13,8 +13,8 @@
     "test": "vitest run",
     "build": "pnpm -r run build",
     "dev": "vitest",
-    "selfscan": "node packages/cli/dist/cli.cjs scan --baseline .promptci/baseline.json --fail-on-new warning --fail-on high",
-    "selfscan:update": "node packages/cli/dist/cli.cjs scan --baseline .promptci/baseline.json --update-baseline && node scripts/health-badge.mjs"
+    "selfscan": "node scripts/selfscan-guard.mjs && node packages/cli/dist/cli.cjs scan --baseline .promptci/baseline.json --fail-on-new warning --fail-on high",
+    "selfscan:update": "node scripts/selfscan-guard.mjs && node packages/cli/dist/cli.cjs scan --baseline .promptci/baseline.json --update-baseline && node scripts/health-badge.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

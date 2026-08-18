@@ -64,5 +64,14 @@ jobs:
       # instruction-health regression relative to the committed .promptci/baseline.json.
       # Runs after Build so packages/cli/dist/cli.cjs exists (pnpm selfscan invokes it
       # directly rather than downloading a published CLI).
+      #
+      # The badge check keeps the committed .promptci/health-badge.json honest: the
+      # score can move without tripping the ratchet (info-level findings appear or
+      # old ones get fixed), so regenerate the badge from the scan's fresh
+      # report.json and fail if it differs from what's committed — the fix is
+      # running `pnpm selfscan:update` and committing the result.
       - name: Self-scan (instruction health)
-        run: pnpm selfscan
+        run: |
+          pnpm selfscan
+          node scripts/health-badge.mjs
+          git diff --exit-code -- .promptci/health-badge.json

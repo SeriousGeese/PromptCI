@@ -113,7 +113,10 @@ Detector changes shift results for every user, so they carry extra requirements.
 - Fill in the PR template, including the Detector impact section when you touch
   `packages/core`.
 - Every behavior change needs a test.
-- Never stage generated `.promptci/` output.
+- Never stage generated `.promptci/` output (`.promptci/latest.md`, `.promptci/report.json`,
+  `.promptci/history/`). The three committed exceptions are `.promptci/baseline.json`,
+  `.promptci/config.json`, and `.promptci/health-badge.json`; refresh the first and last only
+  via `pnpm selfscan:update`.
 
 ## Reporting problems
 

@@ -122,7 +122,9 @@ function scoreBar(score: number): string {
   return '█'.repeat(filled) + '░'.repeat(empty);
 }
 
-function scoreLabel(score: number): string {
+// Exported so consumers that band the score (e.g. scripts/health-badge.mjs via
+// its test) stay locked to the same thresholds used in the rendered report.
+export function scoreLabel(score: number): string {
   if (score >= 90) return 'Healthy';
   if (score >= 70) return 'Fair';
   if (score >= 50) return 'Needs attention';
