@@ -126,7 +126,13 @@ function getSectionEndLine(
 
 /** Extract the `reason:` value from the comment body, or null if absent. */
 function extractReason(body: string): string | null {
-  const m = /reason:\s*(.+?)(?:\n|$)/i.exec(body);
+  // The terminator must accept a CRLF (`\r\n`) line ending, not just `\n`.
+  // `.` never matches a line terminator (including `\r`), so on a CRLF
+  // checkout `/reason:\s*(.+?)(?:\n|$)/` finds no `\n` immediately after the
+  // captured reason (a `\r` sits between) and returns null — invalidating
+  // every otherwise-correct annotation. `\r?\n` closes on both endings; the
+  // trailing `.trim()` also strips any stray `\r` from the capture.
+  const m = /reason:\s*(.+?)(?:\r?\n|$)/i.exec(body);
   return m ? m[1].trim() : null;
 }
 

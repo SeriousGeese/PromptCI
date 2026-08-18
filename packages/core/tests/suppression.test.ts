@@ -145,6 +145,45 @@ describe('parseSuppressions', () => {
     expect(anns[0]!.validationMessage).toMatch(/no matching/i);
   });
 
+  // ── CRLF: the same annotation with Windows line endings must parse valid ────
+
+  it('parses a multiline reason on a CRLF checkout (\\r\\n line endings)', () => {
+    // Identical content to the "valid single annotation with multiline reason"
+    // case above, but joined with CRLF as a Windows checkout would deliver it.
+    // Regression: `.` never matches `\r`, so the old `(?:\n|$)` terminator in
+    // extractReason found no newline after the reason and reported every
+    // correctly written annotation as missing its required "reason:" field.
+    const file = makeFile(
+      ['# Section', '<!-- promptci-ignore: vague_guidance', '     reason: Documents examples. -->', 'Write clean code.'].join('\r\n'),
+    );
+    const anns = parseSuppressions([file]);
+    expect(anns).toHaveLength(1);
+    const ann = anns[0]!;
+    expect(ann.valid).toBe(true);
+    expect(ann.category).toBe('vague_guidance');
+    // The captured reason must not retain a trailing `\r`.
+    expect(ann.reason).toBe('Documents examples.');
+    expect(ann.validationMessage).toBeUndefined();
+  });
+
+  it('parses a CRLF range annotation and pairs its markers', () => {
+    const content = [
+      '# Start',
+      '<!-- promptci-ignore-start: stale_instruction',
+      '     reason: Legacy notes. -->',
+      'Old content from 2021.',
+      '<!-- promptci-ignore-end -->',
+      '# End',
+    ].join('\r\n');
+    const file = makeFile(content);
+    const anns = parseSuppressions([file]);
+    expect(anns).toHaveLength(1);
+    expect(anns[0]!.valid).toBe(true);
+    expect(anns[0]!.category).toBe('stale_instruction');
+    expect(anns[0]!.reason).toBe('Legacy notes.');
+    expect(anns[0]!.startLine).toBeLessThan(anns[0]!.endLine);
+  });
+
   it('does not parse annotations inside fenced code blocks', () => {
     const file = makeFile([
       '# Docs',
