@@ -17,14 +17,12 @@ import type { PromptCiIssue } from './types.js';
 import {
   readTextWithinRoot,
   isFileWithinRoot,
-  listFiles,
   shortHash,
   lineOf,
   withScannerPaths,
   SCRIPT_EXT_RE,
+  aiConfigIssue as base,
 } from './ai-config.js';
-
-const SETTINGS_GLOBS = ['.claude/settings.json', '.claude/settings.local.json'];
 
 /** curl/wget piped straight into a shell — the classic remote-code-execution footgun. */
 const CURL_PIPE_SH_RE = /\b(curl|wget)\b[^|]*\|\s*(sudo\s+)?(sh|bash|zsh|dash)\b/i;
@@ -33,16 +31,6 @@ type CommandHook = { command: string; event: string };
 
 function id(kind: string, key: string): string {
   return `ai-config-hook-${kind}-${shortHash(key)}`;
-}
-
-function base(issue: Omit<PromptCiIssue, 'severity' | 'category' | 'confidence'> &
-  Partial<Pick<PromptCiIssue, 'severity' | 'category' | 'confidence'>>): PromptCiIssue {
-  return {
-    severity: 'warning',
-    category: 'ai_config',
-    confidence: 0.8,
-    ...issue,
-  };
 }
 
 /** Recursively collect `{ type: 'command', command }` hook entries, tagged with their event key. */
@@ -165,9 +153,8 @@ function hasUnquotedProjectDir(command: string): boolean {
 
 export function detectHooksSettings(context: RepoContext): PromptCiIssue[] {
   const issues: PromptCiIssue[] = [];
-  const settingsFiles = listFiles(context.repoRoot, SETTINGS_GLOBS);
 
-  for (const filePath of settingsFiles) {
+  for (const filePath of context.aiConfig.settings) {
     const raw = readTextWithinRoot(context.repoRoot, filePath);
     if (raw === undefined) continue;
 

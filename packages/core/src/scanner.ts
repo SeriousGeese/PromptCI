@@ -45,8 +45,10 @@ const DEFAULT_PATTERNS = [
 // would otherwise be scanned as duplicate instruction-file trees.
 const IGNORE_DIRS = ['.git', 'node_modules', 'Library', 'Temp', 'bin', 'obj', 'dist', 'build', 'worktrees', '.worktrees'];
 
-const MAX_FILE_SIZE = 500 * 1024;
-const BINARY_CHECK_BYTES = 512;
+// Exported so ai_config discovery (ai-config.ts) applies the exact same
+// size/binary policy as this scanner — one definition of "scannable file".
+export const MAX_FILE_SIZE = 500 * 1024;
+export const BINARY_CHECK_BYTES = 512;
 
 // Takes the repo-root-relative path (not the absolute path): classification must
 // depend only on where a file sits INSIDE the scanned repo. Using the absolute
@@ -159,7 +161,7 @@ export function parseSections(content: string, filePath: string): InstructionSec
   return sections;
 }
 
-function isBinary(buffer: Buffer): boolean {
+export function isBinary(buffer: Buffer): boolean {
   const end = Math.min(buffer.length, BINARY_CHECK_BYTES);
   for (let i = 0; i < end; i++) {
     if (buffer[i] === 0) return true;

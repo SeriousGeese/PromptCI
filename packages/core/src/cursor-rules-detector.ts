@@ -22,9 +22,22 @@ import {
   shortHash,
   asStringList,
   withScannerPaths,
+  aiConfigIssue as base,
+  frontmatterStructureIssues,
 } from './ai-config.js';
+import type { FrontmatterSurface } from './ai-config.js';
 
-const MDC_GLOBS = ['.cursor/rules/**/*.mdc'];
+const SURFACE: FrontmatterSurface = {
+  idPrefix: 'cursor',
+  noun: 'Cursor rule',
+  why: 'A .mdc rule needs metadata (`description`, `globs`, or `alwaysApply`) to control when it applies.',
+  recommendation: 'Add a frontmatter block describing the rule and its trigger (globs or alwaysApply).',
+  // A metadata-less .mdc still loads as a manual rule, so this is softer news
+  // than a skill/subagent that cannot register at all.
+  noFrontmatterTitle: 'Cursor rule is missing frontmatter',
+  noFrontmatterSeverity: 'warning',
+  noFrontmatterConfidence: 0.7,
+};
 
 /**
  * Glob-existence testing needs different visibility than config discovery: a
@@ -38,16 +51,6 @@ function id(kind: string, key: string): string {
   return `ai-config-cursor-${kind}-${shortHash(key)}`;
 }
 
-function base(issue: Omit<PromptCiIssue, 'severity' | 'category' | 'confidence'> &
-  Partial<Pick<PromptCiIssue, 'severity' | 'category' | 'confidence'>>): PromptCiIssue {
-  return {
-    severity: 'warning',
-    category: 'ai_config',
-    confidence: 0.8,
-    ...issue,
-  };
-}
-
 /** A glob we can meaningfully test for zero matches (skip negations/vars/placeholders). */
 function isTestableGlob(glob: string): boolean {
   const g = glob.trim();
@@ -59,7 +62,7 @@ function isTestableGlob(glob: string): boolean {
 
 export function detectCursorRules(context: RepoContext): PromptCiIssue[] {
   const issues: PromptCiIssue[] = [];
-  const files = listFiles(context.repoRoot, MDC_GLOBS);
+  const files = context.aiConfig.cursorRules;
 
   // ONE repo walk shared by every dead-glob test, built lazily so repos
   // without testable globs never pay for it. Testing each glob with its own
@@ -76,46 +79,8 @@ export function detectCursorRules(context: RepoContext): PromptCiIssue[] {
 
     const fm = parseFrontmatter(content);
 
-    if (!fm.present) {
-      issues.push(base({
-        id: id('no-frontmatter', filePath),
-        title: 'Cursor rule is missing frontmatter',
-        summary: `${filePath} has no \`---\` frontmatter. A .mdc rule needs metadata (\`description\`, \`globs\`, or \`alwaysApply\`) to control when it applies.`,
-        filePaths: [filePath],
-        locations: [{ filePath, startLine: 1, endLine: 1 }],
-        evidence: [`First line: ${content.split(/\r?\n/)[0]?.slice(0, 60) ?? '(empty)'}`],
-        recommendation: 'Add a frontmatter block describing the rule and its trigger (globs or alwaysApply).',
-        confidence: 0.7,
-      }));
-      continue;
-    }
-
-    if (!fm.closed) {
-      issues.push(base({
-        id: id('unterminated', filePath),
-        severity: 'high',
-        title: 'Cursor rule frontmatter is not closed',
-        summary: `${filePath} opens a \`---\` frontmatter block that is never closed.`,
-        filePaths: [filePath],
-        locations: [{ filePath, startLine: 1, endLine: 1 }],
-        evidence: ['Opening `---` on line 1 has no closing `---`.'],
-        recommendation: 'Close the frontmatter block with a `---` line.',
-        confidence: 0.9,
-      }));
-    }
-
-    for (const err of fm.errors) {
-      issues.push(base({
-        id: id('fm-error', `${filePath}|${err}`),
-        title: 'Cursor rule frontmatter has a structural problem',
-        summary: `${filePath}: ${err}.`,
-        filePaths: [filePath],
-        locations: [{ filePath, startLine: 1, endLine: fm.fenceEndLine > 0 ? fm.fenceEndLine : 1 }],
-        evidence: [err],
-        recommendation: 'Fix the frontmatter so it is valid YAML with flat, unique keys.',
-        confidence: 0.7,
-      }));
-    }
+    issues.push(...frontmatterStructureIssues(filePath, content, fm, SURFACE));
+    if (!fm.present) continue;
 
     const description = typeof fm.data.description === 'string' ? fm.data.description.trim() : '';
     const globs = asStringList(fm.data.globs);

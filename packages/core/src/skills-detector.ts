@@ -21,16 +21,23 @@ import {
   parseFrontmatter,
   readTextWithinRoot,
   isFileWithinRoot,
-  listFiles,
   shortHash,
   toPosix,
   withScannerPaths,
+  aiConfigIssue as base,
+  frontmatterStructureIssues,
 } from './ai-config.js';
-
-const SKILL_GLOBS = ['.claude/**/SKILL.md'];
+import type { FrontmatterSurface } from './ai-config.js';
 
 /** A description shorter than this (after trimming) is treated as effectively empty. */
 const MIN_DESCRIPTION_CHARS = 12;
+
+const SURFACE: FrontmatterSurface = {
+  idPrefix: 'skill',
+  noun: 'Skill',
+  why: 'A skill needs `name` and `description` frontmatter or it will not load.',
+  recommendation: 'Add a frontmatter block with `name` and `description` at the top of the SKILL.md file.',
+};
 
 type ParsedSkill = {
   filePath: string;
@@ -47,16 +54,6 @@ function normalizeDescription(text: string): string {
     .replace(/[`*_~]/g, '')
     .replace(/[^a-z0-9]+/g, ' ')
     .trim();
-}
-
-function base(issue: Omit<PromptCiIssue, 'severity' | 'category' | 'confidence'> &
-  Partial<Pick<PromptCiIssue, 'severity' | 'category' | 'confidence'>>): PromptCiIssue {
-  return {
-    severity: 'warning',
-    category: 'ai_config',
-    confidence: 0.8,
-    ...issue,
-  };
 }
 
 // ── Dead-reference extraction (scoped to a skill body) ────────────────────────
@@ -107,57 +104,17 @@ function extractFileRefs(content: string): Array<{ ref: string; line: number }> 
 
 export function detectSkills(context: RepoContext): PromptCiIssue[] {
   const issues: PromptCiIssue[] = [];
-  const skillFiles = listFiles(context.repoRoot, SKILL_GLOBS);
   const parsed: ParsedSkill[] = [];
 
-  for (const filePath of skillFiles) {
+  for (const filePath of context.aiConfig.skills) {
     const content = readTextWithinRoot(context.repoRoot, filePath);
     if (content === undefined) continue;
 
     const dirName = toPosix(path.dirname(filePath)).split('/').pop() ?? '';
     const fm = parseFrontmatter(content);
 
-    if (!fm.present) {
-      issues.push(base({
-        id: id('no-frontmatter', filePath),
-        severity: 'high',
-        title: 'Skill is missing YAML frontmatter',
-        summary: `${filePath} has no \`---\` frontmatter block. A skill needs \`name\` and \`description\` frontmatter or it will not load.`,
-        filePaths: [filePath],
-        locations: [{ filePath, startLine: 1, endLine: 1 }],
-        evidence: [`First line: ${content.split(/\r?\n/)[0]?.slice(0, 60) ?? '(empty)'}`],
-        recommendation: 'Add a frontmatter block with `name` and `description` at the top of the SKILL.md file.',
-        confidence: 0.85,
-      }));
-      continue;
-    }
-
-    if (!fm.closed) {
-      issues.push(base({
-        id: id('unterminated', filePath),
-        severity: 'high',
-        title: 'Skill frontmatter is not closed',
-        summary: `${filePath} opens a \`---\` frontmatter block that is never closed with a matching \`---\`.`,
-        filePaths: [filePath],
-        locations: [{ filePath, startLine: 1, endLine: 1 }],
-        evidence: ['Opening `---` on line 1 has no closing `---`.'],
-        recommendation: 'Close the frontmatter block with a `---` line before the skill body.',
-        confidence: 0.9,
-      }));
-    }
-
-    for (const err of fm.errors) {
-      issues.push(base({
-        id: id('fm-error', filePath, err),
-        title: 'Skill frontmatter has a structural problem',
-        summary: `${filePath}: ${err}.`,
-        filePaths: [filePath],
-        locations: [{ filePath, startLine: 1, endLine: fm.fenceEndLine > 0 ? fm.fenceEndLine : 1 }],
-        evidence: [err],
-        recommendation: 'Fix the frontmatter so it is valid YAML with flat, unique keys.',
-        confidence: 0.7,
-      }));
-    }
+    issues.push(...frontmatterStructureIssues(filePath, content, fm, SURFACE));
+    if (!fm.present) continue;
 
     const name = typeof fm.data.name === 'string' ? fm.data.name.trim() : undefined;
     const description = typeof fm.data.description === 'string' ? fm.data.description.trim() : undefined;

@@ -17,6 +17,7 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { detectCommandValidity } from '../src/command-validity.js';
+import { emptyAiConfigFiles } from '../src/ai-config.js';
 import type { RepoContext } from '../src/repo-context.js';
 import type { InstructionFile } from '../src/types.js';
 import type { Mock } from 'vitest';
@@ -60,6 +61,7 @@ function makeContext(
       lockfiles: [],
     },
     workflows: { files: [], commands: [] },
+    aiConfig: emptyAiConfigFiles(),
     metrics: {
       estimatedInstructionTokens: 0,
       instructionFileCount: files.length,

@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import * as fs from 'node:fs';
 import { detectSecurityPack } from '../src/security-pack.js';
+import { emptyAiConfigFiles } from '../src/ai-config.js';
 import type { InstructionFile } from '../src/types.js';
 import type { RepoContext } from '../src/repo-context.js';
 
@@ -32,6 +33,7 @@ const mockContext: RepoContext = {
     lockfiles: [],
   },
   workflows: { files: [], commands: [] },
+  aiConfig: emptyAiConfigFiles(),
   metrics: {
     estimatedInstructionTokens: 0,
     instructionFileCount: 0,

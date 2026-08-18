@@ -16,7 +16,9 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as crypto from 'node:crypto';
 import fg from 'fast-glob';
-import type { PromptCiIssue } from './types.js';
+import micromatch from 'micromatch';
+import { MAX_FILE_SIZE, BINARY_CHECK_BYTES, isBinary } from './scanner.js';
+import type { PromptCiIssue, ScanInput } from './types.js';
 
 // ── Path helpers ──────────────────────────────────────────────────────────────
 
@@ -95,6 +97,92 @@ export function listFiles(repoRoot: string, patterns: string[], ignore: string[]
     return [];
   }
   return matches.map(toPosix).sort();
+}
+
+// ── Config-file discovery ─────────────────────────────────────────────────────
+
+/** Repo-relative globs for each config surface the ai_config detectors audit. */
+const AI_CONFIG_GLOBS = {
+  skills: ['.claude/**/SKILL.md'],
+  agents: ['.claude/agents/**/*.md'],
+  settings: ['.claude/settings.json', '.claude/settings.local.json'],
+  mcp: ['.mcp.json'],
+  cursorRules: ['.cursor/rules/**/*.mdc'],
+} as const;
+
+/** Pre-discovered config files per surface, as sorted repo-relative POSIX paths. */
+export type AiConfigFiles = {
+  /** Agent Skills: `.claude/**\/SKILL.md`. */
+  skills: string[];
+  /** Subagent definitions: `.claude/agents/**\/*.md`. */
+  agents: string[];
+  /** Claude Code settings: `.claude/settings.json` and `.claude/settings.local.json`. */
+  settings: string[];
+  /** Project MCP servers: `.mcp.json`. */
+  mcp: string[];
+  /** Cursor project rules: `.cursor/rules/**\/*.mdc`. */
+  cursorRules: string[];
+};
+
+/** An AiConfigFiles with every surface empty — for contexts built without discovery. */
+export function emptyAiConfigFiles(): AiConfigFiles {
+  return { skills: [], agents: [], settings: [], mcp: [], cursorRules: [] };
+}
+
+/**
+ * Same size/binary gate the markdown scanner applies before reading a file
+ * (scanner.ts): regular file, at most MAX_FILE_SIZE bytes, no NUL byte in the
+ * leading BINARY_CHECK_BYTES.
+ */
+function passesScanGuards(repoRoot: string, relativePath: string): boolean {
+  const abs = resolveWithinRoot(repoRoot, relativePath);
+  if (!abs) return false;
+  try {
+    const stat = fs.statSync(abs);
+    if (!stat.isFile() || stat.size > MAX_FILE_SIZE) return false;
+    const fd = fs.openSync(abs, 'r');
+    try {
+      const head = Buffer.alloc(Math.min(stat.size, BINARY_CHECK_BYTES));
+      const read = fs.readSync(fd, head, 0, head.length, 0);
+      return !isBinary(head.subarray(0, read));
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Discover the config files the ai_config detectors audit, honoring the same
+ * user-facing scan policy the markdown scanner applies: `exclude` patterns
+ * always remove files, an explicit `include` list bounds the scan scope (when
+ * unset, each surface's own globs are the scope — these configs are not in the
+ * scanner's DEFAULT_PATTERNS), and oversized or binary files are skipped.
+ *
+ * Called from buildRepoContext so detectors consume pre-discovered lists; a
+ * `--exclude` that silences a markdown finding for a file silences that file's
+ * ai_config findings too, instead of the detectors re-walking the repo with a
+ * policy of their own.
+ */
+export function discoverAiConfigFiles(
+  repoRoot: string,
+  policy: Pick<ScanInput, 'include' | 'exclude'> = {},
+): AiConfigFiles {
+  const ignore = [...DISCOVERY_IGNORE, ...(policy.exclude ?? [])];
+  const include = policy.include && policy.include.length > 0 ? policy.include : undefined;
+  const discover = (patterns: readonly string[]): string[] => {
+    let files = listFiles(repoRoot, [...patterns], ignore);
+    if (include) files = micromatch(files, include, { dot: true }).sort();
+    return files.filter((file) => passesScanGuards(repoRoot, file));
+  };
+  return {
+    skills: discover(AI_CONFIG_GLOBS.skills),
+    agents: discover(AI_CONFIG_GLOBS.agents),
+    settings: discover(AI_CONFIG_GLOBS.settings),
+    mcp: discover(AI_CONFIG_GLOBS.mcp),
+    cursorRules: discover(AI_CONFIG_GLOBS.cursorRules),
+  };
 }
 
 /** Stable short hash for building per-finding IDs. */
@@ -395,4 +483,96 @@ export function asStringList(value: FrontmatterValue): string[] {
     return value.split('\n').flatMap((line) => splitTopLevelCommas(line));
   }
   return [String(value)];
+}
+
+// ── Shared finding shapes ─────────────────────────────────────────────────────
+
+/** Fill in the defaults every ai_config finding shares. */
+export function aiConfigIssue(issue: Omit<PromptCiIssue, 'severity' | 'category' | 'confidence'> &
+  Partial<Pick<PromptCiIssue, 'severity' | 'category' | 'confidence'>>): PromptCiIssue {
+  return {
+    severity: 'warning',
+    category: 'ai_config',
+    confidence: 0.8,
+    ...issue,
+  };
+}
+
+/** Per-surface wording for the shared frontmatter-structure findings. */
+export type FrontmatterSurface = {
+  /** Id segment: findings get ids of the form `ai-config-<idPrefix>-<kind>-<hash>`. */
+  idPrefix: string;
+  /** Noun opening each finding title, e.g. 'Skill' or 'Cursor rule'. */
+  noun: string;
+  /** No-frontmatter summary tail: what a valid frontmatter block provides. */
+  why: string;
+  /** Recommendation for the no-frontmatter finding. */
+  recommendation: string;
+  /** Title override when the default `<noun> is missing YAML frontmatter` is wrong. */
+  noFrontmatterTitle?: string;
+  /** A missing block defaults to 'high' — Cursor rules soften it (metadata is optional-ish). */
+  noFrontmatterSeverity?: PromptCiIssue['severity'];
+  noFrontmatterConfidence?: number;
+};
+
+/**
+ * The three structural frontmatter findings every frontmatter-bearing surface
+ * (skills, subagents, Cursor rules) shares: block missing entirely, block never
+ * closed, and parse errors inside the block. When the block is missing the
+ * caller should skip its per-surface field checks, keyed off `fm.present` as
+ * before — this helper only builds the findings.
+ */
+export function frontmatterStructureIssues(
+  filePath: string,
+  content: string,
+  fm: Frontmatter,
+  surface: FrontmatterSurface,
+): PromptCiIssue[] {
+  const sid = (kind: string, key: string) =>
+    `ai-config-${surface.idPrefix}-${kind}-${shortHash(key)}`;
+
+  if (!fm.present) {
+    return [aiConfigIssue({
+      id: sid('no-frontmatter', filePath),
+      severity: surface.noFrontmatterSeverity ?? 'high',
+      title: surface.noFrontmatterTitle ?? `${surface.noun} is missing YAML frontmatter`,
+      summary: `${filePath} has no \`---\` frontmatter block. ${surface.why}`,
+      filePaths: [filePath],
+      locations: [{ filePath, startLine: 1, endLine: 1 }],
+      evidence: [`First line: ${content.split(/\r?\n/)[0]?.slice(0, 60) ?? '(empty)'}`],
+      recommendation: surface.recommendation,
+      confidence: surface.noFrontmatterConfidence ?? 0.85,
+    })];
+  }
+
+  const issues: PromptCiIssue[] = [];
+
+  if (!fm.closed) {
+    issues.push(aiConfigIssue({
+      id: sid('unterminated', filePath),
+      severity: 'high',
+      title: `${surface.noun} frontmatter is not closed`,
+      summary: `${filePath} opens a \`---\` frontmatter block that is never closed.`,
+      filePaths: [filePath],
+      locations: [{ filePath, startLine: 1, endLine: 1 }],
+      evidence: ['Opening `---` on line 1 has no closing `---`.'],
+      recommendation: 'Close the frontmatter block with a `---` line.',
+      confidence: 0.9,
+    }));
+  }
+
+  for (const err of fm.errors) {
+    issues.push(aiConfigIssue({
+      id: sid('fm-error', `${filePath}|${err}`),
+      title: `${surface.noun} frontmatter has a structural problem`,
+      summary: `${filePath}: ${err}.`,
+      filePaths: [filePath],
+      locations: [{ filePath, startLine: 1, endLine: fm.fenceEndLine > 0 ? fm.fenceEndLine : 1 }],
+      evidence: [err],
+      recommendation: 'Fix the frontmatter so it is valid YAML with flat, unique keys.',
+      confidence: 0.7,
+    }));
+  }
+
+  return issues;
 }
