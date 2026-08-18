@@ -7,17 +7,19 @@ import { runReviewDiff } from './commands/review-diff.js';
 import { runUpload } from './commands/upload.js';
 import { runLogin } from './commands/login.js';
 import { runAuth, type AuthSubcommand } from './commands/auth.js';
-import { runUpdate } from './commands/update.js';
 import { runContextAnalyze, runContextOptimize } from './commands/context.js';
 import { runExplain } from './commands/explain.js';
 import { runDoctor } from './commands/doctor.js';
+import { notifyOnNewVersion } from './commands/version-notice.js';
+
+const VERSION = '0.0.1';
 
 const program = new Command();
 
 program
   .name('promptci')
   .description('Instruction health for AI coding workflows')
-  .version('0.0.1', '-v, --version', 'print version');
+  .version(VERSION, '-v, --version', 'print version');
 
 program
   .command('scan')
@@ -206,18 +208,13 @@ program
     await runAuth(sub as AuthSubcommand, args);
   });
 
-program
-  .command('update')
-  .description('Pull latest changes, rebuild, and re-link the CLI globally')
-  .option(
-    '--source <path>',
-    'path to the cloned PromptCI repo (saved for future updates)',
-  )
-  .action(async (opts: { source?: string }) => {
-    await runUpdate({ source: opts.source });
-  });
+async function main(): Promise<void> {
+  // Best-effort, non-blocking-in-CI notice that a newer release exists on npm.
+  await notifyOnNewVersion(VERSION);
+  await program.parseAsync(process.argv);
+}
 
-program.parseAsync(process.argv).catch((err: unknown) => {
+main().catch((err: unknown) => {
   console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
   process.exit(1);
 });
