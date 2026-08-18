@@ -106,7 +106,7 @@ npx @promptci/cli review-diff --base origin/main --fail-on-regression --fail-on 
 - CI/workflow alignment between instructions and GitHub Actions
 - Security and privacy gaps in instruction guidance
 - Vague guidance, broken local references, agent-practice gaps
-- AI cost reduction opportunities (cache-hostile content, verbosity, context splits)
+- Prompt-cache-hostile content that inflates the cost of every agent turn
 
 Findings are heuristic and cautiously worded; every one carries evidence, a recommendation,
 and a confidence value.

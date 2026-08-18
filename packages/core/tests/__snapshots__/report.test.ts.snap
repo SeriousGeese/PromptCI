@@ -77,28 +77,6 @@ These sections appear highly similar.
 
 - \`CLAUDE.md\` (claude, 3 lines, ~6 tokens)
 
-## Context Architecture & Retrieval Map
-
-> [!NOTE]
-> Split large instruction files to keep canonical instructions under the token budget. Move detailed instructions to on-demand documents and link them.
-
-### Suggested Canonical AGENTS.md Layout
-To minimize token consumption, structure your canonical rules as follows:
-\`\`\`markdown
-# PromptCI - Agent Instructions
-
-## Identity & Boundaries
-- Describe core project limits, tech stack, and non-goals here.
-
-## Verification Loop
-- List exact commands: e.g. \`pnpm lint\`, \`pnpm typecheck\`, \`pnpm test\`.
-
-## References (On-Demand)
-- For deployment details, read [deployment.md](file:///docs/ai/deployment.md).
-- For DB schema, read [supabase.md](file:///docs/ai/supabase.md).
-\`\`\`
-
-
 ---
 > Findings are heuristic. Review each item before acting. This report identifies patterns — it does not auto-fix.
 

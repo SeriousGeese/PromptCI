@@ -529,8 +529,8 @@ function checkPackageManagerMismatch(context: RepoContext): PromptCiIssue | null
  * as a command in the first place.
  *
  * Fence tracking mirrors the sibling strippers in stale-instructions.ts and
- * product-boundary.ts: the fence character and length are remembered, so ~~~
- * fences are handled and an unclosed fence swallows the rest of the file.
+ * conflicts.ts: the fence character and length are remembered, so ~~~ fences
+ * are handled and an unclosed fence swallows the rest of the file.
  */
 function buildCodeMask(text: string): boolean[] {
   const mask = new Array<boolean>(text.length).fill(false);

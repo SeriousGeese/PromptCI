@@ -1,7 +1,7 @@
 /**
  * Shared evidence-formatting helpers.
  *
- * Convention (documented in product-boundary.ts, now enforced repo-wide):
+ * Repo-wide convention:
  * findings quote the instruction text that triggered them, never the
  * detector's own regex source. A report reader who is shown
  * `/\bread\s+all\s+(?:docs|documentation)\b/i` cannot act on it — they cannot

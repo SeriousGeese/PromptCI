@@ -22,8 +22,6 @@ export type { ContextAnalysis } from './context-analysis.js';
 export { scan } from './scan.js';
 export { computeFingerprint, createBaseline, filterNewIssues, assertValidBaseline } from './baseline.js';
 export { applyFixRecipe, resolveSafePath } from './fix-engine.js';
-export { detectCliOutputFilter } from './cli-output-filter.js';
-export { detectNativeToolPreference } from './native-tool-preference.js';
 export type { FileChange } from './fix-engine.js';
 export { callLlm } from './llm.js';
 export { optimizeContext } from './context-optimizer.js';

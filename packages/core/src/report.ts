@@ -6,7 +6,6 @@ import * as fs from 'node:fs/promises';
 import * as nodePath from 'node:path';
 import * as crypto from 'node:crypto';
 import type { IssueSeverity, PromptCiIssue, ScanReport, ScanReportJson, ScanTrend } from './types.js';
-import { generateContextRecommendations } from './context-recommender.js';
 
 export type WriteReportOptions = {
   /** Override path for the markdown report (default: <repoPath>/.promptci/latest.md) */
@@ -343,13 +342,6 @@ export function generateMarkdownReport(report: ScanReport): string {
     for (const f of filesScanned) {
       lines.push(`- \`${rel(f.path)}\` (${f.fileType}, ${f.lineCount} lines, ~${f.estimatedTokens} tokens)`);
     }
-    lines.push('');
-  }
-
-  // Context Recommendations (Cost 2, 5, 10, 11)
-  const recommendations = generateContextRecommendations(report);
-  if (recommendations) {
-    lines.push(recommendations);
     lines.push('');
   }
 

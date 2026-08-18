@@ -1,7 +1,6 @@
 import { detectAgentPractices } from './agent-practices.js';
 import { detectCanonicalOwner } from './canonical-owner.js';
 import { detectCiAlignment } from './ci-alignment.js';
-import { detectProductBoundary } from './product-boundary.js';
 import { detectCompetingTechConflicts, detectConflicts, detectVersionConflicts } from './conflicts.js';
 import { detectCommandValidity } from './command-validity.js';
 import { detectContextBloat } from './context-bloat.js';
@@ -15,11 +14,6 @@ import { detectVagueGuidance } from './vague-guidance.js';
 import { detectSecurityPack } from './security-pack.js';
 import { runFrameworkPacks } from './framework-packs.js';
 import { detectPromptCacheFriendliness } from './prompt-cache.js';
-import { detectCheapModelRouting } from './cheap-model-routing.js';
-import { detectOutputVerbosity } from './output-verbosity.js';
-import { detectMcpTooling } from './mcp-detector.js';
-import { detectCliOutputFilter } from './cli-output-filter.js';
-import { detectNativeToolPreference } from './native-tool-preference.js';
 import type { PromptCiIssue } from './types.js';
 import type { RepoContext } from './repo-context.js';
 
@@ -113,11 +107,6 @@ export const DETECTORS: DetectorDefinition[] = [
     run: (context) => detectCiAlignment(context),
   },
   {
-    id: 'product-boundary',
-    group: 'scan',
-    run: (context) => detectProductBoundary(context),
-  },
-  {
     id: 'security-pack',
     group: 'scan',
     run: (context) => detectSecurityPack(context),
@@ -131,31 +120,6 @@ export const DETECTORS: DetectorDefinition[] = [
     id: 'prompt-cache-friendliness',
     group: 'scan',
     run: (context) => detectPromptCacheFriendliness(context.files),
-  },
-  {
-    id: 'cheap-model-routing',
-    group: 'scan',
-    run: (context) => detectCheapModelRouting(context),
-  },
-  {
-    id: 'output-verbosity',
-    group: 'scan',
-    run: (context) => detectOutputVerbosity(context.files),
-  },
-  {
-    id: 'mcp-tooling',
-    group: 'scan',
-    run: (context) => detectMcpTooling(context),
-  },
-  {
-    id: 'cli-output-filter',
-    group: 'scan',
-    run: (context) => detectCliOutputFilter(context),
-  },
-  {
-    id: 'native-tool-preference',
-    group: 'scan',
-    run: (context) => detectNativeToolPreference(context.files),
   },
   {
     id: 'context-cost',
