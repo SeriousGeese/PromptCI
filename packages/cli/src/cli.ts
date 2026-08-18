@@ -10,9 +10,15 @@ import { runAuth, type AuthSubcommand } from './commands/auth.js';
 import { runContextAnalyze, runContextOptimize } from './commands/context.js';
 import { runExplain } from './commands/explain.js';
 import { runDoctor } from './commands/doctor.js';
-import { notifyOnNewVersion } from './commands/version-notice.js';
+import { getNewVersionNotice } from './commands/version-notice.js';
 
-const VERSION = '0.0.1';
+// Single source of truth for the version: esbuild resolves this require at
+// build time and inlines package.json into the CJS bundle, so --version and
+// the update-notice comparison can never drift from what was published.
+// (require, not import: a JSON import needs resolveJsonModule plus a rootDir
+// that includes ../package.json, and the bundle is CJS anyway.)
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const { version: VERSION } = require('../package.json') as { version: string };
 
 const program = new Command();
 
@@ -209,9 +215,15 @@ program
   });
 
 async function main(): Promise<void> {
-  // Best-effort, non-blocking-in-CI notice that a newer release exists on npm.
-  await notifyOnNewVersion(VERSION);
+  // Start the best-effort update check now so its once-a-day registry probe
+  // overlaps the command's own work, but print any notice only after the
+  // command has produced its output. Commands that call process.exit (and
+  // Commander's own --version/--help) skip the notice entirely — it is
+  // best-effort by design.
+  const notice = getNewVersionNotice(VERSION);
   await program.parseAsync(process.argv);
+  const message = await notice;
+  if (message) process.stderr.write(message);
 }
 
 main().catch((err: unknown) => {
