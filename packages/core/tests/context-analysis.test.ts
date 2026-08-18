@@ -1,12 +1,23 @@
 import { describe, it, expect, vi } from 'vitest';
 import { analyzeContext } from '../src/context-analysis.js';
 import * as repoContext from '../src/repo-context.js';
-import * as detectors from '../src/detectors.js';
 
 import type { RepoContext, PromptCiIssue } from '../src/types.js';
 
 vi.mock('../src/repo-context.js');
-vi.mock('../src/detectors.js');
+
+const mockIssues = [
+  { id: 'some-issue', severity: 'warning', category: 'context_bloat' },
+];
+
+// analyzeContext runs exactly the context-bloat registry entry — not the full
+// detector set — so the mock replaces that one entry's run.
+vi.mock('../src/detectors.js', () => ({
+  DETECTORS: [
+    { id: 'duplicates', run: () => { throw new Error('analyzeContext must not run non-context detectors'); } },
+    { id: 'context-bloat', run: () => mockIssues as unknown as PromptCiIssue[] },
+  ],
+}));
 
 describe('analyzeContext', () => {
   it('correctly maps the context analysis output structure', async () => {
@@ -26,12 +37,7 @@ describe('analyzeContext', () => {
       workflows: { files: ['ci.yml'], commands: [] },
     };
 
-    const mockIssues = [
-      { id: 'some-issue', severity: 'warning', category: 'context_bloat' },
-    ];
-
     vi.mocked(repoContext.buildRepoContext).mockResolvedValue(mockContext as unknown as RepoContext);
-    vi.mocked(detectors.runDetectors).mockReturnValue(mockIssues as unknown as PromptCiIssue[]);
 
     const result = await analyzeContext({ repoPath: '/repo' });
 

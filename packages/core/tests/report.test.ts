@@ -726,31 +726,46 @@ describe('computeTrend — R2 duplicate-id resilience', () => {
     expect(trend!.resolvedIssuesCount).toBe(0);
   });
 
-  it('counts a NEW id only once even if it appears twice in currentIssues (duplicate-id defense)', async () => {
-    // Simulates the BUG-B class of bug: two different findings sharing one id.
+  it('counts the same finding once even when it appears twice (duplicate defense)', async () => {
+    // The original R2 case: a detector bug emits one finding twice. Under
+    // content-based identity the two copies share a fingerprint and collapse —
+    // regardless of whether the duplicate copies share an id.
     const report = makeReport({
       issues: [
         makeIssue({ id: 'dup-id', title: 'Finding A' }),
-        makeIssue({ id: 'dup-id', title: 'Finding B' }),
+        makeIssue({ id: 'dup-id', title: 'Finding A' }),
         makeIssue({ id: 'unique-id' }),
       ],
     });
     const previousReport = { issues: [] };
     const trend = await computeTrend(report, previousReport, []);
     expect(trend).not.toBeNull();
-    // Two distinct ids ("dup-id", "unique-id") — NOT three, even though
-    // "dup-id" appears twice in currentIssues.
     expect(trend!.newIssuesCount).toBe(2);
     expect(trend!.newIssueIds).toHaveLength(2);
     expect(trend!.newIssueIds.every((id) => /^[0-9a-f]{64}$/.test(id))).toBe(true);
   });
 
-  it('counts a RESOLVED id only once even if it appears twice in the previous report (duplicate-id defense)', async () => {
+  it('counts DISTINCT findings separately even when a detector bug gives them one id', async () => {
+    // Identity is what the finding says, not its id — the baseline counts both
+    // of these (their fingerprints differ), so the trend must too. The old
+    // raw-id pre-dedup silently dropped Finding B here.
+    const report = makeReport({
+      issues: [
+        makeIssue({ id: 'dup-id', title: 'Finding A' }),
+        makeIssue({ id: 'dup-id', title: 'Finding B' }),
+      ],
+    });
+    const trend = await computeTrend(report, { issues: [] }, []);
+    expect(trend).not.toBeNull();
+    expect(trend!.newIssuesCount).toBe(2);
+  });
+
+  it('counts a RESOLVED finding once even when it appeared twice in the previous report', async () => {
     const report = makeReport({ issues: [] });
     const previousReport = {
       issues: [
         { id: 'dup-id', category: 'duplicate', severity: 'high', title: 'Finding A', filePaths: ['CLAUDE.md'], evidence: ['Evidence line 1'] },
-        { id: 'dup-id', category: 'duplicate', severity: 'high', title: 'Finding B', filePaths: ['CLAUDE.md'], evidence: ['Evidence line 1'] },
+        { id: 'dup-id', category: 'duplicate', severity: 'high', title: 'Finding A', filePaths: ['CLAUDE.md'], evidence: ['Evidence line 1'] },
         { id: 'unique-id', category: 'duplicate', severity: 'warning', title: 'Test Issue', filePaths: ['CLAUDE.md'], evidence: ['Evidence line 1'] },
       ],
     };

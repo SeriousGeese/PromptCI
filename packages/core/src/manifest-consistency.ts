@@ -543,8 +543,8 @@ function checkMissingScripts(context: RepoContext): PromptCiIssue[] {
   // actual script name following it) reported a missing script "run".
   const SKIP_SUBCOMMANDS = new Set([
     'install', 'add', 'remove', 'init', 'test', 'start', 'stop', 'restart',
-    'exec', 'dlx', 'i', 'help', 'run', 'ci', 'audit', 'update', 'outdated',
-    'publish', 'create', 'link', 'why', 'workspace', 'workspaces',
+    'exec', 'dlx', 'i', 'help', 'run', 'run-script', 'ci', 'audit', 'update',
+    'outdated', 'publish', 'create', 'link', 'why', 'workspace', 'workspaces',
     'store', 'ls', 'list', 'pack', 'unlink', 'uninstall', 'up', 'prune',
     'package', 'packages', 'project', 'repo', 'repository',
   ]);

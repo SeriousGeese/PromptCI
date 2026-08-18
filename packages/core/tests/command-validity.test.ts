@@ -582,6 +582,23 @@ describe('detectCommandValidity — CV1 fence-state inversion', () => {
     const issues = detectCommandValidity(context);
     expect(issues).toHaveLength(0);
   });
+
+  it('still scans a pandoc-attribute fence (```{.bash}) as shell', () => {
+    // The historical opener regex classified on the info string's leading
+    // [a-zA-Z0-9_-] run, so `{.bash}` read as a bare (shell) fence. The shared
+    // scanner reports the full info string; classification must not change.
+    const content = ['```{.bash}', 'pnpm not-a-script', '```'].join('\n');
+    const context = makeContext([makeFile(content)], { build: 'tsc' });
+    const issues = detectCommandValidity(context);
+    expect(issues.some((i) => i.summary.includes('not-a-script'))).toBe(true);
+  });
+
+  it('still skips a non-shell fence whose info string has trailing punctuation (```json,)', () => {
+    const content = ['```json,', '{ "scripts": { "pnpm run fake": true } }', '```'].join('\n');
+    const context = makeContext([makeFile(content)], { build: 'tsc' });
+    const issues = detectCommandValidity(context);
+    expect(issues).toHaveLength(0);
+  });
 });
 
 // ── CV2: line-number shift from leading blank lines in a fenced block ────────
