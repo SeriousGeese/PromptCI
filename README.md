@@ -2,6 +2,12 @@
 
 > Instruction health for AI coding workflows.
 
+[![CI](https://github.com/SeriousGeese/PromptCI/actions/workflows/ci.yml/badge.svg)](https://github.com/SeriousGeese/PromptCI/actions/workflows/ci.yml)
+[![instruction health](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2FSeriousGeese%2FPromptCI%2Fmain%2F.promptci%2Fhealth-badge.json)](.github/workflows/ci.yml)
+
+PromptCI runs its own scanner against this repo in CI (see [.github/workflows/ci.yml](.github/workflows/ci.yml));
+the health badge above reports the score from the committed baseline.
+
 <!-- promptci-ignore-start: structure
      reason: This intro names CLAUDE.md and AGENTS.md as the file types PromptCI scans.
      They are product terminology here, not references to files in this repository. -->
@@ -37,9 +43,9 @@ The scan writes two files and prints a summary with a health score and top fixes
 - `.promptci/latest.md` — human-readable Markdown report
 - `.promptci/report.json` — machine-readable JSON
 
-Ignore the generated reports but keep `baseline.json` and `config.json` committed — the CI
-ratchet (`--baseline` / `--fail-on-new`) reads the baseline from the checkout. `promptci init`
-writes this for you:
+Ignore the generated reports but keep `.promptci/baseline.json` and `.promptci/config.json`
+committed — the CI ratchet (`--baseline` / `--fail-on-new`) reads the baseline from the checkout.
+`promptci init` writes this for you:
 
 ```gitignore
 **/.promptci/*

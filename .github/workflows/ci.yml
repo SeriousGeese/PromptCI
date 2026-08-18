@@ -59,3 +59,10 @@ jobs:
 
       - name: Test
         run: pnpm test
+
+      # Dogfood: run PromptCI's own scanner against this repo and fail on any new
+      # instruction-health regression relative to the committed .promptci/baseline.json.
+      # Runs after Build so packages/cli/dist/cli.cjs exists (pnpm selfscan invokes it
+      # directly rather than downloading a published CLI).
+      - name: Self-scan (instruction health)
+        run: pnpm selfscan
