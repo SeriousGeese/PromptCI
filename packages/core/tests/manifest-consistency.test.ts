@@ -449,6 +449,15 @@ describe('detectManifestConsistency — JS/TS specific detectors', () => {
     expect(issues.some(i => i.id.startsWith('manifest-missing-script') && i.title.includes('"run"'))).toBe(false);
   });
 
+  it('does NOT flag "pnpm version" / "npm version" as a missing script named "version"', () => {
+    const file = makeFile('Run `pnpm version 1.2.3 --no-git-tag-version` then `npm version 1.2.3`.');
+    const packageJson = JSON.stringify({ scripts: { build: 'vite build' } });
+    const context = makeContext([file], { packageJson });
+
+    const issues = detectManifestConsistency(context);
+    expect(issues.some(i => i.id.startsWith('manifest-missing-script') && i.title.includes('"version"'))).toBe(false);
+  });
+
   it('MF1: does NOT flag pnpm flags or workspace subcommands as missing scripts', () => {
     const file = makeFile([
       'Run `pnpm --filter web build` when validating the web app.',

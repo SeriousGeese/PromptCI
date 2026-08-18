@@ -130,6 +130,13 @@ describe('detectCommandValidity — package scripts', () => {
     expect(issues).toHaveLength(0);
   });
 
+  it('does NOT flag `pnpm version` / `npm version` / `yarn version` (release runbooks use these)', () => {
+    const content = '```sh\npnpm version 1.2.3 --no-git-tag-version\nnpm version 1.2.3\nyarn version 1.2.3\n```';
+    const context = makeContext([makeFile(content)], {});
+    const issues = detectCommandValidity(context);
+    expect(issues).toHaveLength(0);
+  });
+
   it('validates the script after pnpm -r instead of treating -r as value-taking', () => {
     const content = '```sh\npnpm -r missing-build\n```';
     const context = makeContext([makeFile(content)], { build: 'vite build' });
