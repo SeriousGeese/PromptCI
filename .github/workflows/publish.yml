@@ -1,0 +1,95 @@
+name: Publish
+
+# Tag-triggered release. A tag like v0.0.2 publishes BOTH @promptci/cli and
+# @promptci/core at 0.0.2 in one run — they must move in lockstep because
+# core is bundled into cli.cjs as a frozen esbuild snapshot (see
+# scripts/check-version-sync.mjs and CONTRIBUTING.md#releasing).
+#
+# ci.yml does not run for tag pushes (it only triggers on branches: [main]
+# and PRs), so this workflow re-runs the full verification suite itself
+# rather than assuming a prior green CI run for this exact commit.
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    # Guard against a fork pushing a matching tag to its own copy of this
+    # workflow: it would fail for lack of NPM_TOKEN anyway, but fail fast and
+    # skip the noise rather than running the whole build first.
+    if: github.repository == 'SeriousGeese/PromptCI'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Required for `npm provenance` — the OIDC token is exchanged for a
+      # signed attestation tying the published tarball to this exact
+      # workflow run and commit.
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        # version is read from the packageManager field in package.json
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Build
+        run: pnpm build
+
+      - name: Test
+        run: pnpm test
+
+      - name: Compute tag version
+        id: tag
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF#refs/tags/v}"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      # Fails closed: refuses to publish if packages/cli and packages/core
+      # aren't at the same version, or if either doesn't match the pushed
+      # tag. Both must be bumped together before tagging (see CONTRIBUTING.md).
+      - name: Check cli/core version sync against tag
+        run: pnpm check-versions --tag "${{ steps.tag.outputs.version }}"
+
+      # core first: it has no runtime dependency on cli, and publishing it
+      # first means a partial failure below never leaves cli live without a
+      # matching core.
+      - name: Publish @promptci/core
+        run: pnpm --filter @promptci/core publish --provenance --access public --no-git-checks
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish @promptci/cli
+        run: pnpm --filter @promptci/cli publish --provenance --access public --no-git-checks
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      # Belt-and-suspenders: confirm what npm now actually serves for both
+      # packages agrees with each other and with the tag, catching registry
+      # propagation issues or a publish that silently no-op'd.
+      - name: Verify published versions match
+        run: pnpm check-versions --registry --tag "${{ steps.tag.outputs.version }}"

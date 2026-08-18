@@ -86,6 +86,23 @@ Also in `action.yml`: pass inputs to `run:` steps through `env:`, never by inter
 `${{ inputs.x }}` into the script. A composite action executes in the caller's workflow, so a
 value spliced into a shell line is a script-injection sink.
 
+## Releasing
+
+`@promptci/cli` and `@promptci/core` publish together from a pushed tag, via
+[.github/workflows/publish.yml](.github/workflows/publish.yml). Core is bundled into cli's dist
+as a frozen esbuild snapshot (a devDependency, not a runtime one), so nothing on npm ties their
+versions together — they must release in lockstep.
+
+1. Bump `version` to the same value in both packages (`pnpm check-versions` fails otherwise),
+   merge to `main`.
+2. Tag and push: `git tag v0.0.2 && git push origin v0.0.2`.
+3. The workflow verifies, checks tag vs. package versions, publishes core then cli with npm
+   provenance, then re-checks what npm serves for both.
+4. Update `cli_version` in [action.yml](action.yml) to match, in a follow-up PR (kept honest by
+   `packages/cli/tests/action-yml.test.ts`).
+
+Needs an `NPM_TOKEN` repo secret with publish rights on both packages.
+
 ## Changing a detector
 
 Detector changes shift results for every user, so they carry extra requirements.

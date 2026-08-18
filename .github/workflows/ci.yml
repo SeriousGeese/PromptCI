@@ -60,6 +60,14 @@ jobs:
       - name: Test
         run: pnpm test
 
+      # @promptci/core is bundled into cli.cjs as a frozen esbuild snapshot
+      # (core is a devDependency of cli, not a runtime one), so nothing on
+      # npm's side ties the two packages' versions together. Catch drift here
+      # rather than at publish time: this is a local, network-free comparison
+      # of the two package.json files (see scripts/check-version-sync.mjs).
+      - name: Check cli/core version sync
+        run: pnpm check-versions
+
       # Dogfood: run PromptCI's own scanner against this repo and fail on any new
       # instruction-health regression relative to the committed .promptci/baseline.json.
       # Runs after Build so packages/cli/dist/cli.cjs exists (pnpm selfscan invokes it
