@@ -1,0 +1,9 @@
+# Normalize line endings to LF in the repository and check them out as LF on
+# every platform. PromptCI's scanner reads instruction files byte-for-byte, so
+# a Windows CRLF checkout and a Linux LF checkout must not produce different
+# findings — otherwise the committed .promptci/baseline.json (generated in
+# Linux CI) would not reproduce for contributors on Windows.
+* text=auto eol=lf
+
+# Images are binary; never apply line-ending conversion to them.
+*.png binary

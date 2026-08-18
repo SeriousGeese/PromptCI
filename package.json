@@ -12,7 +12,9 @@
     "typecheck": "pnpm --filter @promptci/core build && pnpm -r run typecheck",
     "test": "vitest run",
     "build": "pnpm -r run build",
-    "dev": "vitest"
+    "dev": "vitest",
+    "selfscan": "node scripts/selfscan-guard.mjs && node packages/cli/dist/cli.cjs scan --baseline .promptci/baseline.json --fail-on-new warning --fail-on high",
+    "selfscan:update": "node scripts/selfscan-guard.mjs && node packages/cli/dist/cli.cjs scan --baseline .promptci/baseline.json --update-baseline && node scripts/health-badge.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

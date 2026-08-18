@@ -9,7 +9,7 @@ export { detectAgentPractices } from './agent-practices.js';
 export { parseSuppressions, buildValidationIssues, applySuppressions } from './suppression.js';
 export type { SuppressionAnnotation } from './suppression.js';
 export { computeHealthScore, selectTopFixes } from './health-score.js';
-export { generateMarkdownReport, generateJsonReport, writeReport, readHistoryIndex, archiveExistingReport, historyIndexPath } from './report.js';
+export { generateMarkdownReport, generateJsonReport, writeReport, readHistoryIndex, archiveExistingReport, historyIndexPath, scoreLabel } from './report.js';
 export type { WriteReportOptions, HistoryEntry } from './report.js';
 export { detectManifestConsistency } from './manifest-consistency.js';
 export type { ManifestData } from './manifest-consistency.js';
