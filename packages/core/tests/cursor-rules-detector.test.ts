@@ -75,6 +75,24 @@ describe('detectCursorRules', () => {
     expect(issues.some((i) => i.title.includes('no trigger'))).toBe(true);
   });
 
+  it('does not flag a glob targeting a source directory named build/', () => {
+    const dir = repo();
+    writeFile(dir, 'build/rules.py', 'x = 1');
+    writeFile(dir, '.cursor/rules/bazel.mdc',
+      ['---', 'description: Build rules', 'globs: build/**/*.py', '---', 'body'].join('\n'));
+    const issues = detectCursorRules(ctx(dir));
+    expect(issues.some((i) => i.title.includes('glob matches no files'))).toBe(false);
+  });
+
+  it('handles an unquoted brace-expansion glob without shredding it', () => {
+    const dir = repo();
+    writeFile(dir, 'src/app.tsx', 'export {};');
+    writeFile(dir, '.cursor/rules/ts.mdc',
+      ['---', 'description: TS rules', 'globs: *.{ts,tsx}', '---', 'body'].join('\n'));
+    const issues = detectCursorRules(ctx(dir));
+    expect(issues.some((i) => i.title.includes('glob matches no files'))).toBe(false);
+  });
+
   it('does not run the glob check for alwaysApply rules', () => {
     const dir = repo();
     writeFile(dir, '.cursor/rules/always.mdc',

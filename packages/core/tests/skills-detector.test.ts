@@ -88,6 +88,16 @@ describe('detectSkills', () => {
     expect(overlap!.filePaths.length).toBe(2);
   });
 
+  it('emits one finding with one id for two anchored refs to the same missing file', () => {
+    const dir = repo();
+    writeFile(dir, '.claude/skills/pdf/SKILL.md',
+      ['---', 'name: pdf', 'description: Fill and read PDF forms when asked', '---',
+        'See [a](docs/x.md#one) and [b](docs/x.md#two).'].join('\n'));
+    const issues = detectSkills(ctx(dir)).filter((i) => i.title.includes('bundled file'));
+    expect(issues.length).toBe(1);
+    expect(new Set(issues.map((i) => i.id)).size).toBe(issues.length);
+  });
+
   it('produces deterministic output across runs', () => {
     const dir = repo();
     writeFile(dir, '.claude/skills/pdf/SKILL.md', '# no frontmatter');

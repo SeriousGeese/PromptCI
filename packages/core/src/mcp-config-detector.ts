@@ -22,11 +22,12 @@ import {
   isFileWithinRoot,
   listFiles,
   shortHash,
+  lineOf,
+  withScannerPaths,
+  SCRIPT_EXT_RE,
 } from './ai-config.js';
 
 const MCP_GLOBS = ['.mcp.json'];
-
-const SCRIPT_EXT_RE = /\.(sh|bash|zsh|js|mjs|cjs|ts|py|rb|ps1)$/i;
 
 function id(kind: string, key: string): string {
   return `ai-config-mcp-${kind}-${shortHash(key)}`;
@@ -40,12 +41,6 @@ function base(issue: Omit<PromptCiIssue, 'severity' | 'category' | 'confidence'>
     confidence: 0.8,
     ...issue,
   };
-}
-
-function lineOf(raw: string, sub: string): number {
-  const idx = raw.indexOf(sub);
-  if (idx < 0) return 1;
-  return raw.slice(0, idx).split(/\r?\n/).length;
 }
 
 /**
@@ -224,5 +219,6 @@ export function detectMcpConfig(context: RepoContext): PromptCiIssue[] {
     }
   }
 
-  return issues;
+  // Scanner-form paths so inline suppressions can match (see withScannerPaths).
+  return withScannerPaths(context.repoRoot, issues);
 }

@@ -12,6 +12,7 @@
  * Deterministic and offline; findings are cautiously worded.
  */
 
+import micromatch from 'micromatch';
 import type { RepoContext } from './repo-context.js';
 import type { PromptCiIssue } from './types.js';
 import {
@@ -20,9 +21,18 @@ import {
   listFiles,
   shortHash,
   asStringList,
+  withScannerPaths,
 } from './ai-config.js';
 
 const MDC_GLOBS = ['.cursor/rules/**/*.mdc'];
+
+/**
+ * Glob-existence testing needs different visibility than config discovery: a
+ * rule may legitimately target `dist/` output or a *source* directory named
+ * `build/`, so only dependency/VCS trees are excluded when asking "does this
+ * glob match anything".
+ */
+const GLOB_TEST_IGNORE = ['**/node_modules/**', '**/.git/**'];
 
 function id(kind: string, key: string): string {
   return `ai-config-cursor-${kind}-${shortHash(key)}`;
@@ -50,6 +60,15 @@ function isTestableGlob(glob: string): boolean {
 export function detectCursorRules(context: RepoContext): PromptCiIssue[] {
   const issues: PromptCiIssue[] = [];
   const files = listFiles(context.repoRoot, MDC_GLOBS);
+
+  // ONE repo walk shared by every dead-glob test, built lazily so repos
+  // without testable globs never pay for it. Testing each glob with its own
+  // fg.sync call would walk the full tree once per glob per rule.
+  let repoListing: string[] | null = null;
+  const globMatchesAnything = (patterns: string[]): boolean => {
+    repoListing ??= listFiles(context.repoRoot, ['**/*'], GLOB_TEST_IGNORE);
+    return micromatch.some(repoListing, patterns, { dot: true });
+  };
 
   for (const filePath of files) {
     const content = readTextWithinRoot(context.repoRoot, filePath);
@@ -111,7 +130,7 @@ export function detectCursorRules(context: RepoContext): PromptCiIssue[] {
         summary: `${filePath} defines no \`description\`, no \`globs\`, and \`alwaysApply\` is not set, so Cursor has no signal for when to apply it.`,
         filePaths: [filePath],
         locations: [{ filePath, startLine: 1, endLine: fm.fenceEndLine > 0 ? fm.fenceEndLine : 1 }],
-        evidence: [`Keys present: ${fm.order.join(', ') || '(none)'}`],
+        evidence: [`Keys present: ${Object.keys(fm.data).join(', ') || '(none)'}`],
         recommendation: 'Add a `description` (agent-requested), `globs` (auto-attached), or `alwaysApply: true`.',
         confidence: 0.7,
       }));
@@ -125,8 +144,7 @@ export function detectCursorRules(context: RepoContext): PromptCiIssue[] {
       // fast-glob only matches it at the root — so also try a `**/`-anchored
       // variant before declaring the glob dead, to avoid false positives.
       const candidates = normalized.includes('/') ? [normalized] : [normalized, `**/${normalized}`];
-      const matches = listFiles(context.repoRoot, candidates);
-      if (matches.length === 0) {
+      if (!globMatchesAnything(candidates)) {
         issues.push(base({
           id: id('dead-glob', `${filePath}|${glob}`),
           title: 'Cursor rule glob matches no files',
@@ -141,5 +159,6 @@ export function detectCursorRules(context: RepoContext): PromptCiIssue[] {
     }
   }
 
-  return issues;
+  // Scanner-form paths so inline suppressions can match (see withScannerPaths).
+  return withScannerPaths(context.repoRoot, issues);
 }

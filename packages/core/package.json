@@ -47,9 +47,11 @@
   },
   "devDependencies": {
     "@types/node": "*",
-    "typescript": "*"
+    "typescript": "*",
+    "@types/micromatch": "*"
   },
   "dependencies": {
-    "fast-glob": "^3.3.3"
+    "fast-glob": "^3.3.3",
+    "micromatch": "^4.0.8"
   }
 }

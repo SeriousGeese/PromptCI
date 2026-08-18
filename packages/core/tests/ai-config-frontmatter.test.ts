@@ -19,7 +19,7 @@ describe('parseFrontmatter', () => {
     expect(fm.data.description).toBe('Does a thing');
     expect(fm.data.alwaysApply).toBe(true);
     expect(fm.data.count).toBe(3);
-    expect(fm.order).toEqual(['name', 'description', 'alwaysApply', 'count']);
+    expect(Object.keys(fm.data)).toEqual(['name', 'description', 'alwaysApply', 'count']);
     expect(fm.bodyStartLine).toBe(7);
   });
 
@@ -47,6 +47,31 @@ describe('parseFrontmatter', () => {
   it('records the first occurrence line for a duplicate key', () => {
     const fm = parseFrontmatter(['---', 'name: a', 'name: b', '---'].join('\n'));
     expect(fm.keyLines.name).toBe(2);
+  });
+
+  it('treats an indented --- inside a block scalar as content, not the closing fence', () => {
+    const fm = parseFrontmatter(
+      ['---', 'description: |', '  intro', '  ---', '  more', 'name: x', '---', 'body'].join('\n'),
+    );
+    expect(fm.closed).toBe(true);
+    expect(fm.fenceEndLine).toBe(7);
+    expect(fm.data.description).toBe('intro\n---\nmore');
+    expect(fm.data.name).toBe('x');
+  });
+
+  it('strips a trailing comment from a sequence value and re-dispatches it as a sequence', () => {
+    const fm = parseFrontmatter(['---', 'globs: ["*.ts"] # auto-attach', '---'].join('\n'));
+    expect(fm.data.globs).toEqual(['*.ts']);
+  });
+
+  it('strips trailing comments from block list items', () => {
+    const fm = parseFrontmatter(['---', 'tools:', '  - Read # file access', '  - Write', '---'].join('\n'));
+    expect(fm.data.tools).toEqual(['Read', 'Write']);
+  });
+
+  it('does not let an apostrophe inside an item swallow later commas', () => {
+    const fm = parseFrontmatter(["---", "globs: [docs/o'brien/*.md, src/*.ts]", '---'].join('\n'));
+    expect(fm.data.globs).toEqual(["docs/o'brien/*.md", 'src/*.ts']);
   });
 
   it('parses block scalars', () => {
@@ -84,6 +109,10 @@ describe('parseFrontmatter', () => {
 describe('asStringList', () => {
   it('splits comma- and newline-separated strings', () => {
     expect(asStringList('Read, Write')).toEqual(['Read', 'Write']);
+  });
+  it('keeps a brace-expansion glob as one item', () => {
+    expect(asStringList('*.{ts,tsx}')).toEqual(['*.{ts,tsx}']);
+    expect(asStringList('*.{ts,tsx}, src/**')).toEqual(['*.{ts,tsx}', 'src/**']);
   });
   it('passes arrays through', () => {
     expect(asStringList(['a', 'b'])).toEqual(['a', 'b']);

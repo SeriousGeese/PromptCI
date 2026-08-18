@@ -19,12 +19,12 @@ import {
   isFileWithinRoot,
   listFiles,
   shortHash,
+  lineOf,
+  withScannerPaths,
+  SCRIPT_EXT_RE,
 } from './ai-config.js';
 
 const SETTINGS_GLOBS = ['.claude/settings.json', '.claude/settings.local.json'];
-
-/** Extensions we treat as invokable local scripts referenced by a hook command. */
-const SCRIPT_EXT_RE = /\.(sh|bash|zsh|js|mjs|cjs|ts|py|rb|ps1)$/i;
 
 /** curl/wget piped straight into a shell — the classic remote-code-execution footgun. */
 const CURL_PIPE_SH_RE = /\b(curl|wget)\b[^|]*\|\s*(sudo\s+)?(sh|bash|zsh|dash)\b/i;
@@ -43,13 +43,6 @@ function base(issue: Omit<PromptCiIssue, 'severity' | 'category' | 'confidence'>
     confidence: 0.8,
     ...issue,
   };
-}
-
-/** 1-based line where `sub` first appears in `raw`, or 1 when not found. */
-function lineOf(raw: string, sub: string): number {
-  const idx = raw.indexOf(sub);
-  if (idx < 0) return 1;
-  return raw.slice(0, idx).split(/\r?\n/).length;
 }
 
 /** Recursively collect `{ type: 'command', command }` hook entries, tagged with their event key. */
@@ -72,61 +65,102 @@ function collectCommandHooks(hooks: unknown, event: string, out: CommandHook[]):
   }
 }
 
-/** Interpreters whose first non-flag argument is the script they execute. */
+/** Interpreters whose script argument is the file they execute. */
 const INTERPRETERS = new Set([
   'bash', 'sh', 'zsh', 'dash', 'node', 'deno', 'python', 'python3', 'ruby',
   'ts-node', 'tsx', 'pwsh', 'powershell',
 ]);
 
-/** Strip a leading `$CLAUDE_PROJECT_DIR/`, `${CLAUDE_PROJECT_DIR}/`, or surrounding quotes. */
+/** Launchers that wrap another command (`npx tsx x.ts`, `timeout 5 bash x.sh`). */
+const WRAPPERS = new Set([
+  'npx', 'bunx', 'pnpm', 'yarn', 'uv', 'uvx', 'env', 'timeout', 'nice', 'sudo', 'exec', 'command',
+]);
+
+/** Strip surrounding quotes, then a leading `$CLAUDE_PROJECT_DIR/` / `${CLAUDE_PROJECT_DIR}/`. */
 function normalizeScriptToken(token: string): string {
-  let t = token.replace(/^['"]|['"]$/g, '');
-  t = t.replace(/^\$\{?CLAUDE_PROJECT_DIR\}?[/\\]/, '');
-  return t;
+  const unquoted = token.replace(/^['"]|['"]$/g, '');
+  return unquoted.replace(/^\$\{?CLAUDE_PROJECT_DIR\}?[/\\]/, '');
 }
 
 /**
  * Extract repo-relative local script references from a hook command string.
  *
- * Only the *script the hook runs* is verified, not every path-shaped argument:
- * the command's own executable, or the first non-flag argument to a known
- * interpreter (`bash x.sh`, `node scripts/run.js`). Other tokens are checked
- * only when they are explicitly relative (`./x`, `.claude/x`, `$CLAUDE_PROJECT_DIR/x`),
- * so a lint hook like `eslint --fix src/foo.js` does not get its target argument
- * flagged as a missing script.
+ * Each `&&`/`||`/`;`/`|`-chained segment is its own command. Within a segment,
+ * the *executed script* is verified — the segment's own executable, or (after
+ * any interpreter/wrapper prefix like `bash`, `npx tsx`, `timeout 5 node`) the
+ * first argument bearing a script extension, which naturally skips flags and
+ * their extension-less values (`node --max-old-space-size 4096 scripts/x.js`).
+ * Other tokens are checked only when explicitly relative (`./x`, `.claude/x`,
+ * `$CLAUDE_PROJECT_DIR/x`), so a lint hook like `eslint --fix src/foo.js` does
+ * not get its target argument flagged as a missing script.
  */
 function extractScriptRefs(command: string): string[] {
   const refs = new Set<string>();
-  const tokens = command.split(/\s+/).filter(Boolean);
-  if (tokens.length === 0) return [];
 
   const add = (rawToken: string, executed: boolean) => {
     if (rawToken.startsWith('-')) return;
+    const unquoted = rawToken.replace(/^['"]|['"]$/g, '');
     const token = normalizeScriptToken(rawToken);
     if (!token || token.includes('$') || /[<>{}*?|"'`]/.test(token)) return; // still has a var/placeholder
     if (token.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(token) || /^https?:/i.test(token)) return; // absolute/url
     if (token.includes('..')) return;
     if (!SCRIPT_EXT_RE.test(token)) return;
-    const explicitRel = rawToken.startsWith('./') || rawToken.startsWith('../') ||
-      rawToken.startsWith('.claude/') || /^\$\{?CLAUDE_PROJECT_DIR\}?[/\\]/.test(rawToken);
+    // Tested on the quote-stripped form so `"./scripts/x.sh"` still counts.
+    const explicitRel = unquoted.startsWith('./') || unquoted.startsWith('.claude/') ||
+      /^\$\{?CLAUDE_PROJECT_DIR\}?[/\\]/.test(unquoted);
     if (executed || explicitRel) refs.add(token.replace(/\\/g, '/'));
   };
 
-  const first = tokens[0]!;
-  if (INTERPRETERS.has(normalizeScriptToken(first))) {
-    // The executed script is the first non-flag argument after the interpreter.
-    for (let i = 1; i < tokens.length; i++) {
-      if (!tokens[i]!.startsWith('-')) { add(tokens[i]!, true); break; }
+  for (const segment of command.split(/&&|\|\||;|\|/)) {
+    const tokens = segment.trim().split(/\s+/).filter(Boolean);
+    if (tokens.length === 0) continue;
+
+    const first = normalizeScriptToken(tokens[0]!);
+    if (INTERPRETERS.has(first) || WRAPPERS.has(first)) {
+      // The executed script is the first argument that looks like a script
+      // file; flags and their extension-less values are skipped naturally.
+      for (let i = 1; i < tokens.length; i++) {
+        if (!tokens[i]!.startsWith('-') && SCRIPT_EXT_RE.test(normalizeScriptToken(tokens[i]!))) {
+          add(tokens[i]!, true);
+          break;
+        }
+      }
+    } else {
+      // The segment itself may be a direct script invocation (`./scripts/x.sh`).
+      add(tokens[0]!, true);
     }
-  } else {
-    // The command itself may be a direct script invocation (`./scripts/x.sh`).
-    add(first, true);
+
+    // Remaining tokens are verified only when explicitly relative.
+    for (let i = 1; i < tokens.length; i++) add(tokens[i]!, false);
   }
 
-  // Remaining tokens are verified only when explicitly relative.
-  for (const token of tokens) add(token, false);
-
   return [...refs];
+}
+
+/**
+ * True when the character at `index` sits inside a single- or double-quoted
+ * region of `command`. Used so `sh -c "cd $CLAUDE_PROJECT_DIR/x"` — quoted,
+ * space-safe — is not flagged as an unquoted expansion.
+ */
+function insideQuotes(command: string, index: number): boolean {
+  let quote = '';
+  for (let i = 0; i < index; i++) {
+    const c = command[i]!;
+    if (quote) {
+      if (c === quote) quote = '';
+    } else if (c === '"' || c === "'") {
+      quote = c;
+    }
+  }
+  return quote !== '';
+}
+
+/** Finds a `$CLAUDE_PROJECT_DIR/...` expansion that no quote region protects. */
+function hasUnquotedProjectDir(command: string): boolean {
+  for (const m of command.matchAll(/\$\{?CLAUDE_PROJECT_DIR\}?[/\\]/g)) {
+    if (!insideQuotes(command, m.index)) return true;
+  }
+  return false;
 }
 
 export function detectHooksSettings(context: RepoContext): PromptCiIssue[] {
@@ -183,7 +217,7 @@ export function detectHooksSettings(context: RepoContext): PromptCiIssue[] {
       }
 
       // Footgun: unquoted $CLAUDE_PROJECT_DIR path expansion.
-      if (/(^|[^"'])\$\{?CLAUDE_PROJECT_DIR\}?[/\\]/.test(command)) {
+      if (hasUnquotedProjectDir(command)) {
         issues.push(base({
           id: id('unquoted-project-dir', `${filePath}|${command}`),
           severity: 'info',
@@ -217,5 +251,6 @@ export function detectHooksSettings(context: RepoContext): PromptCiIssue[] {
     }
   }
 
-  return issues;
+  // Scanner-form paths so inline suppressions can match (see withScannerPaths).
+  return withScannerPaths(context.repoRoot, issues);
 }

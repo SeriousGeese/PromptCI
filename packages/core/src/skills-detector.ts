@@ -24,6 +24,7 @@ import {
   listFiles,
   shortHash,
   toPosix,
+  withScannerPaths,
 } from './ai-config.js';
 
 const SKILL_GLOBS = ['.claude/**/SKILL.md'];
@@ -33,10 +34,7 @@ const MIN_DESCRIPTION_CHARS = 12;
 
 type ParsedSkill = {
   filePath: string;
-  dirName: string;
-  name: string | undefined;
-  description: string | undefined;
-  content: string;
+  description: string;
 };
 
 function id(kind: string, filePath: string, extra = ''): string {
@@ -80,25 +78,26 @@ function isBundledFileRef(ref: string): boolean {
 
 function extractFileRefs(content: string): Array<{ ref: string; line: number }> {
   const refs: Array<{ ref: string; line: number }> = [];
+  // Keyed on the anchor-STRIPPED path — `docs/x.md#one` and `docs/x.md#two`
+  // name the same file and must yield one finding, not two with equal ids.
   const seen = new Set<string>();
+  const record = (target: string, line: number) => {
+    if (!isBundledFileRef(target)) return;
+    const ref = target.split('#')[0]!;
+    if (seen.has(ref)) return;
+    seen.add(ref);
+    refs.push({ ref, line });
+  };
   const lines = content.split(/\r?\n/);
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]!;
     // Markdown links: [text](path)
     for (const m of line.matchAll(/\[[^\]]*\]\(([^)]+)\)/g)) {
-      const target = m[1]!.split(/\s+/)[0]!.replace(/^<|>$/g, '');
-      if (isBundledFileRef(target) && !seen.has(target)) {
-        seen.add(target);
-        refs.push({ ref: target.split('#')[0]!, line: i + 1 });
-      }
+      record(m[1]!.split(/\s+/)[0]!.replace(/^<|>$/g, ''), i + 1);
     }
     // Inline code paths: `scripts/foo.py`
     for (const m of line.matchAll(/`([^`]+)`/g)) {
-      const target = m[1]!.trim();
-      if (isBundledFileRef(target) && !seen.has(target)) {
-        seen.add(target);
-        refs.push({ ref: target.split('#')[0]!, line: i + 1 });
-      }
+      record(m[1]!.trim(), i + 1);
     }
   }
   return refs;
@@ -130,7 +129,6 @@ export function detectSkills(context: RepoContext): PromptCiIssue[] {
         recommendation: 'Add a frontmatter block with `name` and `description` at the top of the SKILL.md file.',
         confidence: 0.85,
       }));
-      parsed.push({ filePath, dirName, name: undefined, description: undefined, content });
       continue;
     }
 
@@ -171,7 +169,7 @@ export function detectSkills(context: RepoContext): PromptCiIssue[] {
         summary: `${filePath} has no \`name\` field. Claude uses \`name\` to identify and invoke the skill.`,
         filePaths: [filePath],
         locations: [{ filePath, startLine: 1, endLine: fm.fenceEndLine > 0 ? fm.fenceEndLine : 1 }],
-        evidence: [`Keys present: ${fm.order.join(', ') || '(none)'}`],
+        evidence: [`Keys present: ${Object.keys(fm.data).join(', ') || '(none)'}`],
         recommendation: 'Add a `name` field to the frontmatter matching the skill directory name.',
         confidence: 0.85,
       }));
@@ -195,7 +193,7 @@ export function detectSkills(context: RepoContext): PromptCiIssue[] {
         summary: `${filePath} has no \`description\`. The description is the trigger text Claude matches against — without it the skill rarely activates.`,
         filePaths: [filePath],
         locations: [{ filePath, startLine: 1, endLine: fm.fenceEndLine > 0 ? fm.fenceEndLine : 1 }],
-        evidence: [`Keys present: ${fm.order.join(', ') || '(none)'}`],
+        evidence: [`Keys present: ${Object.keys(fm.data).join(', ') || '(none)'}`],
         recommendation: 'Add a `description` that says what the skill does and when to use it.',
         confidence: 0.85,
       }));
@@ -230,20 +228,21 @@ export function detectSkills(context: RepoContext): PromptCiIssue[] {
       }
     }
 
-    parsed.push({ filePath, dirName, name, description, content });
+    if (description) parsed.push({ filePath, description });
   }
 
   // Overlapping / duplicate trigger descriptions across skills.
   issues.push(...detectOverlappingDescriptions(parsed));
 
-  return issues;
+  // Scanner-form paths so inline suppressions can match (see withScannerPaths).
+  return withScannerPaths(context.repoRoot, issues);
 }
 
 function detectOverlappingDescriptions(skills: ParsedSkill[]): PromptCiIssue[] {
   const issues: PromptCiIssue[] = [];
   const byNorm = new Map<string, ParsedSkill[]>();
   for (const skill of skills) {
-    if (!skill.description || skill.description.length < MIN_DESCRIPTION_CHARS) continue;
+    if (skill.description.length < MIN_DESCRIPTION_CHARS) continue;
     const norm = normalizeDescription(skill.description);
     if (!norm) continue;
     const group = byNorm.get(norm) ?? [];

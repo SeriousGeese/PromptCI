@@ -24,6 +24,7 @@ import {
   shortHash,
   asStringList,
   toPosix,
+  withScannerPaths,
 } from './ai-config.js';
 
 const AGENT_GLOBS = ['.claude/agents/**/*.md'];
@@ -45,9 +46,7 @@ const MIN_BODY_LINES = 5;
 
 type ParsedAgent = {
   filePath: string;
-  name: string | undefined;
   bodyLines: Set<string>;
-  bodyLineCount: number;
 };
 
 function id(kind: string, key: string): string {
@@ -145,7 +144,7 @@ export function detectSubagents(context: RepoContext): PromptCiIssue[] {
         summary: `${filePath} has no \`name\` field, so it cannot be invoked by name.`,
         filePaths: [filePath],
         locations: [{ filePath, startLine: 1, endLine: fm.fenceEndLine > 0 ? fm.fenceEndLine : 1 }],
-        evidence: [`Keys present: ${fm.order.join(', ') || '(none)'}`],
+        evidence: [`Keys present: ${Object.keys(fm.data).join(', ') || '(none)'}`],
         recommendation: 'Add a `name` field to the frontmatter.',
         confidence: 0.85,
       }));
@@ -158,7 +157,7 @@ export function detectSubagents(context: RepoContext): PromptCiIssue[] {
         summary: `${filePath} has no \`description\`. The description tells the orchestrator when to delegate to this agent.`,
         filePaths: [filePath],
         locations: [{ filePath, startLine: 1, endLine: fm.fenceEndLine > 0 ? fm.fenceEndLine : 1 }],
-        evidence: [`Keys present: ${fm.order.join(', ') || '(none)'}`],
+        evidence: [`Keys present: ${Object.keys(fm.data).join(', ') || '(none)'}`],
         recommendation: 'Add a `description` explaining what the agent is for and when to use it.',
         confidence: 0.85,
       }));
@@ -200,11 +199,11 @@ export function detectSubagents(context: RepoContext): PromptCiIssue[] {
 
     const body = content.split(/\r?\n/).slice(Math.max(0, fm.bodyStartLine - 1)).join('\n');
     const bodyLines = normalizeBodyLines(body);
-    parsed.push({ filePath, name, bodyLines, bodyLineCount: bodyLines.size });
+    parsed.push({ filePath, bodyLines });
   }
 
   // Duplicated system-prompt content across agents.
-  const comparable = parsed.filter((a) => a.bodyLineCount >= MIN_BODY_LINES);
+  const comparable = parsed.filter((a) => a.bodyLines.size >= MIN_BODY_LINES);
   for (let i = 0; i < comparable.length; i++) {
     for (let j = i + 1; j < comparable.length; j++) {
       const a = comparable[i]!;
@@ -226,5 +225,6 @@ export function detectSubagents(context: RepoContext): PromptCiIssue[] {
     }
   }
 
-  return issues;
+  // Scanner-form paths so inline suppressions can match (see withScannerPaths).
+  return withScannerPaths(context.repoRoot, issues);
 }
