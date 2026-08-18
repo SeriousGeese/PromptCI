@@ -13,6 +13,11 @@ import { detectVagueGuidance } from './vague-guidance.js';
 import { detectSecurityPack } from './security-pack.js';
 import { runFrameworkPacks } from './framework-packs.js';
 import { detectPromptCacheFriendliness } from './prompt-cache.js';
+import { detectSkills } from './skills-detector.js';
+import { detectSubagents } from './subagents-detector.js';
+import { detectHooksSettings } from './hooks-settings-detector.js';
+import { detectMcpConfig } from './mcp-config-detector.js';
+import { detectCursorRules } from './cursor-rules-detector.js';
 import type { PromptCiIssue } from './types.js';
 import type { RepoContext } from './repo-context.js';
 
@@ -98,6 +103,26 @@ export const DETECTORS: DetectorDefinition[] = [
   {
     id: 'prompt-cache-friendliness',
     run: (context) => detectPromptCacheFriendliness(context.files),
+  },
+  {
+    id: 'ai-config-skills',
+    run: (context) => detectSkills(context),
+  },
+  {
+    id: 'ai-config-subagents',
+    run: (context) => detectSubagents(context),
+  },
+  {
+    id: 'ai-config-hooks-settings',
+    run: (context) => detectHooksSettings(context),
+  },
+  {
+    id: 'ai-config-mcp',
+    run: (context) => detectMcpConfig(context),
+  },
+  {
+    id: 'ai-config-cursor-rules',
+    run: (context) => detectCursorRules(context),
   },
 ];
 

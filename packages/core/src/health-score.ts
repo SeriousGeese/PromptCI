@@ -27,6 +27,7 @@ const CATEGORY_DEDUCTION_CAP: Partial<Record<IssueCategory, number>> = {
   stale_instruction: 15,
   duplicate: 20,
   vague_guidance: 10,
+  ai_config: 25,          // skills/subagents/hooks/mcp/cursor config checks
 };
 
 /**
