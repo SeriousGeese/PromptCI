@@ -48,9 +48,18 @@ const IGNORE_DIRS = ['.git', 'node_modules', 'Library', 'Temp', 'bin', 'obj', 'd
 const MAX_FILE_SIZE = 500 * 1024;
 const BINARY_CHECK_BYTES = 512;
 
-function deriveFileType(absPath: string): FileType {
-  const base = path.basename(absPath);
-  const norm = absPath.replace(/\\/g, '/');
+// Takes the repo-root-relative path (not the absolute path): classification must
+// depend only on where a file sits INSIDE the scanned repo. Using the absolute
+// path let the checkout location leak in — a repo checked out under an external
+// `.../.claude/worktrees/<branch>/` path (e.g. a Claude Code worktree) made every
+// scanned file match `/.claude/` and get classified 'claude', producing bogus
+// findings like "No behavioral guidance in CLAUDE.md" against README.md.
+//
+// A root-relative path has no leading slash (e.g. `.claude/foo.md`), so normalise
+// to a leading-slash, forward-slash form before the directory-substring checks.
+function deriveFileType(relPath: string): FileType {
+  const norm = '/' + relPath.replace(/\\/g, '/').replace(/^\/+/, '');
+  const base = norm.slice(norm.lastIndexOf('/') + 1);
 
   if (base === 'AGENTS.md') return 'agents';
   if (base === '.cursorrules' || norm.includes('/.cursor/rules/')) return 'cursor';
@@ -205,7 +214,7 @@ export async function scanFiles(input: ScanInput): Promise<InstructionFile[]> {
 
       results.push({
         path: absPath,
-        fileType: deriveFileType(absPath),
+        fileType: deriveFileType(relPath),
         content,
         sections,
         lineCount,

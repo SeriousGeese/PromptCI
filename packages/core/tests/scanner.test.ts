@@ -313,3 +313,45 @@ describe('scanFiles — .windsurfrules typing', () => {
     expect(windsurf!.fileType).toBe('windsurf');
   });
 });
+
+// Regression: classification must depend on where a file sits INSIDE the scanned
+// repo, not on the repo's checkout location. deriveFileType once inspected the
+// absolute path, so scanning a repo checked out under a `.../.claude/worktrees/`
+// path (e.g. a Claude Code worktree) matched `/.claude/` for EVERY file and typed
+// them all 'claude' — producing bogus findings like "No behavioral guidance in
+// CLAUDE.md" against README.md.
+describe('scanFiles — fileType ignores an external .claude/ in the checkout path', () => {
+  let claudeRootDir: string;
+  let repoRoot: string;
+
+  beforeAll(() => {
+    // A repo root nested under a path segment named `.claude` (mirrors
+    // `.claude/worktrees/<branch>/`), reproducing the misclassification trigger.
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'promptci-scanner-cl-'));
+    claudeRootDir = base;
+    repoRoot = path.join(base, '.claude', 'worktrees', 'some-branch');
+    fs.mkdirSync(repoRoot, { recursive: true });
+    fs.writeFileSync(path.join(repoRoot, 'README.md'), '# Project\n\nA short overview.\n');
+    // A real `.claude/` dir INSIDE the repo must still classify as 'claude'.
+    fs.mkdirSync(path.join(repoRoot, '.claude'), { recursive: true });
+    fs.writeFileSync(path.join(repoRoot, '.claude', 'notes.md'), '# Notes\n\nInternal notes.\n');
+  });
+
+  afterAll(() => {
+    fs.rmSync(claudeRootDir, { recursive: true, force: true });
+  });
+
+  it('classifies README.md as readme even when the repo root lives under a .claude/ path', async () => {
+    const files = await scanFiles({ repoPath: repoRoot });
+    const readme = files.find((f) => path.basename(f.path) === 'README.md');
+    expect(readme).toBeDefined();
+    expect(readme!.fileType).toBe('readme');
+  });
+
+  it('still classifies a .claude/ file INSIDE the repo as claude', async () => {
+    const files = await scanFiles({ repoPath: repoRoot });
+    const notes = files.find((f) => path.basename(f.path) === 'notes.md');
+    expect(notes).toBeDefined();
+    expect(notes!.fileType).toBe('claude');
+  });
+});
