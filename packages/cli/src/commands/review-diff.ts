@@ -3,14 +3,27 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { scan, filterNewIssues, createBaseline } from '@promptci/core';
-import type { PromptCiIssue } from '@promptci/core';
+import type { IssueSeverity, PromptCiIssue } from '@promptci/core';
 import { loadConfig, type CliConfig } from '../config.js';
+import { meetsThreshold } from '../summary.js';
+
+const SEVERITY_VALUES: IssueSeverity[] = ['info', 'warning', 'high', 'critical'];
+
+function isValidSeverity(v: string): v is IssueSeverity {
+  return (SEVERITY_VALUES as string[]).includes(v);
+}
 
 export type ReviewDiffOptions = {
   baseBranch: string;
   scanPath?: string;
   json: boolean;
   failOnRegression: boolean;
+  /**
+   * Absolute severity gate over the head side, with the same meaning as
+   * `scan --fail-on`. Independent of --fail-on-regression: a branch can be
+   * regression-free and still sit above the threshold it inherited.
+   */
+  failOn?: IssueSeverity;
   /**
    * Compare the working tree (including uncommitted edits) instead of the HEAD
    * commit. Useful locally; wrong in CI, where uncommitted noise would be
@@ -48,6 +61,19 @@ function addWorktree(repoRoot: string, commit: string, dir: string): void {
   git(['worktree', 'add', '--detach', dir, commit], repoRoot);
 }
 
+/**
+ * True when the checkout has no full history (`actions/checkout` default, or
+ * `git clone --depth`). Both flavours are reported: `--depth` writes
+ * .git/shallow, and a partial clone advertises a promisor filter.
+ */
+function isShallowClone(repoRoot: string): boolean {
+  try {
+    return git(['rev-parse', '--is-shallow-repository'], repoRoot) === 'true';
+  } catch {
+    return false;
+  }
+}
+
 function removeWorktree(repoRoot: string, dir: string): void {
   try {
     git(['worktree', 'remove', '--force', dir], repoRoot);
@@ -59,6 +85,14 @@ function removeWorktree(repoRoot: string, dir: string): void {
 export async function runReviewDiff(options: ReviewDiffOptions): Promise<void> {
   const rawPath = options.scanPath ?? process.cwd();
   const resolvedPath = path.resolve(rawPath);
+
+  // Validate before the two scans and the temporary worktrees, not after them.
+  if (options.failOn !== undefined && !isValidSeverity(options.failOn)) {
+    console.error(
+      `Error: invalid --fail-on value "${options.failOn}". Must be one of: ${SEVERITY_VALUES.join(', ')}`,
+    );
+    process.exit(1);
+  }
 
   // 1. Verify git repository and locate its root
   let repoRoot: string;
@@ -78,7 +112,23 @@ export async function runReviewDiff(options: ReviewDiffOptions): Promise<void> {
   try {
     baseCommit = git(['rev-parse', '--verify', `${options.baseBranch}^{commit}`], repoRoot);
   } catch {
+    // The overwhelmingly common cause in CI is a shallow checkout: actions/checkout
+    // defaults to fetch-depth 1 and fetches only the PR head, so origin/main does
+    // not exist locally. Say so instead of leaving the consumer to guess.
+    const shallow = isShallowClone(repoRoot);
     console.error(`Error: Could not resolve base branch/commit "${options.baseBranch}".`);
+    if (shallow) {
+      console.error(
+        'This checkout is shallow, so the base ref is not present locally. ' +
+          'In GitHub Actions, use `actions/checkout` with `fetch-depth: 0`; ' +
+          'locally, run `git fetch --unshallow`.',
+      );
+    } else {
+      console.error(
+        `Fetch it first (e.g. \`git fetch origin ${options.baseBranch.replace(/^origin\//, '')}\`), ` +
+          'or pass a ref that exists in this checkout via --base.',
+      );
+    }
     process.exit(1);
   }
 
@@ -110,6 +160,11 @@ export async function runReviewDiff(options: ReviewDiffOptions): Promise<void> {
   const baseWorktree = path.join(tempParent, 'base');
   const headWorktree = path.join(tempParent, 'head');
   const createdWorktrees: string[] = [];
+
+  // Declared outside the try so the gates can fire AFTER the finally has run.
+  // process.exit() inside a try skips its finally, so every gated failure used
+  // to leave the two temporary worktrees registered in the consumer's repo.
+  let failed = false;
 
   try {
     try {
@@ -254,15 +309,32 @@ export async function runReviewDiff(options: ReviewDiffOptions): Promise<void> {
       }
     }
 
-    // 7. Exit Code Regression Enforcement
-    if (options.failOnRegression) {
-      if (scoreDelta < 0 || newIssues.length > 0) {
-        if (!options.json) {
-          console.error('\n\x1b[31mFailed: Regression detected in instruction files.\x1b[0m');
-        }
-        process.exit(1);
+    // 7. Exit Code Enforcement
+    //
+    // The two gates are independent and both are evaluated: a branch that
+    // introduces no regression can still carry pre-existing issues above the
+    // --fail-on threshold, and the GitHub Action passes both at once.
+    if (options.failOnRegression && (scoreDelta < 0 || newIssues.length > 0)) {
+      failed = true;
+      if (!options.json) {
+        console.error('\n\x1b[31mFailed: Regression detected in instruction files.\x1b[0m');
       }
     }
+
+    const failOn = options.failOn;
+    if (failOn) {
+      const matching = currentReport.issues.filter(i => meetsThreshold(i.severity, failOn)).length;
+      if (matching > 0) {
+        failed = true;
+        if (!options.json) {
+          console.error(
+            `\n\x1b[31mFailed: ${matching} issue(s) at or above "${failOn}" threshold ` +
+              `on this branch.\x1b[0m`,
+          );
+        }
+      }
+    }
+
   } finally {
     // 8. Clean up worktrees and the temp directory
     for (const dir of createdWorktrees) {
@@ -278,5 +350,10 @@ export async function runReviewDiff(options: ReviewDiffOptions): Promise<void> {
     } catch {
       // ignore
     }
+  }
+
+  // Gates fire only after cleanup has run.
+  if (failed) {
+    process.exit(1);
   }
 }

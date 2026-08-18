@@ -104,6 +104,10 @@ program
   .option('--json', 'print structured comparison JSON to stdout')
   .option('--fail-on-regression', 'exit non-zero if score decreases or new issues are introduced')
   .option(
+    '--fail-on <severity>',
+    'exit non-zero if any issue on this branch is at or above severity (info/warning/high/critical)',
+  )
+  .option(
     '--working-tree',
     'compare the working tree instead of the HEAD commit (includes uncommitted edits)',
   )
@@ -112,6 +116,7 @@ program
     path?: string;
     json?: boolean;
     failOnRegression?: boolean;
+    failOn?: string;
     workingTree?: boolean;
   }) => {
     await runReviewDiff({
@@ -119,6 +124,7 @@ program
       scanPath: opts.path,
       json: opts.json || false,
       failOnRegression: opts.failOnRegression || false,
+      failOn: opts.failOn as import('@promptci/core').IssueSeverity | undefined,
       workingTree: opts.workingTree || false,
     });
   });

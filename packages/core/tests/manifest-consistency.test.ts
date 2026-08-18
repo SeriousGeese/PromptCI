@@ -521,6 +521,74 @@ describe('detectManifestConsistency — JS/TS specific detectors', () => {
     expect(issues.some(i => i.id.startsWith('manifest-missing-script') && i.title.includes('store'))).toBe(false);
   });
 
+  // ── MF4: prose after npm/pnpm is not a script name (issue #3) ──────────────
+
+  it('MF4: does NOT flag version requirements after a package manager ("pnpm 9+")', () => {
+    const file = makeFile([
+      '# Instructions',
+      '',
+      'Requirements: Node.js 22+, pnpm 9+.',
+      'Dependencies are consumed from the npm registry.',
+    ].join('\n'));
+    const packageJson = JSON.stringify({ scripts: { build: 'echo hi' } });
+    const context = makeContext([file], { packageJson });
+
+    const issues = detectManifestConsistency(context);
+    const missingScripts = issues.filter(i => i.id.startsWith('manifest-missing-script'));
+    expect(missingScripts).toHaveLength(0);
+  });
+
+  it('MF4: does NOT flag a numeric token even inside a code span ("`pnpm 9`")', () => {
+    const file = makeFile('This repo needs `pnpm 9` or newer.');
+    const packageJson = JSON.stringify({ scripts: { build: 'tsc' } });
+    const context = makeContext([file], { packageJson });
+
+    const issues = detectManifestConsistency(context);
+    expect(issues.filter(i => i.id.startsWith('manifest-missing-script'))).toHaveLength(0);
+  });
+
+  it('MF4: does NOT flag prose nouns after a package manager ("npm registry")', () => {
+    const file = makeFile('Published to the npm registry; pnpm workspaces link the pnpm packages.');
+    const packageJson = JSON.stringify({ scripts: { build: 'tsc' } });
+    const context = makeContext([file], { packageJson });
+
+    const issues = detectManifestConsistency(context);
+    expect(issues.filter(i => i.id.startsWith('manifest-missing-script'))).toHaveLength(0);
+  });
+
+  it('MF4: still flags a bare invocation inside a fenced code block', () => {
+    const file = makeFile([
+      'Build the app:',
+      '',
+      '```bash',
+      'pnpm build:prod',
+      '```',
+    ].join('\n'));
+    const packageJson = JSON.stringify({ scripts: { build: 'vite build' } });
+    const context = makeContext([file], { packageJson });
+
+    const issues = detectManifestConsistency(context);
+    expect(issues.some(i => i.id.startsWith('manifest-missing-script') && i.title.includes('build:prod'))).toBe(true);
+  });
+
+  it('MF4: still flags an explicit "npm run <name>" written in prose', () => {
+    const file = makeFile('Before pushing, run npm run typecheck to verify the build.');
+    const packageJson = JSON.stringify({ scripts: { build: 'tsc' } });
+    const context = makeContext([file], { packageJson });
+
+    const issues = detectManifestConsistency(context);
+    expect(issues.some(i => i.id.startsWith('manifest-missing-script') && i.title.includes('typecheck'))).toBe(true);
+  });
+
+  it('MF4: does NOT flag "pnpm run any of the scripts" prose as a script named "any"', () => {
+    const file = makeFile('You can pnpm run any of the scripts defined below.');
+    const packageJson = JSON.stringify({ scripts: { build: 'vite build' } });
+    const context = makeContext([file], { packageJson });
+
+    const issues = detectManifestConsistency(context);
+    expect(issues.filter(i => i.id.startsWith('manifest-missing-script'))).toHaveLength(0);
+  });
+
   it('MF3: does NOT flag "Do not use Node 14" as a version mismatch', () => {
     const file = makeFile('Do not use Node 14 for this project.');
     const packageJson = JSON.stringify({ engines: { node: '>=20.0.0' } });
