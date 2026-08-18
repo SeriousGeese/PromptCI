@@ -14,6 +14,7 @@ export type IssueCategory =
   | 'structure'
   | 'command_validity'
   | 'agent_practices'
+  | 'ai_config'
   | 'security';
 
 export type InstructionSection = {

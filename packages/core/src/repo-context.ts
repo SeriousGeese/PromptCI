@@ -1,5 +1,6 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
+import { resolveWithinRoot as safeResolveWithinRoot } from './ai-config.js';
 import { detectProjectType, detectProjectTypeFromContent } from './project-type.js';
 import { scanFiles } from './scanner.js';
 import type { ManifestData } from './manifest-consistency.js';
@@ -61,11 +62,11 @@ function emptyPackageJsonFacts(): PackageJsonFacts {
   };
 }
 
+// Throwing wrapper over the shared null-returning guard in ai-config.ts — one
+// implementation of the path-traversal check, two failure styles.
 function resolveWithinRoot(repoRoot: string, relativePath: string): string {
-  const root = path.resolve(repoRoot);
-  const resolved = path.resolve(root, relativePath);
-  const relative = path.relative(root, resolved);
-  if (relative.startsWith('..') || path.isAbsolute(relative)) {
+  const resolved = safeResolveWithinRoot(repoRoot, relativePath);
+  if (resolved === null) {
     throw new Error(`Path escapes repo root: ${relativePath}`);
   }
   return resolved;

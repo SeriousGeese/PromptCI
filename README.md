@@ -113,6 +113,8 @@ npx @promptci/cli review-diff --base origin/main --fail-on-regression --fail-on 
 - Security and privacy gaps in instruction guidance
 - Vague guidance, broken local references, agent-practice gaps
 - Prompt-cache-hostile content that inflates the cost of every agent turn
+- AI-setup config rot beyond markdown: Agent Skills, subagents, hooks/settings,
+  `.mcp.json` servers, and Cursor `.mdc` rules checked against filesystem reality
 
 Findings are heuristic and cautiously worded; every one carries evidence, a recommendation,
 and a confidence value.
