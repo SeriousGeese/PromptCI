@@ -18,6 +18,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as crypto from 'node:crypto';
 import type { InstructionFile, PromptCiIssue } from './types.js';
+import { fencedBlocks } from './markdown-fences.js';
 
 // ── Patterns ──────────────────────────────────────────────────────────────────
 
@@ -455,16 +456,15 @@ function extractCodeBlockLayoutPaths(
   lineOffsets: number[],
 ): Array<{ ref: string; evidence: string; line: number }> {
   const results: Array<{ ref: string; evidence: string; line: number }> = [];
-  const fenceRe = /^```[^\n]*\n([\s\S]*?)^```/gm;
-  let blockMatch: RegExpExecArray | null;
 
-  while ((blockMatch = fenceRe.exec(content)) !== null) {
-    const blockText = blockMatch[1] ?? '';
-    const firstLineEnd = content.indexOf('\n', blockMatch.index);
-    let lineOffset = firstLineEnd === -1 ? blockMatch.index : firstLineEnd + 1;
-
-    const lines = blockText.split('\n');
-    results.push(...collectLayoutEntryPaths(lines, lineOffsets, lineOffset));
+  // Closed blocks only — the same requirement the previous ``` -only regex
+  // enforced by needing a closing fence to match at all. Going through the
+  // shared scanner is what gives this check ~~~ fences and indented fences,
+  // which the regex silently skipped.
+  for (const block of fencedBlocks(content)) {
+    if (!block.closed) continue;
+    const startOffset = lineOffsets[block.contentStartLine - 1] ?? content.length;
+    results.push(...collectLayoutEntryPaths(block.lines, lineOffsets, startOffset));
   }
 
   return results;

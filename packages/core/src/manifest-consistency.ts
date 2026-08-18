@@ -23,6 +23,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { InstructionFile, PromptCiIssue } from './types.js';
 import type { RepoContext } from './repo-context.js';
+import { buildCodeMask } from './markdown-fences.js';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -516,59 +517,6 @@ function checkPackageManagerMismatch(context: RepoContext): PromptCiIssue | null
     fixRecipe: `This repo uses ${preferred}. Use \`${preferred} install\`, \`${preferred} test\`, and \`${preferred} build\`; do not substitute npm/yarn commands.`,
     confidence: 0.8,
   };
-}
-
-/**
- * MF4: mark every character of `text` that sits inside a fenced code block or
- * an inline `code span`.
- *
- * checkMissingScripts uses this to tell an invocation from a noun phrase:
- * "pnpm 9+" is a version requirement and "npm registry" is a noun phrase, not
- * calls to scripts named "9" and "registry". A bare `<pm> <token>` therefore
- * only counts as a script reference inside code, where a reader would read it
- * as a command in the first place.
- *
- * Fence tracking mirrors the sibling strippers in stale-instructions.ts and
- * conflicts.ts: the fence character and length are remembered, so ~~~ fences
- * are handled and an unclosed fence swallows the rest of the file.
- */
-function buildCodeMask(text: string): boolean[] {
-  const mask = new Array<boolean>(text.length).fill(false);
-  const INLINE_CODE_RE = /(`+)([^`]+)\1/g;
-
-  let offset = 0;
-  let inBlock = false;
-  let fenceChar: string | null = null;
-  let fenceLen = 0;
-
-  for (const line of text.split('\n')) {
-    if (!inBlock) {
-      const openMatch = /^ {0,3}([`~]{3,})/.exec(line);
-      if (openMatch) {
-        inBlock = true;
-        fenceChar = openMatch[1]![0] ?? null;
-        fenceLen = openMatch[1]!.length;
-        mask.fill(true, offset, offset + line.length);
-      } else {
-        let span: RegExpExecArray | null;
-        const spanRe = new RegExp(INLINE_CODE_RE.source, INLINE_CODE_RE.flags);
-        while ((span = spanRe.exec(line)) !== null) {
-          mask.fill(true, offset + span.index, offset + span.index + span[0].length);
-        }
-      }
-    } else {
-      mask.fill(true, offset, offset + line.length);
-      const closeMatch = /^ {0,3}([`~]{3,})\s*$/.exec(line);
-      if (closeMatch && closeMatch[1]![0] === fenceChar && closeMatch[1]!.length >= fenceLen) {
-        inBlock = false;
-        fenceChar = null;
-        fenceLen = 0;
-      }
-    }
-    offset += line.length + 1;
-  }
-
-  return mask;
 }
 
 /**

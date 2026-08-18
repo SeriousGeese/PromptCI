@@ -2,6 +2,7 @@ import fg from 'fast-glob';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import type { FileType, InstructionFile, InstructionSection, ScanInput } from './types.js';
+import { scanFencedLines } from './markdown-fences.js';
 
 const DEFAULT_PATTERNS = [
   // Core AI instruction files
@@ -115,36 +116,15 @@ export function parseSections(content: string, filePath: string): InstructionSec
     });
   };
 
-  let inCodeBlock = false;
-  let fenceChar: string | null = null;
-  let fenceLen = 0;
+  // Fenced lines are kept in the section text but never read as headings —
+  // otherwise a bash comment (`# text`) inside a code block splits the section.
+  const fenceLines = scanFencedLines(content);
 
   for (let i = 0; i < lines.length; i++) {
     const lineNum = i + 1;
     const line = lines[i] ?? '';
 
-    // Track fenced code blocks so bash comments (`# text`) are not treated as
-    // headings. A closing fence must use the same fence character (``` vs ~~~
-    // are not interchangeable) and be at least as long as the opening fence,
-    // per CommonMark. Up to 3 leading spaces are allowed on either fence.
-    if (!inCodeBlock) {
-      const openMatch = /^ {0,3}([`~]{3,})/.exec(line);
-      if (openMatch) {
-        inCodeBlock = true;
-        fenceChar = openMatch[1][0] ?? null;
-        fenceLen = openMatch[1].length;
-        currentLines.push(line);
-        continue;
-      }
-    } else {
-      const closeMatch = /^ {0,3}([`~]{3,})\s*$/.exec(line);
-      if (closeMatch && closeMatch[1][0] === fenceChar && closeMatch[1].length >= fenceLen) {
-        inCodeBlock = false;
-        fenceChar = null;
-        fenceLen = 0;
-        currentLines.push(line);
-        continue;
-      }
+    if (fenceLines[i]?.inFence) {
       currentLines.push(line);
       continue;
     }

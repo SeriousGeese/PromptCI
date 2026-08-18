@@ -10,6 +10,7 @@
 
 import * as crypto from 'node:crypto';
 import type { InstructionFile, InstructionSection, PromptCiIssue } from './types.js';
+import { stripCodeBlocks } from './markdown-fences.js';
 
 const VAGUE_PHRASES = [
   'write clean code',
@@ -126,42 +127,6 @@ const PHRASE_PATTERNS = new Map<string, RegExp>(
   ALL_VAGUE_PHRASES.map((phrase) => [phrase, new RegExp(`\\b${escapeRegExp(phrase)}\\b`)]),
 );
 
-/**
- * V4: Strip fenced code blocks (``` and ~~~, matching either fence
- * character/length per CommonMark — see scanner.ts) and inline code spans
- * before matching. A fenced example that quotes a vague phrase is
- * documentation about the phrase, not real guidance directed at the agent.
- */
-function stripCodeBlocks(text: string): string {
-  const lines = text.split('\n');
-  const kept: string[] = [];
-  let inBlock = false;
-  let fenceChar: string | null = null;
-  let fenceLen = 0;
-
-  for (const line of lines) {
-    if (!inBlock) {
-      const openMatch = /^ {0,3}([`~]{3,})/.exec(line);
-      if (openMatch) {
-        inBlock = true;
-        fenceChar = openMatch[1]![0] ?? null;
-        fenceLen = openMatch[1]!.length;
-        continue;
-      }
-      kept.push(line);
-    } else {
-      const closeMatch = /^ {0,3}([`~]{3,})\s*$/.exec(line);
-      if (closeMatch && closeMatch[1]![0] === fenceChar && closeMatch[1]!.length >= fenceLen) {
-        inBlock = false;
-        fenceChar = null;
-        fenceLen = 0;
-      }
-      // else: still inside the fence — drop the line
-    }
-  }
-
-  return kept.join('\n').replace(/`[^`\n]+`/g, '');
-}
 
 /**
  * V1: Find lines (or pairs of consecutive wrapped lines) containing `phraseRe`
@@ -209,7 +174,7 @@ export function detectVagueGuidance(files: InstructionFile[]): PromptCiIssue[] {
       const sectionKey = `${file.path}:${section.startLine}`;
       if (seen.has(sectionKey)) continue;
 
-      const scanText = stripCodeBlocks(section.text);
+      const scanText = stripCodeBlocks(section.text, { stripInlineCode: true });
       // V1: collapse newlines to spaces for this fast pre-filter only, so a
       // phrase hard-wrapped across two lines still passes the gate. The actual
       // evidence extraction below (findPhraseMatches) independently re-checks

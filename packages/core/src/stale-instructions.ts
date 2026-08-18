@@ -13,6 +13,7 @@
 
 import * as crypto from 'node:crypto';
 import type { InstructionFile, InstructionSection, PromptCiIssue } from './types.js';
+import { stripCodeBlocks } from './markdown-fences.js';
 
 // ─── Pattern definitions ──────────────────────────────────────────────────────
 
@@ -199,48 +200,6 @@ function isVersionInNegationContext(text: string, index: number): boolean {
   return /\b(?:do\s+not|don['']?t|avoid|never|no\s+longer|drop(?:ped|ping)?|remov(?:ed?|ing)|deprecat(?:ed?|ing)|stop(?:ped|ping)?\s+(?:using|support(?:ing)?))\b(?:(?!\n[ \t]*\n)[^.!?])*$/.test(preceding);
 }
 
-/**
- * Strip fenced code blocks from text before scanning for stale years.
- * Code blocks often contain version pins or changelog entries that are
- * expected to reference specific years and should not trigger the detector.
- *
- * ST3: tracks fence character + length (matching scanner.ts's S1 fix and
- * vague-guidance.ts's V4 fix) instead of a `` ```...``` `` regex, so ~~~
- * fences are also stripped and an unclosed fence correctly swallows the
- * remainder of the text (rather than leaving it unstripped, as
- * `/```[\s\S]*?```/` did when no closing fence existed).
- */
-function stripCodeBlocks(text: string, stripInlineCode = true): string {
-  const lines = text.split('\n');
-  const kept: string[] = [];
-  let inBlock = false;
-  let fenceChar: string | null = null;
-  let fenceLen = 0;
-
-  for (const line of lines) {
-    if (!inBlock) {
-      const openMatch = /^ {0,3}([`~]{3,})/.exec(line);
-      if (openMatch) {
-        inBlock = true;
-        fenceChar = openMatch[1]![0] ?? null;
-        fenceLen = openMatch[1]!.length;
-        continue;
-      }
-      kept.push(line);
-    } else {
-      const closeMatch = /^ {0,3}([`~]{3,})\s*$/.exec(line);
-      if (closeMatch && closeMatch[1]![0] === fenceChar && closeMatch[1]!.length >= fenceLen) {
-        inBlock = false;
-        fenceChar = null;
-        fenceLen = 0;
-      }
-      // else: still inside the fence — drop the line
-    }
-  }
-
-  const noFences = kept.join('\n');
-  return stripInlineCode ? noFences.replace(/`[^`\n]+`/g, '') : noFences;
-}
 
 // ─── Main detector ────────────────────────────────────────────────────────────
 
@@ -261,8 +220,8 @@ export function detectStaleInstructions(files: InstructionFile[]): PromptCiIssue
       if (section.heading && HISTORY_SECTION_RE.test(section.heading)) continue;
 
       const text = section.text;
-      const textNoCode = stripCodeBlocks(text);
-      const textNoFencedCode = stripCodeBlocks(text, false);
+      const textNoCode = stripCodeBlocks(text, { stripInlineCode: true });
+      const textNoFencedCode = stripCodeBlocks(text);
       const evidence: string[] = [];
       let confidence = 0;
       const sectionKey = `${file.path}:${section.startLine}`;

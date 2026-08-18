@@ -17,6 +17,7 @@
 import * as crypto from 'node:crypto';
 import * as path from 'node:path';
 import type { InstructionFile, InstructionSection, PromptCiIssue } from './types.js';
+import { stripCodeBlocks } from './markdown-fences.js';
 
 /**
  * C2: previously a 50-char floor dropped every section shorter than that —
@@ -934,49 +935,6 @@ function extractVersionDeclarations(content: string): Map<string, Set<string>> {
   return result;
 }
 
-/**
- * C6: strip fenced code blocks before extracting version declarations.
- * Without this, a fenced example quoting ".NET 6" in one file's
- * documentation reads as a real ".NET 6" declaration and conflicts with
- * genuine ".NET 8" prose elsewhere — the same fence character/length
- * tracking used in scanner.ts, vague-guidance.ts, and stale-instructions.ts.
- *
- * Deliberately does NOT also strip inline `code spans` like those other
- * detectors do: several VERSION_EXTRACT_PATTERNS entries (tokio, axum)
- * explicitly expect a backtick-quoted crate name (`` `tokio` 1.x ``) as a
- * legitimate version declaration, not documentation noise — stripping inline
- * spans would delete the exact text those patterns are designed to match.
- */
-function stripCodeBlocks(text: string): string {
-  const lines = text.split('\n');
-  const kept: string[] = [];
-  let inBlock = false;
-  let fenceChar: string | null = null;
-  let fenceLen = 0;
-
-  for (const line of lines) {
-    if (!inBlock) {
-      const openMatch = /^ {0,3}([`~]{3,})/.exec(line);
-      if (openMatch) {
-        inBlock = true;
-        fenceChar = openMatch[1]![0] ?? null;
-        fenceLen = openMatch[1]!.length;
-        continue;
-      }
-      kept.push(line);
-    } else {
-      const closeMatch = /^ {0,3}([`~]{3,})\s*$/.exec(line);
-      if (closeMatch && closeMatch[1]![0] === fenceChar && closeMatch[1]!.length >= fenceLen) {
-        inBlock = false;
-        fenceChar = null;
-        fenceLen = 0;
-      }
-      // else: still inside the fence — drop the line
-    }
-  }
-
-  return kept.join('\n');
-}
 
 function versionConflictId(framework: string, versions: string[]): string {
   const raw = `version-conflict:${framework}:${[...versions].sort().join('|')}`;

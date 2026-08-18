@@ -852,6 +852,37 @@ describe('detectDeadReferences — BUG-002 (eval) code-block layout paths', () =
     expect(issues.some((i) => i.title.includes('rate-limiting.md'))).toBe(true);
   });
 
+  // This detector's fence handling was a ```-only regex until the shared
+  // markdown-fences scanner replaced it — a ~~~ layout block was skipped
+  // entirely, so nothing inside it was ever checked.
+  it('flags missing .md files listed in a ~~~ fenced layout block', () => {
+    const content = [
+      '## Repository Layout',
+      '',
+      '~~~',
+      'docs/',
+      '  runbook.md',
+      '~~~',
+    ].join('\n');
+    const file = makeFile(content, path.join(cbTmpDir, 'CLAUDE.md'));
+    const issues = detectDeadReferences([file], cbTmpDir);
+    expect(issues.some((i) => i.title.includes('runbook.md'))).toBe(true);
+  });
+
+  it('flags missing .md files listed in an indented fenced layout block', () => {
+    const content = [
+      '## Repository Layout',
+      '',
+      '  ```',
+      '  docs/',
+      '    runbook.md',
+      '  ```',
+    ].join('\n');
+    const file = makeFile(content, path.join(cbTmpDir, 'CLAUDE.md'));
+    const issues = detectDeadReferences([file], cbTmpDir);
+    expect(issues.some((i) => i.title.includes('runbook.md'))).toBe(true);
+  });
+
   it('does NOT flag .md files that actually exist', () => {
     const content = [
       '## Repository Layout',

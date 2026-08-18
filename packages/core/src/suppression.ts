@@ -22,6 +22,7 @@
 
 import * as crypto from 'node:crypto';
 import type { IssueCategory, InstructionFile, InstructionSection, PromptCiIssue } from './types.js';
+import { blankCodeBlockLines } from './markdown-fences.js';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -157,50 +158,6 @@ function annotationIssueId(filePath: string, startLine: number, tag: string): st
   return `suppression-invalid-${hash}`;
 }
 
-/**
- * SU3: blank out fenced code block lines (``` or ~~~, matching fence
- * char/length per CommonMark — the same tracking used in scanner.ts,
- * vague-guidance.ts, stale-instructions.ts, conflicts.ts, and
- * command-validity.ts) so a documented EXAMPLE of the annotation syntax
- * doesn't get parsed as a real suppression. The old approach only stripped
- * ` ``` ` fences via a single regex — a ~~~ fence containing an annotation
- * example was scanned as prose and treated as a REAL suppression.
- *
- * Replaces each fenced line with an empty string (not removing it) so the
- * total line count is unchanged — `charToLine` offsets computed against this
- * output still map to the correct line numbers in the ORIGINAL file.
- */
-function stripFencedBlocksPreservingLines(content: string): string {
-  const lines = content.split('\n');
-  const kept: string[] = [];
-  let inBlock = false;
-  let fenceChar: string | null = null;
-  let fenceLen = 0;
-
-  for (const line of lines) {
-    if (!inBlock) {
-      const openMatch = /^ {0,3}([`~]{3,})/.exec(line);
-      if (openMatch) {
-        inBlock = true;
-        fenceChar = openMatch[1]![0] ?? null;
-        fenceLen = openMatch[1]!.length;
-        kept.push('');
-        continue;
-      }
-      kept.push(line);
-    } else {
-      const closeMatch = /^ {0,3}([`~]{3,})\s*$/.exec(line);
-      if (closeMatch && closeMatch[1]![0] === fenceChar && closeMatch[1]!.length >= fenceLen) {
-        inBlock = false;
-        fenceChar = null;
-        fenceLen = 0;
-      }
-      kept.push('');
-    }
-  }
-
-  return kept.join('\n');
-}
 
 // ── Main parser ───────────────────────────────────────────────────────────────
 
@@ -211,7 +168,7 @@ function parseFileSuppressions(file: InstructionFile): SuppressionAnnotation[] {
   // Strip fenced code blocks before parsing so examples of the annotation
   // syntax (e.g. in README.md) don't get interpreted as real suppressions.
   // Preserve line count so offsets still map to the original file's lines.
-  const contentForParsing = stripFencedBlocksPreservingLines(content);
+  const contentForParsing = blankCodeBlockLines(content);
 
   // ── Single annotations ────────────────────────────────────────────────────
   const singleRe = new RegExp(SINGLE_RE.source, SINGLE_RE.flags);
