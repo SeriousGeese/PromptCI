@@ -20,27 +20,15 @@ import type { PromptCiIssue } from './types.js';
 import {
   readTextWithinRoot,
   isFileWithinRoot,
-  listFiles,
   shortHash,
   lineOf,
   withScannerPaths,
   SCRIPT_EXT_RE,
+  aiConfigIssue as base,
 } from './ai-config.js';
-
-const MCP_GLOBS = ['.mcp.json'];
 
 function id(kind: string, key: string): string {
   return `ai-config-mcp-${kind}-${shortHash(key)}`;
-}
-
-function base(issue: Omit<PromptCiIssue, 'severity' | 'category' | 'confidence'> &
-  Partial<Pick<PromptCiIssue, 'severity' | 'category' | 'confidence'>>): PromptCiIssue {
-  return {
-    severity: 'warning',
-    category: 'ai_config',
-    confidence: 0.8,
-    ...issue,
-  };
 }
 
 /**
@@ -121,9 +109,8 @@ function localPathRefs(command: string | undefined, args: string[]): string[] {
 
 export function detectMcpConfig(context: RepoContext): PromptCiIssue[] {
   const issues: PromptCiIssue[] = [];
-  const files = listFiles(context.repoRoot, MCP_GLOBS);
 
-  for (const filePath of files) {
+  for (const filePath of context.aiConfig.mcp) {
     const raw = readTextWithinRoot(context.repoRoot, filePath);
     if (raw === undefined) continue;
 

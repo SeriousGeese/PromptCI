@@ -1,6 +1,7 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
-import { resolveWithinRoot as safeResolveWithinRoot } from './ai-config.js';
+import { discoverAiConfigFiles, resolveWithinRoot as safeResolveWithinRoot } from './ai-config.js';
+import type { AiConfigFiles } from './ai-config.js';
 import { detectProjectType, detectProjectTypeFromContent } from './project-type.js';
 import { scanFiles } from './scanner.js';
 import type { ManifestData } from './manifest-consistency.js';
@@ -38,6 +39,12 @@ export type RepoContext = {
   manifests: ManifestData;
   packageJson: PackageJsonFacts;
   workflows: WorkflowFacts;
+  /**
+   * Config files for the ai_config detectors, discovered here so they share
+   * the scan's include/exclude and size/binary policy instead of re-walking
+   * the repo with a policy of their own.
+   */
+  aiConfig: AiConfigFiles;
   metrics: ScanMetrics;
   contextBudget?: number;
   fileContextBudget?: number;
@@ -263,6 +270,7 @@ export async function buildRepoContext(input: ScanInput): Promise<RepoContext> {
     manifests,
     packageJson: parsePackageJsonFacts(packageJson, lockfiles),
     workflows,
+    aiConfig: discoverAiConfigFiles(repoRoot, input),
     metrics: buildMetrics(files),
     contextBudget: input.contextBudget,
     fileContextBudget: input.fileContextBudget,

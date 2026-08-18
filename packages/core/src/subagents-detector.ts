@@ -20,14 +20,21 @@ import type { PromptCiIssue } from './types.js';
 import {
   parseFrontmatter,
   readTextWithinRoot,
-  listFiles,
   shortHash,
   asStringList,
   toPosix,
   withScannerPaths,
+  aiConfigIssue as base,
+  frontmatterStructureIssues,
 } from './ai-config.js';
+import type { FrontmatterSurface } from './ai-config.js';
 
-const AGENT_GLOBS = ['.claude/agents/**/*.md'];
+const SURFACE: FrontmatterSurface = {
+  idPrefix: 'agent',
+  noun: 'Subagent',
+  why: 'A subagent needs `name` and `description` frontmatter to be registered.',
+  recommendation: 'Add frontmatter with `name` and `description` at the top of the agent file.',
+};
 
 /** Recognized model aliases accepted in agent frontmatter. Full `claude-*` ids also pass. */
 const KNOWN_MODEL_ALIASES = new Set(['sonnet', 'opus', 'haiku', 'inherit', 'default', 'opusplan']);
@@ -53,16 +60,6 @@ function id(kind: string, key: string): string {
   return `ai-config-agent-${kind}-${shortHash(key)}`;
 }
 
-function base(issue: Omit<PromptCiIssue, 'severity' | 'category' | 'confidence'> &
-  Partial<Pick<PromptCiIssue, 'severity' | 'category' | 'confidence'>>): PromptCiIssue {
-  return {
-    severity: 'warning',
-    category: 'ai_config',
-    confidence: 0.8,
-    ...issue,
-  };
-}
-
 function normalizeBodyLines(body: string): Set<string> {
   const set = new Set<string>();
   for (const raw of body.split(/\r?\n/)) {
@@ -83,56 +80,16 @@ function jaccard(a: Set<string>, b: Set<string>): number {
 
 export function detectSubagents(context: RepoContext): PromptCiIssue[] {
   const issues: PromptCiIssue[] = [];
-  const agentFiles = listFiles(context.repoRoot, AGENT_GLOBS);
   const parsed: ParsedAgent[] = [];
 
-  for (const filePath of agentFiles) {
+  for (const filePath of context.aiConfig.agents) {
     const content = readTextWithinRoot(context.repoRoot, filePath);
     if (content === undefined) continue;
 
     const fm = parseFrontmatter(content);
 
-    if (!fm.present) {
-      issues.push(base({
-        id: id('no-frontmatter', filePath),
-        severity: 'high',
-        title: 'Subagent is missing YAML frontmatter',
-        summary: `${filePath} has no \`---\` frontmatter block. A subagent needs \`name\` and \`description\` frontmatter to be registered.`,
-        filePaths: [filePath],
-        locations: [{ filePath, startLine: 1, endLine: 1 }],
-        evidence: [`First line: ${content.split(/\r?\n/)[0]?.slice(0, 60) ?? '(empty)'}`],
-        recommendation: 'Add frontmatter with `name` and `description` at the top of the agent file.',
-        confidence: 0.85,
-      }));
-      continue;
-    }
-
-    if (!fm.closed) {
-      issues.push(base({
-        id: id('unterminated', filePath),
-        severity: 'high',
-        title: 'Subagent frontmatter is not closed',
-        summary: `${filePath} opens a \`---\` frontmatter block that is never closed.`,
-        filePaths: [filePath],
-        locations: [{ filePath, startLine: 1, endLine: 1 }],
-        evidence: ['Opening `---` on line 1 has no closing `---`.'],
-        recommendation: 'Close the frontmatter block with a `---` line.',
-        confidence: 0.9,
-      }));
-    }
-
-    for (const err of fm.errors) {
-      issues.push(base({
-        id: id('fm-error', `${filePath}|${err}`),
-        title: 'Subagent frontmatter has a structural problem',
-        summary: `${filePath}: ${err}.`,
-        filePaths: [filePath],
-        locations: [{ filePath, startLine: 1, endLine: fm.fenceEndLine > 0 ? fm.fenceEndLine : 1 }],
-        evidence: [err],
-        recommendation: 'Fix the frontmatter so it is valid YAML with flat, unique keys.',
-        confidence: 0.7,
-      }));
-    }
+    issues.push(...frontmatterStructureIssues(filePath, content, fm, SURFACE));
+    if (!fm.present) continue;
 
     const name = typeof fm.data.name === 'string' ? fm.data.name.trim() : undefined;
     const description = typeof fm.data.description === 'string' ? fm.data.description.trim() : undefined;
