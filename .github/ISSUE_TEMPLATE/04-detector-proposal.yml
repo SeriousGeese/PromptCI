@@ -8,7 +8,7 @@ body:
       value: |
         **Ground rule:** detectors are deterministic and rule-based. Proposals that require an LLM
         call inside detector code are out of scope — the scanner must produce identical output for
-        identical input, offline. See [AGENTS.md](https://github.com/SeriousGeese/PromptCI/blob/main/AGENTS.md).
+        identical input, offline. See [Changing a detector](https://github.com/SeriousGeese/PromptCI/blob/main/CONTRIBUTING.md#changing-a-detector).
 
   - type: textarea
     id: problem

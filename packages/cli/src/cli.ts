@@ -7,17 +7,25 @@ import { runReviewDiff } from './commands/review-diff.js';
 import { runUpload } from './commands/upload.js';
 import { runLogin } from './commands/login.js';
 import { runAuth, type AuthSubcommand } from './commands/auth.js';
-import { runUpdate } from './commands/update.js';
 import { runContextAnalyze, runContextOptimize } from './commands/context.js';
 import { runExplain } from './commands/explain.js';
 import { runDoctor } from './commands/doctor.js';
+import { getNewVersionNotice } from './commands/version-notice.js';
+
+// Single source of truth for the version: esbuild resolves this require at
+// build time and inlines package.json into the CJS bundle, so --version and
+// the update-notice comparison can never drift from what was published.
+// (require, not import: a JSON import needs resolveJsonModule plus a rootDir
+// that includes ../package.json, and the bundle is CJS anyway.)
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const { version: VERSION } = require('../package.json') as { version: string };
 
 const program = new Command();
 
 program
   .name('promptci')
   .description('Instruction health for AI coding workflows')
-  .version('0.0.1', '-v, --version', 'print version');
+  .version(VERSION, '-v, --version', 'print version');
 
 program
   .command('scan')
@@ -206,18 +214,19 @@ program
     await runAuth(sub as AuthSubcommand, args);
   });
 
-program
-  .command('update')
-  .description('Pull latest changes, rebuild, and re-link the CLI globally')
-  .option(
-    '--source <path>',
-    'path to the cloned PromptCI repo (saved for future updates)',
-  )
-  .action(async (opts: { source?: string }) => {
-    await runUpdate({ source: opts.source });
-  });
+async function main(): Promise<void> {
+  // Start the best-effort update check now so its once-a-day registry probe
+  // overlaps the command's own work, but print any notice only after the
+  // command has produced its output. Commands that call process.exit (and
+  // Commander's own --version/--help) skip the notice entirely — it is
+  // best-effort by design.
+  const notice = getNewVersionNotice(VERSION);
+  await program.parseAsync(process.argv);
+  const message = await notice;
+  if (message) process.stderr.write(message);
+}
 
-program.parseAsync(process.argv).catch((err: unknown) => {
+main().catch((err: unknown) => {
   console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
   process.exit(1);
 });
