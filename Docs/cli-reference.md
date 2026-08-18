@@ -62,10 +62,6 @@ promptci auth status                        # show whether a token is configured
 promptci auth logout                        # clear the stored token
 promptci upload                             # upload last scan to the hosted dashboard
 
-# Self-update (when running from source)
-promptci update                             # git pull + rebuild + re-link global CLI
-promptci update --source <dir>              # set the source directory (first run)
-
 promptci --version
 promptci --help
 ```
