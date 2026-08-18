@@ -121,7 +121,7 @@ export async function getNewVersionNotice(currentVersion: string): Promise<strin
     if (latest && isNewer(latest, currentVersion)) {
       return (
         `\nA new version of promptci is available: ${currentVersion} → ${latest}\n` +
-        `Update with: npm install -g @promptci/cli\n`
+        `Update with: npm install -g @promptci/cli (or however you installed it)\n`
       );
     }
     return null;
