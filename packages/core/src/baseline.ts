@@ -77,7 +77,24 @@ function normalizeEvidenceForRoot(evidence: string, repoRoot?: string): string {
 // ── Fingerprinting ────────────────────────────────────────────────────────────
 
 /**
+ * The fields identity is computed from. Structural rather than
+ * `PromptCiIssue`, so an issue rehydrated from a report's JSON — where
+ * `category` is a plain string — fingerprints identically to the live one.
+ */
+export type FingerprintableIssue = {
+  category: string;
+  title: string;
+  filePaths: string[];
+  evidence: string[];
+};
+
+/**
  * Computes a stable fingerprint for an issue.
+ *
+ * This is the ONE answer to "are these two findings the same issue?" — the
+ * report's trend section used to carry a second, incompatible one that keyed
+ * on severity, so a severity bump read as "resolved + new" in the trend while
+ * the baseline correctly reported one issue that had worsened.
  *
  * Excluded from fingerprint:
  *  - `id` (may change between versions)
@@ -88,7 +105,7 @@ function normalizeEvidenceForRoot(evidence: string, repoRoot?: string): string {
  * Included:
  *  - `category`, `title`, sorted `filePaths`, sorted `evidence`
  */
-export function computeFingerprint(issue: PromptCiIssue, repoRoot?: string): string {
+export function computeFingerprint(issue: FingerprintableIssue, repoRoot?: string): string {
   const normalizedFilePaths = issue.filePaths
     .map((filePath) => normalizePathForRoot(filePath, repoRoot))
     .sort();

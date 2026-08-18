@@ -27,7 +27,7 @@ describe('analyzeContext', () => {
     };
 
     const mockIssues = [
-      { id: 'some-issue', severity: 'warning' },
+      { id: 'some-issue', severity: 'warning', category: 'context_bloat' },
     ];
 
     vi.mocked(repoContext.buildRepoContext).mockResolvedValue(mockContext as unknown as RepoContext);

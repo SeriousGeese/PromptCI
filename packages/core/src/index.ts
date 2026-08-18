@@ -16,7 +16,7 @@ export type { ManifestData } from './manifest-consistency.js';
 export { buildRepoContext, parsePackageJsonFacts } from './repo-context.js';
 export type { RepoContext, PackageJsonFacts, WorkflowFacts, WorkflowCommand } from './repo-context.js';
 export { runDetectors } from './detectors.js';
-export type { DetectorDefinition, DetectorGroup } from './detectors.js';
+export type { DetectorDefinition } from './detectors.js';
 export { analyzeContext } from './context-analysis.js';
 export type { ContextAnalysis } from './context-analysis.js';
 export { scan } from './scan.js';

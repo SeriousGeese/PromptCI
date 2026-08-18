@@ -15,6 +15,7 @@ import {
   computeTrend,
 } from '../src/report.js';
 import type { InstructionFile, PromptCiIssue, ScanReport, ScanReportJson } from '../src/types.js';
+import { computeFingerprint, createBaseline } from '../src/baseline.js';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -630,9 +631,9 @@ describe('Trend Insights', () => {
       expect(report2.trend!.newIssuesCount).toBe(1);
       expect(report2.trend!.resolvedIssuesCount).toBe(1);
       expect(report2.trend!.newIssueIds).toHaveLength(1);
-      expect(report2.trend!.newIssueIds[0]).toMatch(/^trend-/);
+      expect(report2.trend!.newIssueIds[0]).toMatch(/^[0-9a-f]{64}$/);
       expect(report2.trend!.resolvedIssueIds).toHaveLength(1);
-      expect(report2.trend!.resolvedIssueIds[0]).toMatch(/^trend-/);
+      expect(report2.trend!.resolvedIssueIds[0]).toMatch(/^[0-9a-f]{64}$/);
       expect(report2.trend!.categoryDeltas['duplicate']).toBe(-1);
       expect(report2.trend!.categoryDeltas['conflict']).toBe(1);
     } finally {
@@ -714,6 +715,7 @@ describe('computeTrend — R2 duplicate-id resilience', () => {
           category: 'duplicate',
           title: 'Repeated guidance',
           filePaths: ['CLAUDE.md'],
+          evidence: ['Evidence line 1'],
         },
       ],
     };
@@ -740,37 +742,79 @@ describe('computeTrend — R2 duplicate-id resilience', () => {
     // "dup-id" appears twice in currentIssues.
     expect(trend!.newIssuesCount).toBe(2);
     expect(trend!.newIssueIds).toHaveLength(2);
-    expect(trend!.newIssueIds.every((id) => id.startsWith('trend-'))).toBe(true);
+    expect(trend!.newIssueIds.every((id) => /^[0-9a-f]{64}$/.test(id))).toBe(true);
   });
 
   it('counts a RESOLVED id only once even if it appears twice in the previous report (duplicate-id defense)', async () => {
     const report = makeReport({ issues: [] });
     const previousReport = {
       issues: [
-        { id: 'dup-id', category: 'duplicate', severity: 'high', title: 'Finding A', filePaths: ['CLAUDE.md'] },
-        { id: 'dup-id', category: 'duplicate', severity: 'high', title: 'Finding B', filePaths: ['CLAUDE.md'] },
-        { id: 'unique-id', category: 'duplicate', severity: 'warning', title: 'Test Issue', filePaths: ['CLAUDE.md'] },
+        { id: 'dup-id', category: 'duplicate', severity: 'high', title: 'Finding A', filePaths: ['CLAUDE.md'], evidence: ['Evidence line 1'] },
+        { id: 'dup-id', category: 'duplicate', severity: 'high', title: 'Finding B', filePaths: ['CLAUDE.md'], evidence: ['Evidence line 1'] },
+        { id: 'unique-id', category: 'duplicate', severity: 'warning', title: 'Test Issue', filePaths: ['CLAUDE.md'], evidence: ['Evidence line 1'] },
       ],
     };
     const trend = await computeTrend(report, previousReport, []);
     expect(trend).not.toBeNull();
     expect(trend!.resolvedIssuesCount).toBe(2);
     expect(trend!.resolvedIssueIds).toHaveLength(2);
-    expect(trend!.resolvedIssueIds.every((id) => id.startsWith('trend-'))).toBe(true);
+    expect(trend!.resolvedIssueIds.every((id) => /^[0-9a-f]{64}$/.test(id))).toBe(true);
   });
 
   it('still reports correct counts with no duplicate ids present (baseline behavior unaffected)', async () => {
     const report = makeReport({
-      issues: [makeIssue({ id: 'a' }), makeIssue({ id: 'b' })],
+      // Distinct findings, not just distinct ids — identity is computed from
+      // what the finding says, so two issues differing only by id are one.
+      issues: [makeIssue({ id: 'a', title: 'Finding A' }), makeIssue({ id: 'b' })],
     });
     const previousReport = {
-      issues: [{ id: 'b', category: 'duplicate', severity: 'high', title: 'Test Issue', filePaths: ['CLAUDE.md'] }],
+      issues: [{ id: 'b', category: 'duplicate', severity: 'high', title: 'Test Issue', filePaths: ['CLAUDE.md'], evidence: ['Evidence line 1'] }],
     };
     const trend = await computeTrend(report, previousReport, []);
     expect(trend).not.toBeNull();
     expect(trend!.newIssuesCount).toBe(1);
     expect(trend!.newIssueIds).toHaveLength(1);
-    expect(trend!.newIssueIds[0]).toMatch(/^trend-/);
+    expect(trend!.newIssueIds[0]).toMatch(/^[0-9a-f]{64}$/);
     expect(trend!.resolvedIssuesCount).toBe(0);
+  });
+});
+
+// ── Issue identity: the trend and the baseline agree ─────────────────────────
+
+describe('computeTrend — issue identity matches the baseline', () => {
+  it('does not report a severity bump as one resolved plus one new issue', async () => {
+    // The finding is unchanged; only its severity rose. The baseline calls
+    // that one issue that worsened, and the trend used to disagree because it
+    // hashed severity into its own key.
+    const report = makeReport({ issues: [makeIssue({ id: 'x', severity: 'critical' })] });
+    const previousReport = {
+      issues: [
+        {
+          id: 'x',
+          category: 'duplicate',
+          severity: 'warning',
+          title: 'Test Issue',
+          filePaths: ['CLAUDE.md'],
+          evidence: ['Evidence line 1'],
+        },
+      ],
+    };
+
+    const trend = await computeTrend(report, previousReport, []);
+    expect(trend).not.toBeNull();
+    expect(trend!.newIssuesCount).toBe(0);
+    expect(trend!.resolvedIssuesCount).toBe(0);
+  });
+
+  it('keys the trend by the same fingerprint the baseline stores', async () => {
+    const issue = makeIssue({ id: 'x', filePaths: ['CLAUDE.md'] });
+    const report = makeReport({ issues: [issue] });
+    const trend = await computeTrend(report, { issues: [] }, []);
+
+    expect(trend!.newIssueIds).toEqual([computeFingerprint(issue, report.repoPath)]);
+    // …and that value is exactly what a baseline built from the same scan holds.
+    expect(createBaseline([issue], report.repoPath).map((e) => e.fingerprint)).toEqual(
+      trend!.newIssueIds,
+    );
   });
 });

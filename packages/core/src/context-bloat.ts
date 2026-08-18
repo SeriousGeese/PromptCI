@@ -1,3 +1,16 @@
+/**
+ * Context-bloat detector: how much does this repo's instruction context cost
+ * to carry on every agent turn, and which file is responsible?
+ *
+ * This absorbed the former context-cost detector. The two fired the same
+ * category on the same files at thresholds that differed only in unit —
+ * 8,000 chars is ~2,000 tokens against a 2,500-token rule — so a large file
+ * produced two findings stating one fact, and each had to be dismissed
+ * separately. Sizes are measured in characters, with the token estimate in
+ * the evidence; README dominance, the one fact the token detector had to
+ * itself, moved here intact.
+ */
+
 import * as crypto from 'node:crypto';
 import type { InstructionFile, PromptCiIssue } from './types.js';
 
@@ -34,6 +47,17 @@ function fileIssueId(filePath: string): string {
 }
 
 const TOTAL_ISSUE_ID = 'context-bloat-total';
+
+/**
+ * A README this far past both bars is carrying the repo's agent context.
+ * Absolute floor as well as ratio: half of a 200-token context is not a
+ * finding, it is a small repo.
+ */
+const README_DOMINANCE_RATIO = 0.5;
+const README_DOMINANCE_MIN_TOKENS = 1_000;
+
+/** Marks the findings that are about what the context costs to carry. */
+const COST_TAGS = ['cost', 'context'];
 
 /**
  * BUG-A: `{ ...DEFAULTS, ...thresholds }` looks safe but isn't — object spread
@@ -93,6 +117,7 @@ export function detectContextBloat(
         ],
         recommendation: 'Consider splitting this file.',
         confidence: 1.0,
+        tags: COST_TAGS,
       });
     } else if (charCount >= warnThreshold) {
       issues.push({
@@ -109,6 +134,7 @@ export function detectContextBloat(
         ],
         recommendation: 'Consider trimming this file.',
         confidence: 1.0,
+        tags: COST_TAGS,
       });
     }
   }
@@ -157,6 +183,7 @@ export function detectContextBloat(
       ],
       recommendation: 'Aim to keep total context under 30k characters.',
       confidence: 1.0,
+      tags: COST_TAGS,
     });
   } else if (totalChars >= t.totalWarning) {
     issues.push({
@@ -173,6 +200,36 @@ export function detectContextBloat(
       ],
       recommendation: 'Consider trimming instruction files.',
       confidence: 1.0,
+      tags: COST_TAGS,
+    });
+  }
+
+  // Which file is the context? A README that accounts for most of it is not
+  // necessarily too big — it is in the wrong place, since a README is written
+  // for people and gets carried on every agent turn regardless.
+  const readme = files.find((file) => file.fileType === 'readme');
+  if (
+    totalTokens > 0 &&
+    readme &&
+    readme.estimatedTokens >= README_DOMINANCE_MIN_TOKENS &&
+    readme.estimatedTokens / totalTokens >= README_DOMINANCE_RATIO
+  ) {
+    const share = Math.round((readme.estimatedTokens / totalTokens) * 100);
+    issues.push({
+      id: fileIssueId(`${readme.path}:readme-dominates`),
+      severity: 'info',
+      category: 'context_bloat',
+      title: 'README dominates scanned instruction context',
+      summary:
+        `README content accounts for about ${share}% of scanned instruction tokens. That may be ` +
+        'appropriate, but AI-specific guidance is usually cheaper in a smaller canonical file.',
+      filePaths: [readme.path],
+      locations: [{ filePath: readme.path }],
+      evidence: [`README: ~${readme.estimatedTokens} of ~${totalTokens} scanned tokens`],
+      recommendation:
+        'Consider keeping AI rules in AGENTS.md and leaving README as project documentation linked only when relevant.',
+      confidence: 0.65,
+      tags: COST_TAGS,
     });
   }
 

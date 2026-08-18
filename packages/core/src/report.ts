@@ -4,8 +4,8 @@
 
 import * as fs from 'node:fs/promises';
 import * as nodePath from 'node:path';
-import * as crypto from 'node:crypto';
 import type { IssueSeverity, PromptCiIssue, ScanReport, ScanReportJson, ScanTrend } from './types.js';
+import { computeFingerprint } from './baseline.js';
 
 export type WriteReportOptions = {
   /** Override path for the markdown report (default: <repoPath>/.promptci/latest.md) */
@@ -78,29 +78,29 @@ type TrendIssueLike = {
   severity?: string;
   title?: string;
   filePaths?: string[];
+  evidence?: string[];
 };
 
+/**
+ * Issue identity for the trend, delegated to the baseline's fingerprint so
+ * both answer "is this the same issue?" the same way.
+ *
+ * The trend used to hash severity into its own key and leave evidence out.
+ * A finding that merely got worse therefore vanished from one side and
+ * appeared on the other — reported as one resolved plus one new issue, while
+ * the baseline, reading the same two scans, correctly reported a single
+ * issue whose severity had risen.
+ */
 function trendIssueKey(issue: TrendIssueLike, repoPath?: string): string {
-  if (!issue.filePaths || issue.filePaths.length === 0) return issue.id ?? '';
-  const idFamily = issue.id?.replace(/-[^-]+$/, '') ?? '';
-  const normalizedPaths = issue.filePaths
-    .map((filePath) => {
-      const normalized = filePath.replace(/\\/g, '/');
-      return repoPath && nodePath.isAbsolute(filePath) ? relPath(filePath, repoPath).replace(/\\/g, '/') : normalized;
-    })
-    .sort();
-  const hash = crypto
-    .createHash('sha1')
-    .update(JSON.stringify({
+  return computeFingerprint(
+    {
       category: issue.category ?? '',
-      severity: issue.severity ?? '',
-      idFamily,
       title: issue.title ?? '',
-      filePaths: normalizedPaths,
-    }))
-    .digest('hex')
-    .slice(0, 12);
-  return `trend-${hash}`;
+      filePaths: issue.filePaths ?? [],
+      evidence: issue.evidence ?? [],
+    },
+    repoPath,
+  );
 }
 
 function trendIssueKeys(issues: TrendIssueLike[], repoPath?: string): string[] {
@@ -580,8 +580,13 @@ export async function computeTrend(
       ? (previousReport.issues as TrendIssueLike[])
       : [];
 
+    // Both sides are keyed against the same repo root. The previous report's
+    // paths are already repo-relative and pass through untouched, but its
+    // EVIDENCE was serialized raw — absolute paths and all — so it needs the
+    // same `<repo>` substitution the current side gets, or identical findings
+    // fingerprint differently across the two scans.
     const currentIds = new Set(trendIssueKeys(currentIssues, report.repoPath));
-    const previousIds = new Set(trendIssueKeys(previousIssues));
+    const previousIds = new Set(trendIssueKeys(previousIssues, report.repoPath));
 
     // R2: derive new/resolved ids from the DEDUPLICATED id sets, not by
     // filtering the raw (possibly duplicated) issues arrays. The old code

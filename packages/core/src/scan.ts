@@ -12,7 +12,7 @@ import type { ScanInput, ScanReport } from './types.js';
 
 export async function scan(input: ScanInput): Promise<ScanReport> {
   const context = await buildRepoContext(input);
-  const issues = runDetectors(context, 'scan');
+  const issues = runDetectors(context);
 
   // Apply inline suppression annotations.
   // Invalid annotations are surfaced as warning issues (count against score).
