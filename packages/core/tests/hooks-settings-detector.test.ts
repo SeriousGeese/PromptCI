@@ -51,6 +51,15 @@ describe('detectHooksSettings', () => {
     expect(issues.some((i) => i.title.includes('script that does not exist'))).toBe(false);
   });
 
+  it('does not flag a path argument to a linter as a missing script', () => {
+    const dir = repo();
+    writeFile(dir, '.claude/settings.json', settings({
+      PostToolUse: [{ hooks: [{ type: 'command', command: 'eslint --fix src/does-not-exist.js' }] }],
+    }));
+    const issues = detectHooksSettings(ctx(dir));
+    expect(issues.some((i) => i.title.includes('script that does not exist'))).toBe(false);
+  });
+
   it('flags curl-piped-to-shell as high severity', () => {
     const dir = repo();
     writeFile(dir, '.claude/settings.json', settings({

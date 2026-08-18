@@ -31,6 +31,24 @@ describe('parseFrontmatter', () => {
     expect(fm.data.globs).toEqual(['a.ts', 'b.ts']);
   });
 
+  it('keeps commas inside quotes and braces within an inline sequence', () => {
+    const fm = parseFrontmatter(['---', 'globs: ["**/*.{ts,tsx}", src/a.ts]', '---'].join('\n'));
+    expect(fm.data.globs).toEqual(['**/*.{ts,tsx}', 'src/a.ts']);
+  });
+
+  it('strips an unquoted trailing comment but keeps quoted # verbatim', () => {
+    const fm = parseFrontmatter(
+      ['---', 'name: my-skill # the slug', 'description: "Fixes issue #23 reliably"', '---'].join('\n'),
+    );
+    expect(fm.data.name).toBe('my-skill');
+    expect(fm.data.description).toBe('Fixes issue #23 reliably');
+  });
+
+  it('records the first occurrence line for a duplicate key', () => {
+    const fm = parseFrontmatter(['---', 'name: a', 'name: b', '---'].join('\n'));
+    expect(fm.keyLines.name).toBe(2);
+  });
+
   it('parses block scalars', () => {
     const fm = parseFrontmatter(
       ['---', 'description: |', '  line one', '  line two', '---'].join('\n'),

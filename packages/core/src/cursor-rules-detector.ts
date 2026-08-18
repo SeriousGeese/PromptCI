@@ -121,7 +121,11 @@ export function detectCursorRules(context: RepoContext): PromptCiIssue[] {
     for (const glob of globs) {
       if (!isTestableGlob(glob)) continue;
       const normalized = glob.replace(/^\//, '');
-      const matches = listFiles(context.repoRoot, [normalized]);
+      // Cursor treats a slashless pattern like `*.tsx` as "any depth", but
+      // fast-glob only matches it at the root — so also try a `**/`-anchored
+      // variant before declaring the glob dead, to avoid false positives.
+      const candidates = normalized.includes('/') ? [normalized] : [normalized, `**/${normalized}`];
+      const matches = listFiles(context.repoRoot, candidates);
       if (matches.length === 0) {
         issues.push(base({
           id: id('dead-glob', `${filePath}|${glob}`),

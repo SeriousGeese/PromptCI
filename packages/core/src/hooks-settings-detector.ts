@@ -72,6 +72,12 @@ function collectCommandHooks(hooks: unknown, event: string, out: CommandHook[]):
   }
 }
 
+/** Interpreters whose first non-flag argument is the script they execute. */
+const INTERPRETERS = new Set([
+  'bash', 'sh', 'zsh', 'dash', 'node', 'deno', 'python', 'python3', 'ruby',
+  'ts-node', 'tsx', 'pwsh', 'powershell',
+]);
+
 /** Strip a leading `$CLAUDE_PROJECT_DIR/`, `${CLAUDE_PROJECT_DIR}/`, or surrounding quotes. */
 function normalizeScriptToken(token: string): string {
   let t = token.replace(/^['"]|['"]$/g, '');
@@ -79,23 +85,47 @@ function normalizeScriptToken(token: string): string {
   return t;
 }
 
-/** Extract repo-relative local script references from a hook command string. */
+/**
+ * Extract repo-relative local script references from a hook command string.
+ *
+ * Only the *script the hook runs* is verified, not every path-shaped argument:
+ * the command's own executable, or the first non-flag argument to a known
+ * interpreter (`bash x.sh`, `node scripts/run.js`). Other tokens are checked
+ * only when they are explicitly relative (`./x`, `.claude/x`, `$CLAUDE_PROJECT_DIR/x`),
+ * so a lint hook like `eslint --fix src/foo.js` does not get its target argument
+ * flagged as a missing script.
+ */
 function extractScriptRefs(command: string): string[] {
   const refs = new Set<string>();
-  for (const rawToken of command.split(/\s+/)) {
-    if (!rawToken || rawToken.startsWith('-')) continue;
+  const tokens = command.split(/\s+/).filter(Boolean);
+  if (tokens.length === 0) return [];
+
+  const add = (rawToken: string, executed: boolean) => {
+    if (rawToken.startsWith('-')) return;
     const token = normalizeScriptToken(rawToken);
-    if (!token || token.includes('$') || /[<>{}*?|"'`]/.test(token)) continue; // still has a var/placeholder
-    if (token.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(token)) continue; // absolute
-    if (/^https?:/i.test(token)) continue;
-    if (token.includes('..')) continue;
-    const looksLikeScript = SCRIPT_EXT_RE.test(token);
-    const isRelative = rawToken.startsWith('./') || rawToken.startsWith('.claude/') ||
-      /^\$\{?CLAUDE_PROJECT_DIR\}?[/\\]/.test(rawToken);
-    if (looksLikeScript && (isRelative || token.includes('/'))) {
-      refs.add(token.replace(/\\/g, '/'));
+    if (!token || token.includes('$') || /[<>{}*?|"'`]/.test(token)) return; // still has a var/placeholder
+    if (token.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(token) || /^https?:/i.test(token)) return; // absolute/url
+    if (token.includes('..')) return;
+    if (!SCRIPT_EXT_RE.test(token)) return;
+    const explicitRel = rawToken.startsWith('./') || rawToken.startsWith('../') ||
+      rawToken.startsWith('.claude/') || /^\$\{?CLAUDE_PROJECT_DIR\}?[/\\]/.test(rawToken);
+    if (executed || explicitRel) refs.add(token.replace(/\\/g, '/'));
+  };
+
+  const first = tokens[0]!;
+  if (INTERPRETERS.has(normalizeScriptToken(first))) {
+    // The executed script is the first non-flag argument after the interpreter.
+    for (let i = 1; i < tokens.length; i++) {
+      if (!tokens[i]!.startsWith('-')) { add(tokens[i]!, true); break; }
     }
+  } else {
+    // The command itself may be a direct script invocation (`./scripts/x.sh`).
+    add(first, true);
   }
+
+  // Remaining tokens are verified only when explicitly relative.
+  for (const token of tokens) add(token, false);
+
   return [...refs];
 }
 

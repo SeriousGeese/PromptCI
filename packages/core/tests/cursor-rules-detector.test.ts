@@ -36,6 +36,24 @@ describe('detectCursorRules', () => {
     expect(dead!.evidence.join(' ')).toContain('src/**/*.py');
   });
 
+  it('does not flag a slashless extension glob that matches nested files', () => {
+    const dir = repo();
+    writeFile(dir, 'src/nested/app.tsx', 'export {};');
+    writeFile(dir, '.cursor/rules/tsx.mdc',
+      ['---', 'description: TSX rules', 'globs: *.tsx', '---', 'body'].join('\n'));
+    const issues = detectCursorRules(ctx(dir));
+    expect(issues.some((i) => i.title.includes('glob matches no files'))).toBe(false);
+  });
+
+  it('does not flag a valid brace-expansion glob in an inline sequence', () => {
+    const dir = repo();
+    writeFile(dir, 'src/a.ts', 'export {};');
+    writeFile(dir, '.cursor/rules/tsx.mdc',
+      ['---', 'description: TS rules', 'globs: ["**/*.{ts,tsx}"]', '---', 'body'].join('\n'));
+    const issues = detectCursorRules(ctx(dir));
+    expect(issues.some((i) => i.title.includes('glob matches no files'))).toBe(false);
+  });
+
   it('flags missing frontmatter', () => {
     const dir = repo();
     writeFile(dir, '.cursor/rules/x.mdc', 'just a body');

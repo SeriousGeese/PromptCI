@@ -129,18 +129,51 @@ function stripBom(s: string): string {
   return s.charCodeAt(0) === 0xfeff ? s.slice(1) : s;
 }
 
+/**
+ * Split on top-level `,` only — commas inside quotes or `[]`/`{}`/`()` are left
+ * alone. Without this, an inline glob sequence with a brace-expansion pattern
+ * such as a quoted `{ts,tsx}` would be shredded at the inner comma, producing
+ * bogus dead-glob findings.
+ */
+function splitTopLevelCommas(inner: string): string[] {
+  const parts: string[] = [];
+  let cur = '';
+  let depth = 0;
+  let quote = '';
+  for (const c of inner) {
+    if (quote) {
+      cur += c;
+      if (c === quote) quote = '';
+      continue;
+    }
+    if (c === '"' || c === "'") { quote = c; cur += c; continue; }
+    if (c === '[' || c === '{' || c === '(') { depth++; cur += c; continue; }
+    if (c === ']' || c === '}' || c === ')') { if (depth > 0) depth--; cur += c; continue; }
+    if (c === ',' && depth === 0) { parts.push(cur); cur = ''; continue; }
+    cur += c;
+  }
+  parts.push(cur);
+  return parts.map((s) => unquote(s.trim())).filter((s) => s !== '');
+}
+
 function parseScalar(raw: string): FrontmatterValue {
-  const value = raw.trim();
+  let value = raw.trim();
   if (value === '') return null;
+  // Fully-quoted string: keep contents verbatim (a `#` inside is not a comment).
+  if (value.length >= 2 && ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'")))) {
+    return value.slice(1, -1);
+  }
   // Inline flow sequence: [a, b, c]
   if (value.startsWith('[') && value.endsWith(']')) {
     const inner = value.slice(1, -1).trim();
     if (inner === '') return [];
-    return inner
-      .split(',')
-      .map((s) => unquote(s.trim()))
-      .filter((s) => s !== '');
+    return splitTopLevelCommas(inner);
   }
+  // Unquoted scalar: a ` #` begins a trailing comment in YAML — strip it so a
+  // value like `name: my-skill # note` does not carry the comment into `name`.
+  const commentIdx = value.search(/\s#/);
+  if (commentIdx >= 0) value = value.slice(0, commentIdx).trim();
+  if (value === '') return null;
   if (value === 'true') return true;
   if (value === 'false') return false;
   if (value === 'null' || value === '~') return null;
@@ -260,8 +293,8 @@ export function parseFrontmatter(content: string): Frontmatter {
       result.errors.push(`Duplicate frontmatter key "${key}" (line ${i + 1})`);
     } else {
       result.order.push(key);
+      result.keyLines[key] = i + 1; // first occurrence
     }
-    result.keyLines[key] = i + 1;
 
     const valueTrimmed = rawValue.trim();
     if (valueTrimmed === '|' || valueTrimmed === '|-' || valueTrimmed === '|+' ||
