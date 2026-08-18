@@ -40,6 +40,7 @@ promptci review-diff --base <branch>        # compare against a specific base br
 promptci review-diff --path <dir>           # target a specific directory
 promptci review-diff --json                 # print structured comparison JSON to stdout
 promptci review-diff --fail-on-regression   # exit 1 if score decreases or new issues are introduced
+promptci review-diff --fail-on <severity>   # exit 1 if any issue on this branch is at or above severity
 promptci review-diff --working-tree         # compare uncommitted work instead of the HEAD commit
 
 # Explain
@@ -127,6 +128,11 @@ Two consequences worth knowing:
   ```
 
 The temporary worktrees are removed when the command exits, including on failure.
+
+`--fail-on-regression` and `--fail-on` are independent gates, and both are evaluated when both
+are passed. The first asks "did this branch make things worse than the base?"; the second asks
+"is anything on this branch at or above `<severity>`?" — a branch can be regression-free and
+still fail the absolute threshold it inherited.
 
 ## Baselines and the CI ratchet
 

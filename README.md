@@ -69,16 +69,30 @@ See [Docs/cli-reference.md](Docs/cli-reference.md) for the full command referenc
 Fail pull requests that make instruction files worse:
 
 ```yaml
+- uses: actions/checkout@v5
+  with:
+    fetch-depth: 0        # review-diff compares against origin/<base_branch>
 - uses: SeriousGeese/PromptCI@main
   with:
     fail_on_regression: 'true'
     base_branch: 'main'
+    fail_on: 'high'       # also gate on absolute severity, not just regressions
 ```
+
+The checkout step is required. `actions/checkout` defaults to `fetch-depth: 1` and fetches
+only the PR head, so `origin/main` is not in the checkout and the comparison has nothing to
+diff against. The action fetches the base ref itself as a fallback, but `fetch-depth: 0` is
+the reliable form.
+
+`fail_on` and `fail_on_regression` are independent gates and both apply: a branch that
+introduces no regression can still sit above the severity threshold. The action installs a
+pinned CLI version; override it with the `cli_version` input (`'latest'` to always take the
+newest release).
 
 Or run the CLI directly:
 
 ```bash
-npx @promptci/cli review-diff --base origin/main --fail-on-regression
+npx @promptci/cli review-diff --base origin/main --fail-on-regression --fail-on high
 ```
 
 ## What gets detected

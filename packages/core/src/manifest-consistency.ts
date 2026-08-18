@@ -519,6 +519,59 @@ function checkPackageManagerMismatch(context: RepoContext): PromptCiIssue | null
 }
 
 /**
+ * MF4: mark every character of `text` that sits inside a fenced code block or
+ * an inline `code span`.
+ *
+ * checkMissingScripts uses this to tell an invocation from a noun phrase:
+ * "pnpm 9+" is a version requirement and "npm registry" is a noun phrase, not
+ * calls to scripts named "9" and "registry". A bare `<pm> <token>` therefore
+ * only counts as a script reference inside code, where a reader would read it
+ * as a command in the first place.
+ *
+ * Fence tracking mirrors the sibling strippers in stale-instructions.ts and
+ * product-boundary.ts: the fence character and length are remembered, so ~~~
+ * fences are handled and an unclosed fence swallows the rest of the file.
+ */
+function buildCodeMask(text: string): boolean[] {
+  const mask = new Array<boolean>(text.length).fill(false);
+  const INLINE_CODE_RE = /(`+)([^`]+)\1/g;
+
+  let offset = 0;
+  let inBlock = false;
+  let fenceChar: string | null = null;
+  let fenceLen = 0;
+
+  for (const line of text.split('\n')) {
+    if (!inBlock) {
+      const openMatch = /^ {0,3}([`~]{3,})/.exec(line);
+      if (openMatch) {
+        inBlock = true;
+        fenceChar = openMatch[1]![0] ?? null;
+        fenceLen = openMatch[1]!.length;
+        mask.fill(true, offset, offset + line.length);
+      } else {
+        let span: RegExpExecArray | null;
+        const spanRe = new RegExp(INLINE_CODE_RE.source, INLINE_CODE_RE.flags);
+        while ((span = spanRe.exec(line)) !== null) {
+          mask.fill(true, offset + span.index, offset + span.index + span[0].length);
+        }
+      }
+    } else {
+      mask.fill(true, offset, offset + line.length);
+      const closeMatch = /^ {0,3}([`~]{3,})\s*$/.exec(line);
+      if (closeMatch && closeMatch[1]![0] === fenceChar && closeMatch[1]!.length >= fenceLen) {
+        inBlock = false;
+        fenceChar = null;
+        fenceLen = 0;
+      }
+    }
+    offset += line.length + 1;
+  }
+
+  return mask;
+}
+
+/**
  * Detect when instructions reference scripts that do not exist in package.json.
  */
 function checkMissingScripts(context: RepoContext): PromptCiIssue[] {
@@ -530,7 +583,10 @@ function checkMissingScripts(context: RepoContext): PromptCiIssue[] {
   // MF2: '_' was excluded from the script-name char class, so `pnpm build_all`
   // could never match at all (the regex has nowhere to complete once it hits
   // the underscore) — always silently skipped, never validated.
-  const SCRIPT_RUN_RE = /\b(?:npm|yarn|pnpm|bun)\s+(?:run\s+)?([a-z0-9][a-z0-9:_-]*)\b/gi;
+  // MF4: `run` is captured rather than skipped, so an explicit `npm run <name>`
+  // can be told apart from a bare `pnpm <token>` — the latter needs code
+  // context before it counts as an invocation.
+  const SCRIPT_RUN_RE = /\b(?:npm|yarn|pnpm|bun)\s+(run\s+)?([a-z0-9][a-z0-9:_-]*)\b/gi;
 
   const reported = new Set<string>();
 
@@ -549,14 +605,31 @@ function checkMissingScripts(context: RepoContext): PromptCiIssue[] {
     'are', 'is', 'the', 'a', 'an', 'that', 'this', 'for', 'to', 'and', 'or',
     'not', 'with', 'without', 'via', 'because', 'since', 'before', 'after',
     'than', 'as', 'like', 'but', 'so',
+    // MF4: determiners and pronouns that can follow an explicit `run` in prose
+    // ("you can pnpm run any of the scripts below").
+    'any', 'all', 'each', 'every', 'either', 'both', 'one', 'it', 'them',
+    'these', 'those', 'my', 'our', 'your', 'their', 'its',
   ]);
 
   for (const file of files) {
+    const codeMask = buildCodeMask(file.content);
     let match: RegExpExecArray | null;
     const re = new RegExp(SCRIPT_RUN_RE.source, SCRIPT_RUN_RE.flags);
     while ((match = re.exec(file.content)) !== null) {
-      const scriptName = match[1]!;
+      const explicitRun = match[1] !== undefined;
+      const scriptName = match[2]!;
       if (scriptName.startsWith('-')) {
+        continue;
+      }
+      // MF4: "Node.js 22+, pnpm 9+" is a version requirement, not a script
+      // named "9" — no package.json script starts with a digit in practice.
+      if (/^[0-9]/.test(scriptName)) {
+        continue;
+      }
+      // MF4: outside a code span or fenced block, `<pm> <word>` is ordinary
+      // prose ("consumed from the npm registry", "this is an npm package").
+      // Only the explicit `run` form reads as an invocation there.
+      if (!explicitRun && !codeMask[match.index]) {
         continue;
       }
       // Skip common standard subcommands that aren't necessarily scripts

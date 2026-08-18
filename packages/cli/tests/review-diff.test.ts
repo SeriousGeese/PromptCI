@@ -307,6 +307,107 @@ describe('runReviewDiff CLI command', () => {
     expect(worktrees).toHaveLength(1);
   });
 
+  // ── --fail-on: absolute severity gate, independent of the regression gate ──
+
+  it('exits 1 when the branch has issues at or above --fail-on, even with no regression', async () => {
+    await initRepo(tmpDir);
+    await writeFiles(tmpDir, { 'CLAUDE.md': '## Rules\nEnsure 2023 compatibility guidelines.\n' });
+    commitAll(tmpDir, 'base');
+    git(['branch', 'base-branch'], tmpDir);
+
+    await expect(
+      runReviewDiff({
+        baseBranch: 'base-branch',
+        scanPath: tmpDir,
+        json: false,
+        // No regression — the finding is inherited from the base — but the
+        // absolute threshold is still breached.
+        failOnRegression: true,
+        failOn: 'warning',
+      }),
+    ).rejects.toThrow('process.exit(1)');
+
+    expect(exitCode).toBe(1);
+    expect(stdoutOutput).toContain('New Issues:    0');
+    expect(stderrOutput).toContain('at or above "warning" threshold');
+    expect(stderrOutput).not.toContain('Regression detected');
+  });
+
+  it('does not exit 1 when no issue reaches the --fail-on threshold', async () => {
+    await initRepo(tmpDir);
+    await writeFiles(tmpDir, { 'CLAUDE.md': '## Rules\nEnsure 2023 compatibility guidelines.\n' });
+    commitAll(tmpDir, 'base');
+    git(['branch', 'base-branch'], tmpDir);
+
+    await runReviewDiff({
+      baseBranch: 'base-branch',
+      scanPath: tmpDir,
+      json: false,
+      failOnRegression: true,
+      failOn: 'critical',
+    });
+
+    expect(exitCode).toBeUndefined();
+  });
+
+  it('rejects an invalid --fail-on value before scanning', async () => {
+    await initRepo(tmpDir);
+    await writeFiles(tmpDir, { 'CLAUDE.md': '## Rules\n' });
+    commitAll(tmpDir, 'base');
+
+    await expect(
+      runReviewDiff({
+        baseBranch: 'main',
+        scanPath: tmpDir,
+        json: false,
+        failOnRegression: false,
+        failOn: 'blocker' as never,
+      }),
+    ).rejects.toThrow('process.exit(1)');
+
+    expect(exitCode).toBe(1);
+    expect(stderrOutput).toContain('invalid --fail-on value "blocker"');
+  });
+
+  it('removes the temporary worktrees even when a gate fails the run', async () => {
+    await initRepo(tmpDir);
+    await writeFiles(tmpDir, { 'CLAUDE.md': '## Rules\nEnsure 2026 compatibility guidelines.\n' });
+    commitAll(tmpDir, 'base');
+    git(['branch', 'base-branch'], tmpDir);
+
+    await writeFiles(tmpDir, { 'CLAUDE.md': '## Rules\nEnsure 2023 compatibility guidelines.\n' });
+    commitAll(tmpDir, 'head');
+
+    await expect(
+      runReviewDiff({
+        baseBranch: 'base-branch',
+        scanPath: tmpDir,
+        json: false,
+        failOnRegression: true,
+      }),
+    ).rejects.toThrow('process.exit(1)');
+
+    const worktrees = git(['worktree', 'list'], tmpDir).split('\n').filter(Boolean);
+    expect(worktrees).toHaveLength(1);
+  });
+
+  it('points at the fetch fix when the base ref is missing', async () => {
+    await initRepo(tmpDir);
+    await writeFiles(tmpDir, { 'CLAUDE.md': '## Rules\n' });
+    commitAll(tmpDir, 'initial');
+
+    await expect(
+      runReviewDiff({
+        baseBranch: 'origin/main',
+        scanPath: tmpDir,
+        json: false,
+        failOnRegression: false,
+      }),
+    ).rejects.toThrow('process.exit(1)');
+
+    expect(stderrOutput).toContain('git fetch origin main');
+  });
+
   it('scans the matching subdirectory on both sides when --path is nested', async () => {
     await initRepo(tmpDir);
     await writeFiles(tmpDir, {

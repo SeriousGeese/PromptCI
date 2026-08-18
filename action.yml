@@ -11,7 +11,10 @@ inputs:
     required: false
     default: '.'
   fail_on:
-    description: 'Fail threshold severity (info/warning/high/critical)'
+    description: >-
+      Fail threshold severity (info/warning/high/critical). Honoured in both
+      modes: with fail_on_regression enabled it gates the branch in addition to
+      the regression check, not instead of it.
     required: false
     default: ''
   fail_on_regression:
@@ -22,6 +25,15 @@ inputs:
     description: 'Base branch to compare against'
     required: false
     default: 'main'
+  cli_version:
+    description: >-
+      Version of @promptci/cli to install. Pinned by default so a release
+      cannot change the behaviour of every consumer's pipeline mid-run; set to
+      "latest" to always take the newest published CLI.
+    required: false
+    # Keep in sync with packages/cli/package.json on every release — this is
+    # the version the action installs for every consumer.
+    default: '0.0.1'
 
 runs:
   using: 'composite'
@@ -54,19 +66,59 @@ runs:
         PROMPTCI_FAIL_ON: ${{ inputs.fail_on }}
         PROMPTCI_FAIL_ON_REGRESSION: ${{ inputs.fail_on_regression }}
         PROMPTCI_BASE_BRANCH: ${{ inputs.base_branch }}
+        PROMPTCI_CLI_VERSION: ${{ inputs.cli_version }}
       run: |
         set -euo pipefail
+
+        # Pinned by default (cli_version input). An unpinned `npx @promptci/cli`
+        # resolves to whatever is newest at the moment each consumer's job runs,
+        # so a release could turn a green pipeline red with no change on their
+        # side. `--yes` keeps npx from prompting when the version is not cached.
+        CLI="@promptci/cli@${PROMPTCI_CLI_VERSION}"
+
         if [ "$PROMPTCI_FAIL_ON_REGRESSION" = "true" ]; then
-          echo "Running PromptCI Branch Review (compared to origin/$PROMPTCI_BASE_BRANCH)..."
-          npx @promptci/cli review-diff \
-            --base "origin/$PROMPTCI_BASE_BRANCH" \
-            --path "$PROMPTCI_PATH" \
-            --fail-on-regression
+          # review-diff compares against origin/<base>. actions/checkout defaults
+          # to fetch-depth 1 and fetches only the PR head, so that ref usually
+          # does not exist locally: fetch it (the single base ref is enough — the
+          # base commit's tree is all the scan needs) and fail with an actionable
+          # message rather than the CLI's generic unresolvable-ref error.
+          if ! git -C "$PROMPTCI_PATH" rev-parse --git-dir >/dev/null 2>&1; then
+            echo "::error::PromptCI review-diff needs a git checkout. Add 'uses: actions/checkout@v5' with 'fetch-depth: 0' before this step."
+            exit 1
+          fi
+
+          BASE_REF="origin/$PROMPTCI_BASE_BRANCH"
+          if ! git -C "$PROMPTCI_PATH" rev-parse --verify --quiet "${BASE_REF}^{commit}" >/dev/null; then
+            echo "Base ref ${BASE_REF} is not in this checkout; fetching it..."
+            git -C "$PROMPTCI_PATH" fetch --no-tags --prune origin \
+              "+refs/heads/${PROMPTCI_BASE_BRANCH}:refs/remotes/${BASE_REF}" || true
+          fi
+          if ! git -C "$PROMPTCI_PATH" rev-parse --verify --quiet "${BASE_REF}^{commit}" >/dev/null; then
+            echo "::error::Could not resolve ${BASE_REF}. Check out with history before this step: 'uses: actions/checkout@v5' with 'fetch-depth: 0', and confirm base_branch ('${PROMPTCI_BASE_BRANCH}') names a real branch."
+            exit 1
+          fi
+
+          echo "Running PromptCI Branch Review (compared to ${BASE_REF})..."
+          # fail_on is passed here too. It used to be read only in the scan
+          # branch, and since fail_on_regression defaults to 'true', a consumer
+          # who set only fail_on had it silently dropped.
+          if [ -n "$PROMPTCI_FAIL_ON" ]; then
+            npx --yes "$CLI" review-diff \
+              --base "$BASE_REF" \
+              --path "$PROMPTCI_PATH" \
+              --fail-on-regression \
+              --fail-on "$PROMPTCI_FAIL_ON"
+          else
+            npx --yes "$CLI" review-diff \
+              --base "$BASE_REF" \
+              --path "$PROMPTCI_PATH" \
+              --fail-on-regression
+          fi
         else
           echo "Running PromptCI Scan..."
           if [ -n "$PROMPTCI_FAIL_ON" ]; then
-            npx @promptci/cli scan --path "$PROMPTCI_PATH" --fail-on "$PROMPTCI_FAIL_ON"
+            npx --yes "$CLI" scan --path "$PROMPTCI_PATH" --fail-on "$PROMPTCI_FAIL_ON"
           else
-            npx @promptci/cli scan --path "$PROMPTCI_PATH"
+            npx --yes "$CLI" scan --path "$PROMPTCI_PATH"
           fi
         fi
