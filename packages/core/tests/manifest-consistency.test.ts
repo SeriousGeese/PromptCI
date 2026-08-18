@@ -580,6 +580,21 @@ describe('detectManifestConsistency — JS/TS specific detectors', () => {
     expect(issues.some(i => i.id.startsWith('manifest-missing-script') && i.title.includes('typecheck'))).toBe(true);
   });
 
+  it('MF4: does NOT flag the "npm run-script" alias as a missing script', () => {
+    const file = makeFile([
+      'Build with:',
+      '',
+      '```bash',
+      'npm run-script build',
+      '```',
+    ].join('\n'));
+    const packageJson = JSON.stringify({ scripts: { build: 'tsc' } });
+    const context = makeContext([file], { packageJson });
+
+    const issues = detectManifestConsistency(context);
+    expect(issues.some(i => i.id.startsWith('manifest-missing-script') && i.title.includes('run-script'))).toBe(false);
+  });
+
   it('MF4: does NOT flag "pnpm run any of the scripts" prose as a script named "any"', () => {
     const file = makeFile('You can pnpm run any of the scripts defined below.');
     const packageJson = JSON.stringify({ scripts: { build: 'vite build' } });

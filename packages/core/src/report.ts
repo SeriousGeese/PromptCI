@@ -103,17 +103,17 @@ function trendIssueKey(issue: TrendIssueLike, repoPath?: string): string {
   );
 }
 
+/**
+ * No pre-dedup by raw id here. That guard (R2) belonged to the old
+ * severity+idFamily key; with content-based fingerprints, exact duplicates
+ * already collapse in the callers' Sets, and skipping on a repeated id would
+ * silently drop a DISTINCT finding that happens to share an id — the very
+ * detector-bug class R2 existed to keep out of the counts. The baseline
+ * (createBaseline/filterNewIssues) keeps both findings in that case, and after
+ * issue-identity unification the trend must agree with it.
+ */
 function trendIssueKeys(issues: TrendIssueLike[], repoPath?: string): string[] {
-  const seenRawIds = new Set<string>();
-  const keys: string[] = [];
-  for (const issue of issues) {
-    if (issue.id) {
-      if (seenRawIds.has(issue.id)) continue;
-      seenRawIds.add(issue.id);
-    }
-    keys.push(trendIssueKey(issue, repoPath));
-  }
-  return keys;
+  return issues.map((issue) => trendIssueKey(issue, repoPath));
 }
 
 function scoreBar(score: number): string {

@@ -179,7 +179,12 @@ export async function runReviewDiff(options: ReviewDiffOptions): Promise<void> {
         `Error: Could not check out a temporary worktree: ` +
           `${err instanceof Error ? err.message : String(err)}`,
       );
-      process.exit(1);
+      // `return`, not process.exit(): exit() inside the try would skip the
+      // finally below, and when the SECOND worktree add is the one that failed
+      // the first is already registered — exiting here used to leave it (and
+      // the temp directory) behind in the consumer's repository.
+      process.exitCode = 1;
+      return;
     }
 
     const baseScanRoot = path.join(baseWorktree, relFromRoot);

@@ -248,7 +248,13 @@ function extractCommands(content: string): ExtractedCommand[] {
   // keeps a ```json block's bare ``` closer from being misread as an opener,
   // which used to invert the in-block state for the rest of the file.
   for (const block of fencedBlocks(content)) {
-    const isShell = block.lang === '' || SHELL_FENCE_LANGS.has(block.lang);
+    // The shared scanner reports the full info string ('{.bash}', 'json,');
+    // classify on its leading identifier run, matching the historical opener
+    // regex `([a-zA-Z0-9_-]*)`. That keeps a pandoc-attribute fence like
+    // ```{.bash} classified as bare-and-therefore-shell (identifier run is
+    // empty) instead of being silently skipped as an unknown language.
+    const lang = /^[a-zA-Z0-9_-]*/.exec(block.lang)![0];
+    const isShell = lang === '' || SHELL_FENCE_LANGS.has(lang);
     if (!isShell || !block.closed) continue;
 
     // Each entry's index corresponds 1:1 to its physical line offset from the
