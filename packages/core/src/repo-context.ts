@@ -50,6 +50,12 @@ export type RepoContext = {
   contextBudget?: number;
   fileContextBudget?: number;
   /**
+   * FEAT-004: config override forcing every vague-guidance finding to this
+   * severity (`vagueGuidanceSeverity` config key). Undefined = use the
+   * detector's high-signal/soft tiering.
+   */
+  vagueGuidanceSeverity?: 'info' | 'warning';
+  /**
    * Load-on-demand skill/agent bodies (`.claude/skills/**`, `.claude/agents/**`).
    * Kept out of `files` so the always-loaded prose/bloat detectors never see
    * them, but retained here so the report can still list them and parse their
@@ -297,6 +303,7 @@ export async function buildRepoContext(input: ScanInput): Promise<RepoContext> {
     metrics: buildMetrics(files, onDemandFiles),
     contextBudget: input.contextBudget,
     fileContextBudget: input.fileContextBudget,
+    vagueGuidanceSeverity: input.vagueGuidanceSeverity,
     onDemandFiles,
   };
 }

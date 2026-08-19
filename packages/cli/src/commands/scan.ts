@@ -126,6 +126,7 @@ export async function runScan(options: ScanOptions): Promise<void> {
     baseline,
     contextBudget: options.contextBudget ?? config.contextBudget,
     fileContextBudget: options.fileContextBudget ?? config.fileContextBudget,
+    vagueGuidanceSeverity: config.vagueGuidanceSeverity,
   });
 
   // Write markdown and JSON files.

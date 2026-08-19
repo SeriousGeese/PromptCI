@@ -5,11 +5,15 @@
  * Emits at most one issue per section regardless of how many vague phrases
  * appear in it.
  *
- * Heuristic detector — confidence 0.8, severity "info".
+ * Heuristic detector. Findings are tiered (FEAT-004): high-signal platitudes
+ * ("write clean code", "best practices", "SOLID principles", …) are
+ * warning 0.80; soft style/UX/paradigm phrases are info 0.75. A team can force
+ * one severity for every finding via the `severityOverride` option (wired to
+ * the `vagueGuidanceSeverity` config key).
  */
 
 import * as crypto from 'node:crypto';
-import type { InstructionFile, InstructionSection, PromptCiIssue } from './types.js';
+import type { InstructionFile, InstructionSection, IssueSeverity, PromptCiIssue } from './types.js';
 import { stripCodeBlocks } from './markdown-fences.js';
 
 const VAGUE_PHRASES = [
@@ -113,6 +117,32 @@ function expandHyphenVariants(phrases: string[]): string[] {
 
 const ALL_VAGUE_PHRASES = expandHyphenVariants(VAGUE_PHRASES);
 
+/**
+ * FEAT-004: High-signal platitudes. These are the phrases that most reliably
+ * mark instruction rot — broad quality/effort exhortations that give an agent
+ * no constraint at all. A section containing any of them is emitted at
+ * `warning` (0.80); sections whose only matches are softer style/UX/paradigm
+ * phrases stay `info` (0.75). Listed in the post-hyphen-expansion form so the
+ * no-hyphen twins ("production ready" ↔ "production-ready") both qualify.
+ */
+const HIGH_SIGNAL_PHRASES = new Set<string>([
+  'write clean code',
+  'write clean',
+  'use best practices',
+  'best practices',
+  'follow best practices',
+  'make it production ready',
+  'production ready',
+  'production-ready',
+  'production quality',
+  'production-quality',
+  'be careful',
+  'solid principles',
+  'follow solid',
+  'clean architecture',
+  'make it maintainable',
+]);
+
 function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -164,7 +194,20 @@ function issueId(section: InstructionSection): string {
   return `vague-${hash}`;
 }
 
-export function detectVagueGuidance(files: InstructionFile[]): PromptCiIssue[] {
+export type VagueGuidanceOptions = {
+  /**
+   * FEAT-004: force every vague-guidance finding to this severity, overriding
+   * the per-section high-signal/soft tiering. Wired to the `vagueGuidanceSeverity`
+   * config key so teams can enforce a stricter (all-warning) or looser
+   * (all-info) posture. Confidence still reflects the matched tier.
+   */
+  severityOverride?: 'info' | 'warning';
+};
+
+export function detectVagueGuidance(
+  files: InstructionFile[],
+  options: VagueGuidanceOptions = {},
+): PromptCiIssue[] {
   const issues: PromptCiIssue[] = [];
   // One issue per section — collect all matching phrases and lines first
   const seen = new Set<string>();
@@ -199,9 +242,17 @@ export function detectVagueGuidance(files: InstructionFile[]): PromptCiIssue[] {
 
       const phraseList = matchedPhrases.map((p) => `"${p}"`).join(', ');
 
+      // FEAT-004: tier by the strongest phrase in the section. Any high-signal
+      // platitude escalates the whole finding to warning; a config override,
+      // when set, wins over the derived tier (but not the tier-based confidence).
+      const isHighSignal = matchedPhrases.some((p) => HIGH_SIGNAL_PHRASES.has(p));
+      const tierSeverity: IssueSeverity = isHighSignal ? 'warning' : 'info';
+      const severity = options.severityOverride ?? tierSeverity;
+      const confidence = isHighSignal ? 0.8 : 0.75;
+
       issues.push({
         id: issueId(section),
-        severity: 'info',
+        severity,
         category: 'vague_guidance',
         title: 'Vague guidance detected',
         summary: `This section contains guidance that may be too vague to be actionable: ${phraseList}.`,
@@ -212,7 +263,7 @@ export function detectVagueGuidance(files: InstructionFile[]): PromptCiIssue[] {
           'Replace vague guidance with concrete constraints — specific commands, forbidden ' +
           'patterns, or measurable criteria. For example, replace "write clean code" with ' +
           '"functions must be ≤ 50 lines; no unused variables".',
-        confidence: 0.8,
+        confidence,
       });
     }
   }

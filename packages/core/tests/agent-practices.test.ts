@@ -83,9 +83,13 @@ describe('detectAgentPractices', () => {
 
   // ── Honesty policy ────────────────────────────────────────────────────────
 
-  it('flags missing honesty policy', () => {
+  it('flags missing honesty policy at warning severity', () => {
     const issues = detectAgentPractices([MINIMAL_FILE]);
-    expect(issues.find((i) => i.title.includes('honestly'))).toBeDefined();
+    const issue = issues.find((i) => i.title.includes('honestly'));
+    expect(issue).toBeDefined();
+    // FEAT-003: elevated from info 0.70 — failure-reporting is a production risk.
+    expect(issue!.severity).toBe('warning');
+    expect(issue!.confidence).toBe(0.75);
   });
 
   it('does NOT flag when honesty policy is present', () => {
@@ -99,9 +103,13 @@ describe('detectAgentPractices', () => {
 
   // ── Read-before-edit ──────────────────────────────────────────────────────
 
-  it('flags missing read-before-edit instruction', () => {
+  it('flags missing read-before-edit instruction at warning severity', () => {
     const issues = detectAgentPractices([MINIMAL_FILE]);
-    expect(issues.find((i) => i.title.includes('read before edit'))).toBeDefined();
+    const issue = issues.find((i) => i.title.includes('read before edit'));
+    expect(issue).toBeDefined();
+    // FEAT-003: elevated from info 0.70 — editing unread files is the #1 mistake.
+    expect(issue!.severity).toBe('warning');
+    expect(issue!.confidence).toBe(0.75);
   });
 
   it('does NOT flag when read-before-edit is present', () => {
@@ -124,9 +132,13 @@ describe('detectAgentPractices', () => {
 
   // ── Scope control ─────────────────────────────────────────────────────────
 
-  it('flags missing scope-control instruction', () => {
+  it('flags missing scope-control instruction at warning severity', () => {
     const issues = detectAgentPractices([MINIMAL_FILE]);
-    expect(issues.find((i) => i.title.includes('scope-control'))).toBeDefined();
+    const issue = issues.find((i) => i.title.includes('scope-control'));
+    expect(issue).toBeDefined();
+    // FEAT-003: elevated from info 0.65 — unconstrained scope yields sweeping diffs.
+    expect(issue!.severity).toBe('warning');
+    expect(issue!.confidence).toBe(0.7);
   });
 
   it('does NOT flag when scope control is present', () => {
@@ -140,9 +152,13 @@ describe('detectAgentPractices', () => {
 
   // ── Plan-first ────────────────────────────────────────────────────────────
 
-  it('flags missing plan-first instruction', () => {
+  it('flags missing plan-first instruction (stays info)', () => {
     const issues = detectAgentPractices([MINIMAL_FILE]);
-    expect(issues.find((i) => i.title.includes('plan before'))).toBeDefined();
+    const issue = issues.find((i) => i.title.includes('plan before'));
+    expect(issue).toBeDefined();
+    // FEAT-003: plan-first is genuinely advisory — deliberately kept at info 0.65.
+    expect(issue!.severity).toBe('info');
+    expect(issue!.confidence).toBe(0.65);
   });
 
   it('does NOT flag when plan-first is present', () => {

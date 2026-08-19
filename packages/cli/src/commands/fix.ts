@@ -48,6 +48,7 @@ export async function runFix(options: FixOptions): Promise<void> {
     projectType: config.projectType,
     include: config.include,
     exclude: config.exclude,
+    vagueGuidanceSeverity: config.vagueGuidanceSeverity,
   });
 
   let targetIssues: PromptCiIssue[];
@@ -165,6 +166,7 @@ export async function runFix(options: FixOptions): Promise<void> {
       projectType: config.projectType,
       include: config.include,
       exclude: config.exclude,
+      vagueGuidanceSeverity: config.vagueGuidanceSeverity,
     });
     console.log(`\nFixes complete. Initial score: ${report.healthScore}/100 -> New score: ${finalReport.healthScore}/100`);
   } else if (options.dryRun) {
