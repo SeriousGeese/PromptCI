@@ -87,6 +87,15 @@ runs:
             exit 1
           fi
 
+          # The remote is hardcoded to `origin`, and the refspec writes the base
+          # tip to refs/remotes/origin/<base> so it matches BASE_REF exactly.
+          # This is safe because actions/checkout always names its remote
+          # `origin` — the action runs after that step, on the checkout it
+          # produced. A depth-1 (shallow) checkout is fine too: this fetch pulls
+          # the base branch tip, and review-diff needs only that commit's tree
+          # (it scans the base and head trees independently — no merge-base), so
+          # the shallow boundary never matters. #64 verified both against a
+          # depth-1 clone; see packages/cli/tests/review-diff.test.ts.
           BASE_REF="origin/$PROMPTCI_BASE_BRANCH"
           if ! git -C "$PROMPTCI_PATH" rev-parse --verify --quiet "${BASE_REF}^{commit}" >/dev/null; then
             echo "Base ref ${BASE_REF} is not in this checkout; fetching it..."

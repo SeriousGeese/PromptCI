@@ -90,6 +90,11 @@ only the PR head, so `origin/main` is not in the checkout and the comparison has
 diff against. The action fetches the base ref itself as a fallback, but `fetch-depth: 0` is
 the reliable form.
 
+The fallback fetch assumes the remote is named **`origin`** (the name `actions/checkout`
+always uses) and works with a depth-1 checkout — it pulls only the base branch tip, which is
+all `review-diff` compares against. If you check out with a differently named remote, fetch
+`origin/<base_branch>` yourself before the step, or use `fetch-depth: 0`.
+
 `fail_on` and `fail_on_regression` are independent gates and both apply: a branch that
 introduces no regression can still sit above the severity threshold. The action installs a
 pinned CLI version; override it with the `cli_version` input (`'latest'` to always take the
