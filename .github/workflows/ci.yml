@@ -5,6 +5,13 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # For dispatch_ci() in scripts/pr-review.sh: the auto-review bot's branch
+  # pushes (base-sync merges, auto-review fixes) are made with GITHUB_TOKEN,
+  # which GitHub excludes from push/pull_request triggers — so the bot
+  # dispatches CI on the PR head ref explicitly after every push it makes.
+  # Without this trigger a bot-pushed SHA would never get CI, and the review
+  # pipeline fails closed rather than merging it unverified.
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
