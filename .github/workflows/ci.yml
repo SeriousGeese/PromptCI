@@ -93,6 +93,14 @@ jobs:
           node scripts/health-badge.mjs
           git diff --exit-code -- .promptci/health-badge.json
 
+      # CVE coverage beyond Dependabot's scheduled PRs: fail the build on a known
+      # high/critical advisory anywhere in the (dev-only) dependency tree. Reads
+      # the frozen lockfile installed above — no extra install. `--audit-level
+      # high` keeps low/moderate advisories from blocking unrelated PRs while
+      # still gating genuine risk; raise coverage by bumping the flagged dep.
+      - name: Audit dependencies
+        run: pnpm audit --audit-level high
+
       # Required-check visibility for DISPATCHED runs (see scripts/pr-review.sh):
       # the auto-review bot's branch pushes use GITHUB_TOKEN, which fires no
       # workflows, so the bot dispatches this workflow explicitly — but a

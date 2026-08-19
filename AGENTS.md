@@ -62,5 +62,3 @@ highest-signal demonstration that the tool works, so keep it green:
   fix them, or suppress a genuine false positive.
 - If a finding is a genuine false positive, suppress it inline with a `promptci-ignore`
   annotation and a clear `reason:`, exactly as an end user would.
-- Run the selfscan commands from a checkout whose path does not contain `/.claude/` (a normal
-  clone or CI — `scripts/selfscan-guard.mjs` enforces this and explains why).

@@ -281,9 +281,10 @@ export async function buildRepoContext(input: ScanInput): Promise<RepoContext> {
     projectType = detectProjectTypeFromContent(files);
   }
 
-  const [packageJson, pyproject, lockfiles, workflows] = await Promise.all([
+  const [packageJson, pyproject, requirements, lockfiles, workflows] = await Promise.all([
     readRootFile(repoRoot, 'package.json'),
     readRootFile(repoRoot, 'pyproject.toml'),
+    readRootFile(repoRoot, 'requirements.txt'),
     existingRootFiles(repoRoot, LOCKFILES),
     readWorkflowFacts(repoRoot),
   ]);
@@ -291,6 +292,7 @@ export async function buildRepoContext(input: ScanInput): Promise<RepoContext> {
   const manifests: ManifestData = {};
   if (packageJson) manifests.packageJson = packageJson;
   if (pyproject) manifests.pyproject = pyproject;
+  if (requirements !== undefined) manifests.requirements = requirements;
 
   return {
     repoRoot,

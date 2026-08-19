@@ -506,12 +506,19 @@ export async function archiveExistingReport(
     archiveJsonPath: archiveJsonRel,
   };
 
-  // Append to the index
+  // BUG-005: Append to the index LAST — after the archived md/json are copied
+  // into place — and write it atomically. A plain writeFile can be interrupted
+  // mid-write, leaving a truncated index.json that then fails to parse and loses
+  // the entire history. Write to a sibling temp file and rename over the target;
+  // rename is atomic on the same filesystem, so a reader sees either the old,
+  // complete index or the new, complete one — never a half-written file.
   const existing = await readHistoryIndex(repoPath);
   existing.push(entry);
   const indexPath = historyIndexPath(repoPath);
   await fs.mkdir(nodePath.dirname(indexPath), { recursive: true });
-  await fs.writeFile(indexPath, JSON.stringify(existing, null, 2), 'utf8');
+  const tmpIndexPath = `${indexPath}.tmp`;
+  await fs.writeFile(tmpIndexPath, JSON.stringify(existing, null, 2), 'utf8');
+  await fs.rename(tmpIndexPath, indexPath);
 
   return entry;
 }

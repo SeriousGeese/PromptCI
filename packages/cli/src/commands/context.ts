@@ -52,9 +52,9 @@ function formatContextAnalysis(analysis: ContextAnalysis): string {
   }
 
   if (analysis.issues.length === 0) {
-    lines.push('No context-cost issues found.');
+    lines.push('No context issues found.');
   } else {
-    lines.push('Context-cost issues:');
+    lines.push('Context issues:');
     for (const issue of [...analysis.issues].sort((a, b) => severityRank(a) - severityRank(b))) {
       lines.push(`- [${issue.severity}] ${issue.title}`);
     }

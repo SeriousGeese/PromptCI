@@ -90,6 +90,9 @@ describe('promptci doctor CLI command', () => {
     await runDoctor({ scanPath: tmpDir });
 
     expect(stdoutOutput).toContain(`Node.js version >= ${MIN_NODE_MAJOR}`);
+    // Item 7: doctor reports the RUNNING CLI version (from its own package.json),
+    // not whatever a globally-linked `promptci` on PATH resolves to.
+    expect(stdoutOutput).toMatch(/PromptCI CLI version \(running\): \d+\.\d+\.\d+/);
     expect(stdoutOutput).toContain('Config file schema: Valid configuration file found');
     expect(stdoutOutput).toContain('Gitignore protection: .promptci/ is ignored in .gitignore');
     expect(stdoutOutput).toContain('LLM API Keys: Configured');

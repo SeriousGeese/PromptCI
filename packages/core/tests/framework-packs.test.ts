@@ -108,6 +108,18 @@ describe('Framework Packs', () => {
       expect(issues.some(i => i.id === 'python-missing-pytest-guidance')).toBe(true);
     });
 
+    it('flags missing pytest guidance from requirements.txt content in context (no disk I/O)', () => {
+      // BUG-004: requirements.txt is read into manifests.requirements while the
+      // RepoContext is built; the detector reads that content, not the disk.
+      const context: RepoContext = {
+        ...mockContext,
+        manifests: { requirements: 'pytest==8.0.0\nrequests\n' },
+        files: [makeFile('# Rules\nUse Python.')],
+      };
+      const issues = runFrameworkPacks(context);
+      expect(issues.some(i => i.id === 'python-missing-pytest-guidance')).toBe(true);
+    });
+
     it('flags multiple environment managers', () => {
       vi.mocked(fs.existsSync).mockImplementation((p: string) => 
         p.replace(/\\/g, '/').includes('Pipfile') || p.replace(/\\/g, '/').includes('environment.yml')

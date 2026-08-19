@@ -32,6 +32,12 @@ export type ManifestData = {
   packageJson?: string;
   /** Raw text content of pyproject.toml, if present. */
   pyproject?: string;
+  /**
+   * BUG-004: raw text content of requirements.txt, if present. Read once
+   * (asynchronously) while building the RepoContext so detectors never do
+   * synchronous disk I/O inside the scan pipeline.
+   */
+  requirements?: string;
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

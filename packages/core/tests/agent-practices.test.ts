@@ -647,6 +647,26 @@ describe('detectAgentPractices — per-file behavioral gaps', () => {
     expect(perFileIssue!.evidence).toContain('Some behavioral guidance appears in AGENTS.md.');
   });
 
+  it('does NOT classify files by their absolute checkout path (BUG-006)', () => {
+    // Regression: a repo checked out under a Claude Code worktree has an
+    // absolute path containing `/.claude/worktrees/<branch>/`. Files must be
+    // classified by their scanner-derived fileType, not by substring-matching
+    // that absolute path — otherwise README.md (and every other file) is
+    // misclassified as a Claude instruction file and gets bogus per-file findings.
+    const root = '/home/dev/project/.claude/worktrees/feature-x';
+    const readme = makeTypedFile('# Project\nInstall with pnpm.', `${root}/README.md`, 'readme');
+    const agents = makeTypedFile(behavioralGuidance, `${root}/AGENTS.md`, 'agents');
+
+    const issues = detectAgentPractices([readme, agents]);
+    // The README must not be treated as a tool-specific (CLAUDE.md) file: no
+    // per-file finding should target it (those anchor a `location` to the file),
+    // and nothing should be titled as a CLAUDE.md gap. Global combined-content
+    // findings legitimately list every file path but carry no per-file location,
+    // so assert on locations, not on filePaths.
+    expect(issues.some((i) => i.locations.some((l) => l.filePath === readme.path))).toBe(false);
+    expect(issues.some((i) => i.title.includes('CLAUDE.md'))).toBe(false);
+  });
+
   it('flags copilot-instructions.md with no behavioral guidance when AGENTS.md has it', () => {
     const copilot = makeTypedFile(
       [

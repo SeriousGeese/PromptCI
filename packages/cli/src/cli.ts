@@ -171,7 +171,7 @@ const contextCommand = program
 
 contextCommand
   .command('analyze')
-  .description('Print deterministic context-cost analysis without writing scan reports')
+  .description('Print deterministic context analysis without writing scan reports')
   .option('--path <dir>', 'target directory to analyze (default: current directory)')
   .option('--json', 'print JSON analysis to stdout')
   .action(async (opts: { path?: string; json?: boolean }) => {

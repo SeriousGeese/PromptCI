@@ -83,6 +83,96 @@ describe('detectCanonicalOwner', () => {
     expect(issue!.filePaths).toContain('AGENTS.md');
   });
 
+  it('does NOT treat a non-tool file as tool-specific by its checkout path (BUG-006)', () => {
+    // Regression: under a Claude Code worktree the absolute path contains
+    // `/.claude/worktrees/<branch>/`. A README there is fileType 'readme' and
+    // must NOT be treated as a tool-specific file just because its checkout
+    // path contains `/.claude/` — otherwise it gets bogus duplication findings.
+    const commonSection = 'Always use TypeScript. Write tests for every feature. Follow the style guide. '.repeat(10);
+    const agents: InstructionFile = {
+      path: '/home/dev/proj/.claude/worktrees/x/AGENTS.md',
+      fileType: 'agents',
+      content: '# Common Rules\n' + commonSection,
+      sections: [{
+        id: 'common-rules',
+        filePath: '/home/dev/proj/.claude/worktrees/x/AGENTS.md',
+        heading: 'Common Rules',
+        startLine: 1,
+        endLine: 60,
+        text: '# Common Rules\n' + commonSection,
+        normalizedText: ('# common rules\n' + commonSection).toLowerCase().trim(),
+      }],
+      lineCount: 60,
+      charCount: 1000,
+      estimatedTokens: 250,
+    };
+    const readme: InstructionFile = {
+      path: '/home/dev/proj/.claude/worktrees/x/README.md',
+      fileType: 'readme',
+      content: '# Readme\n' + commonSection,
+      sections: [{
+        id: 'readme',
+        filePath: '/home/dev/proj/.claude/worktrees/x/README.md',
+        heading: 'Readme',
+        startLine: 1,
+        endLine: 60,
+        text: '# Readme\n' + commonSection,
+        normalizedText: ('# readme\n' + commonSection).toLowerCase().trim(),
+      }],
+      lineCount: 60,
+      charCount: 1000,
+      estimatedTokens: 250,
+    };
+
+    const issues = detectCanonicalOwner([agents, readme]);
+    expect(issues.find(i => i.id.includes('behavior-duplication'))).toBeUndefined();
+  });
+
+  it('flags large duplication in a .windsurfrules file (BUG-003)', () => {
+    // Regression: `.windsurfrules` was missing from isToolSpecific, so a Windsurf
+    // rules file duplicating the canonical AGENTS.md went unreported.
+    const commonSection = 'Always use TypeScript. Write tests for every feature. Follow the style guide. '.repeat(10);
+    const agents: InstructionFile = {
+      path: 'AGENTS.md',
+      fileType: 'agents',
+      content: '# Common Rules\n' + commonSection,
+      sections: [{
+        id: 'common-rules',
+        filePath: 'AGENTS.md',
+        heading: 'Common Rules',
+        startLine: 1,
+        endLine: 60,
+        text: '# Common Rules\n' + commonSection,
+        normalizedText: ('# common rules\n' + commonSection).toLowerCase().trim(),
+      }],
+      lineCount: 60,
+      charCount: 1000,
+      estimatedTokens: 250,
+    };
+    const windsurf: InstructionFile = {
+      path: '.windsurfrules',
+      fileType: 'windsurf',
+      content: '# Windsurf Rules\n' + commonSection,
+      sections: [{
+        id: 'windsurf-rules',
+        filePath: '.windsurfrules',
+        heading: 'Windsurf Rules',
+        startLine: 1,
+        endLine: 60,
+        text: '# Windsurf Rules\n' + commonSection,
+        normalizedText: ('# windsurf rules\n' + commonSection).toLowerCase().trim(),
+      }],
+      lineCount: 60,
+      charCount: 1000,
+      estimatedTokens: 250,
+    };
+
+    const issues = detectCanonicalOwner([agents, windsurf]);
+    const issue = issues.find(i => i.id.includes('behavior-duplication'));
+    expect(issue).toBeDefined();
+    expect(issue!.filePaths).toContain('.windsurfrules');
+  });
+
   it('does NOT flag duplication for short files', () => {
     const agents = makeFile('AGENTS.md', 'Use TypeScript.', 5);
     const claude = makeFile('CLAUDE.md', 'Use TypeScript.', 5);

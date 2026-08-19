@@ -324,28 +324,25 @@ function stripChecklistLines(content: string): string {
 }
 
 
-function normalizedFilePath(filePath: string): string {
-  return filePath.replace(/\\/g, '/').toLowerCase();
-}
+// BUG-006: classify by the scanner-computed `fileType` (derived from the repo-
+// RELATIVE path in deriveFileType) plus the location-independent basename.
+// Never substring-match a directory like `/.claude/` against the ABSOLUTE
+// `file.path`: the checkout location leaks in, so a repo checked out under a
+// Claude Code worktree (`.../.claude/worktrees/<branch>/`) misclassifies every
+// file — README.md included — as a Claude instruction file. deriveFileType
+// already maps the in-repo `.claude/`, `.cursor/rules/`, and
+// `.github/instructions/` directories, so `fileType` is the authoritative,
+// checkout-location-independent signal.
 
 function isCopilotInstructionsFile(file: InstructionFile): boolean {
-  const normalizedPath = normalizedFilePath(file.path);
   return (
     file.fileType === 'copilot' ||
-    normalizedPath === '.github/copilot-instructions.md' ||
-    normalizedPath.endsWith('/.github/copilot-instructions.md') ||
-    normalizedPath.includes('/.github/instructions/')
+    path.basename(file.path).toLowerCase() === 'copilot-instructions.md'
   );
 }
 
 function isCursorRulesFile(file: InstructionFile): boolean {
-  const normalizedPath = normalizedFilePath(file.path);
-  const baseName = path.basename(file.path).toLowerCase();
-  return (
-    file.fileType === 'cursor' ||
-    baseName === '.cursorrules' ||
-    normalizedPath.includes('/.cursor/rules/')
-  );
+  return file.fileType === 'cursor' || path.basename(file.path).toLowerCase() === '.cursorrules';
 }
 
 function isWindsurfRulesFile(file: InstructionFile): boolean {
@@ -353,13 +350,7 @@ function isWindsurfRulesFile(file: InstructionFile): boolean {
 }
 
 function isClaudeInstructionsFile(file: InstructionFile): boolean {
-  const normalizedPath = normalizedFilePath(file.path);
-  const baseName = path.basename(file.path).toLowerCase();
-  return (
-    file.fileType === 'claude' ||
-    baseName === 'claude.md' ||
-    normalizedPath.includes('/.claude/')
-  );
+  return file.fileType === 'claude' || path.basename(file.path).toLowerCase() === 'claude.md';
 }
 
 function perFileBehaviorTarget(file: InstructionFile): { label: string; agent: string } | undefined {

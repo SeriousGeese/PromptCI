@@ -84,14 +84,23 @@ export function detectCanonicalOwner(files: InstructionFile[]): PromptCiIssue[] 
     for (const file of files) {
       if (file === primaryCanonical) continue;
       
+      // BUG-006: classify by the scanner-computed fileType (derived from the
+      // repo-RELATIVE path) plus the location-independent basename — never by a
+      // directory substring of the ABSOLUTE path. Matching `/.claude/` against
+      // the absolute path let the checkout location leak in, so a repo checked
+      // out under a Claude Code worktree (`.../.claude/worktrees/<branch>/`)
+      // treated every file as tool-specific. deriveFileType already maps the
+      // in-repo `.claude/`, `.cursor/rules/`, and `.github/instructions/`
+      // directories, so fileType is the authoritative signal.
       const baseName = path.basename(file.path).toLowerCase();
-      const normalizedPath = file.path.replace(/\\/g, '/').toLowerCase();
-      const isToolSpecific = baseName === 'claude.md' ||
+      const isToolSpecific =
+        file.fileType === 'claude' ||
+        file.fileType === 'cursor' ||
+        file.fileType === 'windsurf' ||
+        file.fileType === 'copilot' ||
+        baseName === 'claude.md' ||
         baseName === '.cursorrules' ||
-        normalizedPath.includes('/.claude/') ||
-        normalizedPath.includes('/.cursor/rules/') ||
-        normalizedPath.includes('/.github/copilot-instructions.md') ||
-        normalizedPath.includes('/.github/instructions/');
+        baseName === '.windsurfrules';
 
       if (!isToolSpecific) continue;
 

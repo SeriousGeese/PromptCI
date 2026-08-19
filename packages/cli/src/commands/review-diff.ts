@@ -13,6 +13,15 @@ function isValidSeverity(v: string): v is IssueSeverity {
   return (SEVERITY_VALUES as string[]).includes(v);
 }
 
+async function pathExists(p: string): Promise<boolean> {
+  try {
+    await fs.access(p);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export type ReviewDiffOptions = {
   baseBranch: string;
   scanPath?: string;
@@ -187,7 +196,21 @@ export async function runReviewDiff(options: ReviewDiffOptions): Promise<void> {
       return;
     }
 
-    const baseScanRoot = path.join(baseWorktree, relFromRoot);
+    // A subdirectory named via `--path` may not exist in the base commit (e.g.
+    // a newly-added folder). Scanning a path absent on the base side must yield
+    // an EMPTY base report — so every finding under it reads as newly introduced
+    // — rather than reaching into a directory that isn't there. Point the base
+    // scan at a guaranteed-empty directory in that case.
+    let baseScanRoot = path.join(baseWorktree, relFromRoot);
+    if (relFromRoot !== '' && !(await pathExists(baseScanRoot))) {
+      const emptyBase = path.join(tempParent, 'empty-base');
+      await fs.mkdir(emptyBase, { recursive: true });
+      baseScanRoot = emptyBase;
+      console.error(
+        `Note: "${relFromRoot.replace(/\\/g, '/')}" does not exist in the base commit ` +
+          `(${baseCommit.slice(0, 8)}); every finding under it is reported as new.`,
+      );
+    }
     const headScanRoot = headCommit ? path.join(headWorktree, relFromRoot) : resolvedPath;
 
     const scanOptions = {

@@ -17,7 +17,7 @@ promptci scan --context-budget <chars>      # override total context budget (in 
 promptci scan --file-context-budget <chars> # override per-file context budget (in characters)
 
 # Context Analysis
-promptci context analyze                    # print context-cost analysis without writing scan reports
+promptci context analyze                    # print context analysis without writing scan reports
 promptci context analyze --path <dir>       # target directory to analyze
 promptci context analyze --json             # print JSON analysis to stdout
 

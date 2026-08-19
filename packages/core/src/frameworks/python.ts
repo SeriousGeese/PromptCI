@@ -8,7 +8,10 @@ export function detectPython(context: RepoContext): PromptCiIssue[] {
   const { manifests, repoRoot, files } = context;
 
   const hasPyProject = !!manifests.pyproject;
-  const hasRequirements = fs.existsSync(path.join(repoRoot, 'requirements.txt'));
+  // BUG-004: requirements.txt content is read once, asynchronously, while the
+  // RepoContext is built — the detector must not do synchronous disk I/O inside
+  // the scan pipeline. Presence is derived from that captured content.
+  const hasRequirements = manifests.requirements !== undefined;
   const hasPipfile = fs.existsSync(path.join(repoRoot, 'Pipfile'));
   const hasCondaYaml = fs.existsSync(path.join(repoRoot, 'environment.yml'));
 
@@ -17,8 +20,8 @@ export function detectPython(context: RepoContext): PromptCiIssue[] {
   }
 
   // Check for missing pytest guidance if pytest is in deps
-  const isPytestInDeps = (manifests.pyproject?.includes('pytest') || 
-                          (hasRequirements && fs.readFileSync(path.join(repoRoot, 'requirements.txt'), 'utf-8').includes('pytest')));
+  const isPytestInDeps = (manifests.pyproject?.includes('pytest') ||
+                          manifests.requirements?.includes('pytest'));
 
   if (isPytestInDeps) {
     const hasPytestGuidance = files.some(file => 

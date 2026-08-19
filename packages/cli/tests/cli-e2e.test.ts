@@ -2,12 +2,16 @@
  * End-to-end tests that invoke the compiled CLI binary via child_process.
  *
  * These tests exercise the Commander argument-parsing layer that the
- * runScan() unit tests skip. They require packages/cli/dist/cli.cjs to exist;
- * if it doesn't, a build is triggered automatically.
+ * runScan() unit tests skip. They require packages/cli/dist/cli.cjs to exist.
+ * CI's Build step produces it before the test run; locally, if the binary is
+ * missing, `beforeAll` builds it once as a bootstrap. It does NOT rebuild when
+ * the binary already exists — run `pnpm build` yourself after changing CLI
+ * source, so the e2e run doesn't redundantly repeat CI's build every time.
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
 import { spawnSync, execSync } from 'node:child_process';
+import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -19,9 +23,12 @@ const BASIC_FIXTURE = path.join(FIXTURES, 'fixture-basic');
 const PROJECT_ROOT = path.resolve(__dirname, '../../..');
 
 beforeAll(() => {
-  // The CLI package is named @promptci/cli — the old `--filter promptci`
-  // matched nothing, pnpm exited 0 without building, and every test below then
-  // failed on a missing dist/cli.cjs.
+  // Build only when the compiled binary is absent. In CI the Build step already
+  // produced dist/cli.cjs, so an unconditional rebuild here just duplicated it.
+  // (The CLI package is @promptci/cli — the old `--filter promptci` matched
+  // nothing, so pnpm exited 0 without building and every test failed on a
+  // missing dist/cli.cjs.)
+  if (fs.existsSync(CLI_PATH)) return;
   execSync('pnpm --filter @promptci/core build && pnpm --filter @promptci/cli build', {
     cwd: PROJECT_ROOT,
     stdio: 'pipe',

@@ -21,8 +21,8 @@ Your config file has a syntax error. Validate it at [jsonlint.com](https://jsonl
 
 Common causes:
 - Large monorepos where many files legitimately share boilerplate — use `exclude` to skip generated or archived docs.
-- Duplicate detector fires on shared sections — sections under headings like "Overview", "Summary", "Project Description", "Introduction", and "License" are filtered from duplicate detection (both near-duplicate and exact-match). If a non-boilerplate section is flagged unexpectedly, check whether the heading is generic enough to add to a future exclusion list.
-- Dead-reference detector fires on source-code file paths (e.g. `lib/upload.ts`) — these are legitimate if the file exists in the repo but the fixture is instruction-files-only. In production scans against a real repo this resolves naturally.
+- Duplicate detector fires on shared sections — sections under headings like "Overview", "Summary", "Project Description", "Introduction", and "License" are filtered from duplicate detection (both near-duplicate and exact-match). If a non-boilerplate section is flagged unexpectedly, suppress it inline with a `promptci-ignore` comment.
+- Dead-reference detector fires on source-code file paths (e.g. `lib/upload.ts`) — a referenced path is flagged only when the scanner cannot find it on disk. When you scan a real repository the file usually exists, so the finding does not appear; it shows up mainly when instruction files are scanned in isolation from the code they reference.
 - Conflict detector fires on unrelated directives — if you see spurious conflicts, check if the matched subject words are actually the same concept.
 
 `severityThreshold` does **not** hide findings — every finding is always listed in the report. It only sets the default `--fail-on` gate (the lowest severity that makes `scan` exit non-zero), so *raising* it toward `critical` makes CI *more* lenient, not quieter. To genuinely reduce noise, use `exclude` patterns or inline `promptci-ignore` comments (see [cli-reference.md](cli-reference.md#severitythreshold-config-key)).
