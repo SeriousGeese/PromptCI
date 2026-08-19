@@ -1,0 +1,290 @@
+name: PR Auto-Review
+# LLM-driven PR review + auto-fix + auto-merge, running on a self-hosted
+# runner labeled `pr-review`. Ported from SeriousGeese/DnD's implementation;
+# the (DnD-xxxxx) references are that repo's issue IDs, kept as provenance
+# for the incidents that shaped this design. Operator guide:
+# Docs/ci-automation.md.
+on:
+  pull_request:
+    # ready_for_review: a PR opened as draft gets a SKIPPED run on 'opened'
+    # (the !draft guard below); without this type, marking it ready later
+    # emits an event nothing listens for and the PR is never reviewed
+    # (DnD-cszjs).
+    types: [opened, synchronize, reopened, ready_for_review]
+  # Manual/automated re-review of a single PR. finish() in
+  # scripts/pr-review.sh dispatches this for one stranded PR at the end of
+  # every review. Also usable by hand — but ALWAYS dispatch on the PR's own
+  # head branch, never main:
+  #   gh workflow run pr-auto-review.yml --ref <pr-head-branch> -f pr_number=42
+  # Stranded-ness is detected per headBranch, and a workflow_dispatch run's
+  # headBranch is the ref it was dispatched on — a --ref main dispatch can
+  # never clear the branch it reviews (DnD-0g0ok: a 67-run infinite
+  # re-dispatch loop in the source repo).
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: PR number to review
+        required: true
+        type: string
+
+# Per-PR grouping: two PRs may review in parallel (one job per single-slot
+# runner); same-PR events cancel the older run.
+concurrency:
+  group: pr-review-${{ github.event.pull_request.number || inputs.pr_number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  pull-requests: write
+  checks: read
+  statuses: read
+  # workflow_dispatch of ci.yml after bot pushes (GITHUB_TOKEN pushes never
+  # fire pull_request triggers) and of pr-auto-review.yml for stranded PRs.
+  actions: write
+
+jobs:
+  review-and-merge:
+    name: 🤖 Auto-Review PR #${{ github.event.pull_request.number || inputs.pr_number }}
+    # Two gates:
+    #  - !draft: drafts are reviewed when marked ready (see trigger types).
+    #  - same-repo: this is a PUBLIC repo and the job runs on a self-hosted
+    #    runner — fork PRs must NEVER execute here. Fork authors aren't in the
+    #    auto-merge allowlist anyway; a maintainer can review a fork PR by
+    #    inspecting it and, if desired, pushing its commits to an internal
+    #    branch. On workflow_dispatch github.event.pull_request is null, so
+    #    both checks pass and the Resolve step below re-validates.
+    if: ${{ !github.event.pull_request.draft && (github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    runs-on: [self-hosted, pr-review]
+    timeout-minutes: 90
+    env:
+      # On workflow_dispatch every github.event.pull_request.* field is empty —
+      # the "Resolve PR context" step below fills them in via the API and
+      # overrides these through $GITHUB_ENV. PR_NUMBER and WORK_DIR need a
+      # value here already because the prune step runs before that resolve.
+      PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
+      PR_HEAD_REF: ${{ github.head_ref }}
+      PR_BASE_REF: ${{ github.base_ref }}
+      PR_TITLE: ${{ github.event.pull_request.title }}
+      PR_BODY: ${{ github.event.pull_request.body }}
+      PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+      PR_HTML_URL: ${{ github.event.pull_request.html_url }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      REPO: ${{ github.repository }}
+      # The checkout step clones the PR branch into this path.
+      WORK_DIR: "${{ github.workspace }}/_work-${{ github.event.pull_request.number || inputs.pr_number }}"
+      # PREFERRED gh path only — a HINT, not the answer. `runs-on` below
+      # matches any runner carrying the `pr-review` label, and runners can be
+      # heterogeneous with gh in different places. A repo variable has ONE
+      # value repo-wide, so it can never describe every runner (DnD-krocc).
+      # The "Resolve gh CLI" step treats this as the first CANDIDATE and
+      # falls back, so a wrong value can no longer take auto-merge out.
+      GH_CLI_HINT: ${{ vars.GH_CLI_PATH }}
+      # Reviewer LLM chain via OpenRouter (primary paid + free fallback).
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      OPENROUTER_MODEL: ${{ vars.OPENROUTER_MODEL }}
+      OPENROUTER_FALLBACK_MODEL: ${{ vars.OPENROUTER_FALLBACK_MODEL }}
+      # Comma-separated GitHub logins whose PRs get auto-fix pushes and
+      # auto-merge. Everyone else gets a review comment only. "*" = everyone.
+      # Do NOT add dependabot[bot] — auto-merge.yml owns Dependabot.
+      AUTOMERGE_AUTHORS: ${{ vars.AUTO_REVIEW_AUTOMERGE_AUTHORS }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+      # MUST be the first step: every later step and scripts/pr-review.sh invoke
+      # $GH_CLI, and a gh that does not resolve makes has_do_not_merge_label()
+      # fail closed (rc=127 -> held_label_lookup_failed), silently holding a PR
+      # that nobody labelled. Resolve gh on the runner that is ACTUALLY
+      # executing rather than trusting a repo-wide variable (DnD-krocc).
+      - name: Resolve gh CLI on this runner
+        run: |
+          set -euo pipefail
+          # RUNNER_NAME is a built-in the runner sets to its OWN name, so it is
+          # always the machine that actually ran the job. Defaulted because
+          # `set -u` would otherwise abort here with a cryptic unbound-variable
+          # error instead of the clear gh message below.
+          runner_name="${RUNNER_NAME:-unknown-runner}"
+          echo "RUNNER_HOST=${runner_name%-pr-review}" >> "$GITHUB_ENV"
+
+          # Ordered candidates: the admin hint first, then PATH, then known
+          # install locations. First executable wins.
+          for candidate in \
+            "${GH_CLI_HINT:-}" \
+            "$(command -v gh 2>/dev/null || true)" \
+            /home/linuxbrew/.linuxbrew/bin/gh \
+            /home/strickdd/.local/bin/gh \
+            /usr/local/bin/gh \
+            /usr/bin/gh \
+            /opt/homebrew/bin/gh
+          do
+            [ -n "$candidate" ] || continue
+            [ -x "$candidate" ] || continue
+            echo "GH_CLI=$candidate" >> "$GITHUB_ENV"
+            echo "Resolved gh on ${runner_name}: $candidate ($("$candidate" --version 2>&1 | head -1))"
+            exit 0
+          done
+          # Fail LOUDLY. Letting this through would surface later as a mystery
+          # "label lookup returned an error", which reads as a per-PR problem
+          # and hides the real cause: this runner is missing gh.
+          echo "::error::gh CLI not found on runner '${runner_name}'. Install gh there, or set the GH_CLI_PATH repo variable to a path that exists on every runner carrying the 'pr-review' label."
+          exit 1
+
+      # workflow_dispatch carries only a PR number, so fetch the fields the
+      # pull_request payload would have supplied. Writes to $GITHUB_ENV, which
+      # overrides the job-level env for every step after this one.
+      - name: Resolve PR context (workflow_dispatch)
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        run: |
+          PR_JSON="$($GH_CLI pr view "$PR_NUMBER" --repo "$REPO" \
+            --json number,headRefName,baseRefName,title,body,author,url,isDraft,state,headRefOid,baseRefOid,headRepository,headRepositoryOwner)"
+
+          STATE="$(echo "$PR_JSON" | jq -r '.state')"
+          IS_DRAFT="$(echo "$PR_JSON" | jq -r '.isDraft')"
+          # The job-level `if` cannot see draft state on this path (the event
+          # has no pull_request object), so gate here instead. Re-review of a
+          # merged, closed or draft PR is always a no-op — exit clean rather
+          # than red.
+          if [ "$STATE" != "OPEN" ] || [ "$IS_DRAFT" = "true" ]; then
+            echo "PR #$PR_NUMBER is state=$STATE draft=$IS_DRAFT — nothing to review"
+            echo "dispatch_skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Same-repo guard for the dispatch path (public repo + self-hosted
+          # runner): never review a fork PR here, same reason as the job-level
+          # `if` on the pull_request path.
+          HEAD_REPO="$(echo "$PR_JSON" | jq -r '(.headRepositoryOwner.login // "") + "/" + (.headRepository.name // "")')"
+          if [ "$HEAD_REPO" != "$REPO" ]; then
+            echo "PR #$PR_NUMBER head repo is '$HEAD_REPO' (fork) — refusing to review fork PRs on a self-hosted runner"
+            echo "dispatch_skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          {
+            echo "PR_HEAD_REF=$(echo "$PR_JSON" | jq -r '.headRefName')"
+            echo "PR_BASE_REF=$(echo "$PR_JSON" | jq -r '.baseRefName')"
+            echo "PR_TITLE=$(echo "$PR_JSON" | jq -r '.title')"
+            echo "PR_AUTHOR=$(echo "$PR_JSON" | jq -r '.author.login')"
+            echo "PR_HTML_URL=$(echo "$PR_JSON" | jq -r '.url')"
+            echo "HEAD_SHA=$(echo "$PR_JSON" | jq -r '.headRefOid')"
+            echo "BASE_SHA=$(echo "$PR_JSON" | jq -r '.baseRefOid')"
+          } >> "$GITHUB_ENV"
+
+          # Body is free-form multi-line, so it needs heredoc syntax rather
+          # than the KEY=value form the single-line fields above use.
+          {
+            echo "PR_BODY<<PR_BODY_EOF"
+            echo "$PR_JSON" | jq -r '.body // ""'
+            echo "PR_BODY_EOF"
+          } >> "$GITHUB_ENV"
+
+          echo "Resolved PR #$PR_NUMBER ($(echo "$PR_JSON" | jq -r '.headRefName'))"
+        id: resolve
+        shell: bash
+
+      - name: Prune stale checkout directories
+        if: ${{ steps.resolve.outputs.dispatch_skip != 'true' }}
+        run: |
+          # Remove checkout dir left behind by a previous killed run of THIS
+          # PR. The review script's EXIT trap normally cleans up, but SIGKILL
+          # (hard runner restart, OOM kill) skips it. Only touch THIS PR's
+          # path — never blanket-remove _work-*, which would destroy a
+          # concurrent review's live checkout.
+          if [ -d "$WORK_DIR" ]; then
+            rm -rf "$WORK_DIR" 2>/dev/null || true
+            echo "Removed stale checkout dir $WORK_DIR"
+          fi
+          # Leftover comment file from a killed run for this PR only
+          rm -f "/tmp/pr-review-comment-${PR_NUMBER}.md"
+          df -h . 2>/dev/null || true
+        shell: bash
+
+      - name: Checkout PR branch
+        id: checkout
+        if: ${{ steps.resolve.outputs.dispatch_skip != 'true' }}
+        run: |
+          # A bot fix-push fires a `synchronize` event; by the time its run
+          # starts, an earlier run may have merged the PR and deleted the
+          # branch. Detect that and skip gracefully instead of dying at clone
+          # with "Remote branch not found".
+          PR_STATE="$($GH_CLI pr view "$PR_NUMBER" --repo "$REPO" --json state --jq '.state' 2>/dev/null || echo UNKNOWN)"
+          if [ "$PR_STATE" = "MERGED" ] || [ "$PR_STATE" = "CLOSED" ]; then
+            echo "PR #$PR_NUMBER is already $PR_STATE — skipping review (raced with a previous run's merge)"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Clone without checkout, drop any client-side hooks, then check out
+          # the PR branch as a remote tracking ref.
+          git clone \
+            "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" \
+            "$WORK_DIR" --no-checkout 2>&1
+          rm -rf "$WORK_DIR/.git/hooks" 2>/dev/null || true
+          git -c core.hooksPath=/dev/null -C "$WORK_DIR" fetch origin \
+            "+refs/heads/${PR_HEAD_REF}:refs/remotes/origin/${PR_HEAD_REF}" 2>&1
+          git -c core.hooksPath=/dev/null -C "$WORK_DIR" checkout "origin/$PR_HEAD_REF" 2>&1
+          echo "Cloned ${PR_HEAD_REF} SHA: $(git -C "$WORK_DIR" rev-parse HEAD)"
+        shell: bash
+
+      - name: Run PR review and auto-fix
+        id: review
+        if: ${{ steps.checkout.outputs.skip != 'true' && steps.resolve.outputs.dispatch_skip != 'true' }}
+        run: |
+          # Run the reviewer tooling from the BASE branch, never from the PR
+          # checkout (DnD-e74yy). Two reasons:
+          #  1. Version skew: this workflow file runs at the pull_request merge
+          #     ref (base changes included), but $WORK_DIR is the PR head — a
+          #     branch cut before a script/workflow contract change carries a
+          #     stale pr-review.sh that expects env this workflow no longer
+          #     passes.
+          #  2. Review integrity: the script runs with GH_TOKEN and the
+          #     OpenRouter key in env — a PR must not be able to swap in its
+          #     own copy of the reviewer SCRIPT. (This is a hardening step,
+          #     not a full boundary: on pull_request events the workflow file
+          #     itself runs from the merge ref, so a PR editing THIS yml still
+          #     runs its edit — acceptable while PR authors are all trusted
+          #     collaborators, and fork PRs never reach this job at all.)
+          TOOLS_DIR="${RUNNER_TEMP}/pr-review-tools-${PR_NUMBER}"
+          rm -rf "$TOOLS_DIR"
+          mkdir -p "$TOOLS_DIR"
+          git -c core.hooksPath=/dev/null -C "$WORK_DIR" fetch origin \
+            "+refs/heads/${PR_BASE_REF}:refs/remotes/origin/${PR_BASE_REF}" 2>&1
+          # Prefer the event's BASE_SHA over the live base tip: this workflow
+          # file runs at the merge ref built from BASE_SHA, so extracting the
+          # script at the same commit keeps script and workflow env in
+          # lockstep even when this run sat queued while the base advanced.
+          EXTRACT_REF="origin/${PR_BASE_REF}"
+          if [ -n "${BASE_SHA:-}" ] && git -C "$WORK_DIR" rev-parse -q --verify "${BASE_SHA}^{commit}" >/dev/null 2>&1; then
+            EXTRACT_REF="$BASE_SHA"
+          fi
+          echo "Extracting reviewer tooling at ${EXTRACT_REF}"
+          for f in pr-review.sh review-prompt.md extract-fixes.py; do
+            git -C "$WORK_DIR" show "${EXTRACT_REF}:scripts/${f}" > "$TOOLS_DIR/${f}"
+          done
+          bash "$TOOLS_DIR/pr-review.sh"
+        shell: bash
+
+      - name: Post PR review comment
+        if: always()
+        env:
+          REVIEW_RESULT: ${{ steps.review.outputs.result }}
+          COMMENT_PATH: ${{ steps.review.outputs.comment_path }}
+        run: |
+          COMMENT_PATH="${COMMENT_PATH:-/tmp/pr-review-comment-${PR_NUMBER}.md}"
+          if [ -n "$COMMENT_PATH" ] && [ -f "$COMMENT_PATH" ]; then
+            $GH_CLI pr comment "$PR_NUMBER" --repo "$REPO" --body-file "$COMMENT_PATH"
+          else
+            echo "No comment file produced - review may have been skipped"
+          fi
+        shell: bash
+
+      - name: Cleanup working directory (safety net)
+        if: always()
+        run: |
+          # pr-review.sh's EXIT trap removes WORK_DIR; this is the safety net
+          # in case the trap doesn't fire (runner SIGKILL, etc.). always() so
+          # it also runs on failure and cancellation.
+          if [ -d "$WORK_DIR" ]; then
+            rm -rf "$WORK_DIR" 2>/dev/null || true
+            echo "Cleaned up working directory"
+          fi
+        shell: bash
