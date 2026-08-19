@@ -168,6 +168,56 @@ describe('runScan (integration)', () => {
     // No critical issues in empty dir, so should not exit
     expect(exitCode).toBeUndefined();
   });
+
+  // An instruction file that never tells the agent to run lint/tests before
+  // finishing trips agent-practices' `no-verification-loop` check at WARNING
+  // severity — the exact kind of finding a brand-new repo produces.
+  const WARNING_ONLY_INSTRUCTIONS = [
+    '# Developer Instructions',
+    '',
+    'Write clear, small commits and keep functions focused.',
+    'Prefer explicit names over clever abbreviations.',
+    '',
+  ].join('\n');
+
+  it('first run: init (writes high) + scan exits 0 on warning-level findings', async () => {
+    // Reproduces `promptci init && promptci scan` on a fresh repo.
+    await writeFile(tmpDir, 'CLAUDE.md', WARNING_ONLY_INSTRUCTIONS);
+    const { runInit } = await import('../src/commands/init.js');
+    await runInit(tmpDir, { interactive: false });
+
+    const { runScan } = await import('../src/commands/scan.js');
+    await runScan({ scanPath: tmpDir });
+
+    // The gate is 'high', so warning-level findings do not fail the run.
+    expect(exitCode).toBeUndefined();
+
+    // Guard the test's premise: there really are warning findings that a
+    // 'warning' threshold would have failed on.
+    const reportRaw = await fs.readFile(
+      path.join(tmpDir, '.promptci', 'report.json'),
+      'utf-8',
+    );
+    const report = JSON.parse(reportRaw) as { issues: { severity: string }[] };
+    expect(report.issues.some((i) => i.severity === 'warning')).toBe(true);
+    expect(report.issues.some((i) => i.severity === 'high' || i.severity === 'critical')).toBe(false);
+  });
+
+  it('names severityThreshold as the source when a config gate causes exit 1', async () => {
+    await writeFile(tmpDir, 'CLAUDE.md', WARNING_ONLY_INSTRUCTIONS);
+    await writeConfig(tmpDir, { severityThreshold: 'warning' });
+
+    const { runScan } = await import('../src/commands/scan.js');
+    let threw = false;
+    try {
+      await runScan({ scanPath: tmpDir });
+    } catch {
+      threw = true;
+    }
+    expect(threw).toBe(true);
+    expect(exitCode).toBe(1);
+    expect(stderrOutput).toContain('severityThreshold in .promptci/config.json');
+  });
 });
 
 // ── Baseline integration tests ────────────────────────────────────────────────

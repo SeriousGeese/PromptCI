@@ -30,7 +30,7 @@ describe('runInit', () => {
     const raw = await fs.readFile(configPath, 'utf-8');
     const config = JSON.parse(raw) as Record<string, unknown>;
 
-    expect(config.severityThreshold).toBe('warning');
+    expect(config.severityThreshold).toBe('high');
     expect(config.projectType).toBe('auto');
     expect(config.include).toBeUndefined();
     expect(config.exclude).toBeUndefined();
