@@ -194,4 +194,10 @@ export type ScanInput = {
   baseline?: Baseline;
   contextBudget?: number;
   fileContextBudget?: number;
+  /**
+   * FEAT-004: force every vague-guidance finding to this severity, overriding
+   * the detector's high-signal/soft tiering. Surfaced as the
+   * `vagueGuidanceSeverity` config key.
+   */
+  vagueGuidanceSeverity?: 'info' | 'warning';
 };

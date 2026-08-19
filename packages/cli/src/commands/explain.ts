@@ -38,6 +38,7 @@ export async function runExplain(options: ExplainOptions): Promise<void> {
     projectType: config.projectType,
     include: config.include,
     exclude: config.exclude,
+    vagueGuidanceSeverity: config.vagueGuidanceSeverity,
   });
 
   if (report.issues.length === 0) {

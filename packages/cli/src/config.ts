@@ -11,6 +11,7 @@ export type CliConfig = {
   apiUrl?: string;
   contextBudget?: number;
   fileContextBudget?: number;
+  vagueGuidanceSeverity?: 'info' | 'warning';
 };
 
 const CONFIG_FILE = path.join('.promptci', 'config.json');
@@ -87,6 +88,11 @@ export async function loadConfig(scanPath: string): Promise<CliConfig> {
     if (typeof obj.fileContextBudget !== 'number' || obj.fileContextBudget <= 0)
       throw new Error(`config.fileContextBudget must be a positive number`);
     config.fileContextBudget = obj.fileContextBudget;
+  }
+  if ('vagueGuidanceSeverity' in obj) {
+    if (obj.vagueGuidanceSeverity !== 'info' && obj.vagueGuidanceSeverity !== 'warning')
+      throw new Error(`config.vagueGuidanceSeverity must be one of: info, warning`);
+    config.vagueGuidanceSeverity = obj.vagueGuidanceSeverity;
   }
 
   return config;

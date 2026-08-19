@@ -103,6 +103,16 @@ When the threshold causes a non-zero exit, `scan` prints which severity fired an
 came from `--fail-on` or from `severityThreshold` in the config, so an inherited gate is never a
 silent surprise.
 
+## `vagueGuidanceSeverity` config key
+
+`.promptci/config.json` may set `vagueGuidanceSeverity` (`info` | `warning`) to force **every**
+vague-guidance finding to that severity. By default the detector tiers its own output: high-signal
+platitudes ("write clean code", "best practices", "SOLID principles", "clean architecture",
+"be careful", …) are reported at `warning`, while softer style/UX/paradigm phrases ("great user
+experience", "user-friendly", …) are `info`. Set the key to `warning` to hold all vague guidance
+to the stricter tier, or to `info` to demote every vague-guidance finding below a `warning` gate.
+The override changes only the severity; each finding's confidence still reflects its matched tier.
+
 ## Dashboard URL
 
 `login`, `upload`, and `doctor`'s connectivity check need a dashboard endpoint. There is
