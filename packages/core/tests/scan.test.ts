@@ -19,6 +19,7 @@ describe('scan pipeline', () => {
       repoRoot: '/repo',
       projectType: 'typescript',
       files: [],
+      onDemandFiles: [],
       metrics: { estimatedInstructionTokens: 100 },
     };
 
@@ -55,6 +56,7 @@ describe('scan pipeline', () => {
       repoRoot: '/repo',
       projectType: 'typescript',
       files: [],
+      onDemandFiles: [],
       metrics: { estimatedInstructionTokens: 100 },
     };
 

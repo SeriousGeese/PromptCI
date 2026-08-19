@@ -5,6 +5,7 @@ import type { AiConfigFiles } from './ai-config.js';
 import { detectProjectType, detectProjectTypeFromContent } from './project-type.js';
 import { scanFiles } from './scanner.js';
 import type { ManifestData } from './manifest-consistency.js';
+import { isOnDemandFileType } from './types.js';
 import type { InstructionFile, ProjectType, ScanInput, ScanMetrics } from './types.js';
 
 export type PackageManagerName = 'pnpm' | 'npm' | 'yarn' | 'bun' | 'unknown';
@@ -48,6 +49,14 @@ export type RepoContext = {
   metrics: ScanMetrics;
   contextBudget?: number;
   fileContextBudget?: number;
+  /**
+   * Load-on-demand skill/agent bodies (`.claude/skills/**`, `.claude/agents/**`).
+   * Kept out of `files` so the always-loaded prose/bloat detectors never see
+   * them, but retained here so the report can still list them and parse their
+   * inline suppression annotations. The ai_config detectors audit them via
+   * `aiConfig`, independent of this array.
+   */
+  onDemandFiles: InstructionFile[];
 };
 
 const LOCKFILES = [
@@ -228,8 +237,8 @@ async function readWorkflowFacts(repoRoot: string): Promise<WorkflowFacts> {
   };
 }
 
-function buildMetrics(files: InstructionFile[]): ScanMetrics {
-  return {
+function buildMetrics(files: InstructionFile[], onDemandFiles: InstructionFile[]): ScanMetrics {
+  const metrics: ScanMetrics = {
     estimatedInstructionTokens: files.reduce((sum, file) => sum + file.estimatedTokens, 0),
     instructionFileCount: files.length,
     largestInstructionFiles: [...files]
@@ -237,11 +246,25 @@ function buildMetrics(files: InstructionFile[]): ScanMetrics {
       .slice(0, 5)
       .map((file) => ({ path: file.path, estimatedTokens: file.estimatedTokens })),
   };
+  if (onDemandFiles.length > 0) {
+    metrics.onDemandFileCount = onDemandFiles.length;
+    metrics.estimatedOnDemandTokens = onDemandFiles.reduce((sum, file) => sum + file.estimatedTokens, 0);
+  }
+  return metrics;
 }
 
 export async function buildRepoContext(input: ScanInput): Promise<RepoContext> {
   const repoRoot = path.resolve(input.repoPath);
-  const files = await scanFiles({ ...input, repoPath: repoRoot });
+  const scanned = await scanFiles({ ...input, repoPath: repoRoot });
+
+  // Split load-on-demand skill/agent bodies out of the always-loaded set the
+  // prose/bloat detectors consume via `context.files`. They stay available on
+  // `onDemandFiles` for reporting and suppression parsing.
+  const files: InstructionFile[] = [];
+  const onDemandFiles: InstructionFile[] = [];
+  for (const file of scanned) {
+    (isOnDemandFileType(file.fileType) ? onDemandFiles : files).push(file);
+  }
 
   let projectType =
     input.projectType && input.projectType !== 'auto'
@@ -271,8 +294,9 @@ export async function buildRepoContext(input: ScanInput): Promise<RepoContext> {
     packageJson: parsePackageJsonFacts(packageJson, lockfiles),
     workflows,
     aiConfig: discoverAiConfigFiles(repoRoot, input),
-    metrics: buildMetrics(files),
+    metrics: buildMetrics(files, onDemandFiles),
     contextBudget: input.contextBudget,
     fileContextBudget: input.fileContextBudget,
+    onDemandFiles,
   };
 }

@@ -1,6 +1,33 @@
 /** Core data types for PromptCI */
 
-export type FileType = 'claude' | 'agents' | 'cursor' | 'windsurf' | 'copilot' | 'readme' | 'docs' | 'prompt' | 'unknown';
+// 'skill' and 'agent' are load-on-demand Claude Code config surfaces
+// (`.claude/skills/**`, `.claude/agents/**`). They are audited structurally by
+// the ai_config detectors, so they are deliberately excluded from the always-
+// loaded prose/bloat detectors — see isOnDemandFileType and buildRepoContext.
+export type FileType =
+  | 'claude'
+  | 'agents'
+  | 'cursor'
+  | 'windsurf'
+  | 'copilot'
+  | 'readme'
+  | 'docs'
+  | 'prompt'
+  | 'skill'
+  | 'agent'
+  | 'unknown';
+
+/**
+ * On-demand file types are loaded by an agent only when a skill/subagent is
+ * invoked, not on every turn. They do not count toward always-loaded context
+ * cost and are owned by the ai_config detectors, so the generic prose detectors
+ * skip them.
+ */
+const ON_DEMAND_FILE_TYPES: ReadonlySet<FileType> = new Set<FileType>(['skill', 'agent']);
+
+export function isOnDemandFileType(fileType: FileType): boolean {
+  return ON_DEMAND_FILE_TYPES.has(fileType);
+}
 
 export type IssueSeverity = 'info' | 'warning' | 'high' | 'critical';
 
@@ -117,6 +144,10 @@ export type ScanMetrics = {
     path: string;
     estimatedTokens: number;
   }>;
+  // Load-on-demand skill/agent bodies, reported separately so they do not
+  // inflate the always-loaded instruction totals above. Omitted when zero.
+  onDemandFileCount?: number;
+  estimatedOnDemandTokens?: number;
 };
 
 /**

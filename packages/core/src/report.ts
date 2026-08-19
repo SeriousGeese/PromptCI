@@ -228,7 +228,13 @@ export function generateMarkdownReport(report: ScanReport): string {
   lines.push(`**Project type:** ${projectType}`);
   lines.push(`**Files scanned:** ${filesScanned.length}`);
   if (report.metrics) {
-    lines.push(`**Estimated instruction tokens:** ${report.metrics.estimatedInstructionTokens}`);
+    lines.push(`**Estimated instruction tokens:** ${report.metrics.estimatedInstructionTokens} (always-loaded)`);
+    if (report.metrics.estimatedOnDemandTokens) {
+      lines.push(
+        `**On-demand skill/agent tokens:** ${report.metrics.estimatedOnDemandTokens} ` +
+          `across ${report.metrics.onDemandFileCount} file(s) — loaded only when invoked, not counted above`,
+      );
+    }
   }
   lines.push('');
 

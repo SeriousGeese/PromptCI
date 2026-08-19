@@ -355,3 +355,51 @@ describe('scanFiles — fileType ignores an external .claude/ in the checkout pa
     expect(notes!.fileType).toBe('claude');
   });
 });
+
+// Issue #62: skill/agent bodies are load-on-demand config surfaces owned by the
+// ai_config detectors. They classify as their own file types so the always-
+// loaded prose/bloat detectors skip them (see scan/repo-context tests).
+describe('scanFiles — skill/agent classification', () => {
+  let base: string;
+  let repoRoot: string;
+
+  beforeAll(() => {
+    base = fs.mkdtempSync(path.join(os.tmpdir(), 'promptci-scanner-skill-'));
+    repoRoot = base;
+    fs.writeFileSync(path.join(repoRoot, 'CLAUDE.md'), '# Claude\n\nAlways-loaded guidance.\n');
+    // A skill: SKILL.md plus an on-demand reference body.
+    const skillDir = path.join(repoRoot, '.claude', 'skills', 'release');
+    fs.mkdirSync(skillDir, { recursive: true });
+    fs.writeFileSync(path.join(skillDir, 'SKILL.md'), '---\nname: release\ndescription: ship it\n---\n\n# Release\n');
+    fs.mkdirSync(path.join(skillDir, 'references'), { recursive: true });
+    fs.writeFileSync(path.join(skillDir, 'references', 'steps.md'), '# Steps\n\nDo the thing.\n');
+    // A subagent definition.
+    const agentsDir = path.join(repoRoot, '.claude', 'agents');
+    fs.mkdirSync(agentsDir, { recursive: true });
+    fs.writeFileSync(path.join(agentsDir, 'reviewer.md'), '---\nname: reviewer\n---\n\n# Reviewer\n');
+  });
+
+  afterAll(() => {
+    fs.rmSync(base, { recursive: true, force: true });
+  });
+
+  it('types SKILL.md and its reference bodies as skill', async () => {
+    const files = await scanFiles({ repoPath: repoRoot });
+    const skill = files.find((f) => path.basename(f.path) === 'SKILL.md');
+    const ref = files.find((f) => path.basename(f.path) === 'steps.md');
+    expect(skill?.fileType).toBe('skill');
+    expect(ref?.fileType).toBe('skill');
+  });
+
+  it('types .claude/agents/*.md as agent', async () => {
+    const files = await scanFiles({ repoPath: repoRoot });
+    const agent = files.find((f) => path.basename(f.path) === 'reviewer.md');
+    expect(agent?.fileType).toBe('agent');
+  });
+
+  it('leaves a plain always-loaded CLAUDE.md as claude', async () => {
+    const files = await scanFiles({ repoPath: repoRoot });
+    const claude = files.find((f) => path.basename(f.path) === 'CLAUDE.md');
+    expect(claude?.fileType).toBe('claude');
+  });
+});

@@ -71,6 +71,12 @@ function deriveFileType(relPath: string): FileType {
   // The file was scanned and then silently ignored by ~6 detectors.
   if (base === '.windsurfrules') return 'windsurf';
   if (base === 'copilot-instructions.md' || norm.includes('/.github/instructions/')) return 'copilot';
+  // Load-on-demand Claude Code config surfaces. Classified before the generic
+  // '/.claude/' → 'claude' rule below so a skill's SKILL.md and its reference
+  // files (and every agent definition) are treated as on-demand, not as
+  // always-loaded prose — the ai_config detectors audit them structurally.
+  if (norm.includes('/.claude/agents/')) return 'agent';
+  if (norm.includes('/.claude/skills/')) return 'skill';
   if (base === 'CLAUDE.md' || norm.includes('/.claude/')) return 'claude';
   if (base === 'README.md') return 'readme';
   if (norm.includes('/docs/') && base.endsWith('.md')) return 'docs';
