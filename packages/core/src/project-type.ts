@@ -23,7 +23,12 @@ async function dirExists(p: string): Promise<boolean> {
 
 /**
  * Detect the primary project type for a repo at repoRoot.
- * Detection order: nextjs → typescript → unity → dotnet → unknown
+ * Detection order: nextjs → unity → dotnet → typescript → python → go → rust → unknown
+ *
+ * Unity/.NET probes run before the package.json→typescript branch: Unity and .NET
+ * repos commonly carry a root package.json for JS tooling (husky, prettier), so the
+ * bare-package.json check must not shadow their more specific markers. This matches
+ * the unity-before-typescript ordering in detectProjectTypeFromContent.
  */
 export async function detectProjectType(repoRoot: string): Promise<ProjectType> {
   const root = path.resolve(repoRoot);
@@ -45,13 +50,10 @@ export async function detectProjectType(repoRoot: string): Promise<ProjectType> 
     if (hasApp || hasPages) return 'nextjs';
   }
 
-  // ── TypeScript ───────────────────────────────────────────────────────────
-  // package.json or tsconfig.json present
-  const hasTsConfig = await exists(path.join(root, 'tsconfig.json'));
-  if (hasPkgJson || hasTsConfig) return 'typescript';
-
   // ── Unity ────────────────────────────────────────────────────────────────
-  // Assets/ directory AND ProjectSettings/ProjectVersion.txt both exist
+  // Assets/ directory AND ProjectSettings/ProjectVersion.txt both exist.
+  // Checked before the package.json→typescript branch so a Unity repo with a
+  // root package.json is not misclassified as typescript.
   const hasAssets = await dirExists(path.join(root, 'Assets'));
   const hasProjectVersion = await exists(
     path.join(root, 'ProjectSettings', 'ProjectVersion.txt'),
@@ -59,7 +61,8 @@ export async function detectProjectType(repoRoot: string): Promise<ProjectType> 
   if (hasAssets && hasProjectVersion) return 'unity';
 
   // ── .NET ─────────────────────────────────────────────────────────────────
-  // any .sln or .csproj file at repo root level
+  // any .sln or .csproj file at repo root level. Also checked before the
+  // typescript branch for the same reason (JS tooling drops a package.json).
   const dotnetFiles = await fg(['*.sln', '*.csproj'], {
     cwd: root,
     dot: false,
@@ -67,6 +70,11 @@ export async function detectProjectType(repoRoot: string): Promise<ProjectType> 
     deep: 1,
   });
   if (dotnetFiles.length > 0) return 'dotnet';
+
+  // ── TypeScript ───────────────────────────────────────────────────────────
+  // package.json or tsconfig.json present
+  const hasTsConfig = await exists(path.join(root, 'tsconfig.json'));
+  if (hasPkgJson || hasTsConfig) return 'typescript';
 
   // ── Python ───────────────────────────────────────────────────────────────
   const hasPyProject = await exists(path.join(root, 'pyproject.toml'));
