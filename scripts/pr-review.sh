@@ -343,11 +343,51 @@ merge_pr() {
     fi
   fi
   if [ "$merged" = "true" ]; then
+    close_linked_issues
     $GH_CLI api -X DELETE "repos/${REPO}/git/refs/heads/${PR_HEAD_REF}" >/dev/null 2>&1 \
       || log "Note: could not delete remote branch ${PR_HEAD_REF} (may already be gone)"
     return 0
   fi
   return 1
+}
+
+# Close the issues this PR links with a closing keyword ("Closes #62").
+#
+# GitHub records the linkage (closingIssuesReferences is populated) but does
+# NOT fire its native close-on-merge when the merge is performed with
+# GITHUB_TOKEN — which is exactly how this bot merges (gh pr merge above, run
+# under secrets.GITHUB_TOKEN). So every auto-review merge used to leave its
+# linked issues open. Read the linkage back from the API and close each one
+# explicitly, mirroring what a human-performed merge would have done.
+#
+# Best-effort by design: the merge has already landed by the time this runs, so
+# a failure here is logged, never fatal — an un-closed issue is a lesser evil
+# than a merged PR the bot reports as failed. Only OPEN issues in THIS repo are
+# touched (cross-repo references, if any, are left to their own repos).
+close_linked_issues() {
+  local owner="${REPO%%/*}" name="${REPO##*/}"
+  local issues issue
+
+  issues="$($GH_CLI api graphql \
+    -f query='query($owner:String!,$name:String!,$pr:Int!){repository(owner:$owner,name:$name){pullRequest(number:$pr){closingIssuesReferences(first:50){nodes{number state repository{nameWithOwner}}}}}}' \
+    -F owner="$owner" -F name="$name" -F pr="$PR_NUMBER" \
+    --jq ".data.repository.pullRequest.closingIssuesReferences.nodes[]
+          | select(.state == \"OPEN\" and .repository.nameWithOwner == \"${REPO}\")
+          | .number" 2>/dev/null)" || {
+    log "Note: could not read linked issues for PR #${PR_NUMBER} — skipping auto-close"
+    return 0
+  }
+
+  while IFS= read -r issue; do
+    [ -n "$issue" ] || continue
+    if $GH_CLI issue close "$issue" --repo "$REPO" \
+        --comment "Closed by #${PR_NUMBER}, squash-merged to \`${PR_BASE_REF}\`. Auto-closed by the PromptCI review bot: a GITHUB_TOKEN merge does not trigger GitHub's native linked-issue close." >/dev/null 2>&1; then
+      log "Closed linked issue #${issue} (PR #${PR_NUMBER})"
+    else
+      log "Note: could not close linked issue #${issue} (may already be closed or gone)"
+    fi
+  done <<< "$issues"
+  return 0
 }
 
 # Call one LLM endpoint. Writes the raw API response body to stdout.
