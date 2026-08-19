@@ -29,6 +29,10 @@ reference documentation.
   unrelated to the task you were asked to do.
 - **Plan multi-file work first.** For complex or multi-file changes, outline the approach before
   writing code rather than editing in place and hoping it converges.
+- **Fresh checkout or worktree? Install first.** `node_modules` is gitignored, so a new clone or
+  `git worktree add` has no dependencies and the verify commands fail on unresolved imports. Run
+  `pnpm install` (cheap — it hardlinks from the global pnpm store). A `SessionStart` hook in
+  `.claude/settings.json` does this automatically when the workspace links are missing.
 
 ## Determinism is the core constraint
 
