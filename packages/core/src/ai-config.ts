@@ -18,6 +18,7 @@ import * as crypto from 'node:crypto';
 import fg from 'fast-glob';
 import micromatch from 'micromatch';
 import { MAX_FILE_SIZE, BINARY_CHECK_BYTES, isBinary } from './scanner.js';
+import { resolveWithinRoot } from './path-containment.js';
 import type { PromptCiIssue, ScanInput } from './types.js';
 
 // ── Path helpers ──────────────────────────────────────────────────────────────
@@ -27,23 +28,11 @@ export function toPosix(p: string): string {
   return p.replace(/\\/g, '/');
 }
 
-/**
- * Resolve `relativePath` under `repoRoot`, returning the absolute path — or
- * `null` when the result escapes the root (via `..` or an absolute path). Every
- * filesystem read below routes through this so a hostile config value cannot
- * point the detector at `/etc/passwd`.
- */
-export function resolveWithinRoot(repoRoot: string, relativePath: string): string | null {
-  try {
-    const root = path.resolve(repoRoot);
-    const resolved = path.resolve(root, relativePath);
-    const rel = path.relative(root, resolved);
-    if (rel.startsWith('..') || path.isAbsolute(rel)) return null;
-    return resolved;
-  } catch {
-    return null;
-  }
-}
+// Re-exported so the many `resolveWithinRoot` importers under core keep their
+// import path while the implementation lives in the shared path-containment
+// module. Every filesystem read below routes through it so a hostile config
+// value cannot point the detector at `/etc/passwd`.
+export { resolveWithinRoot };
 
 /** True when a repo-relative path exists and is a regular file. */
 export function isFileWithinRoot(repoRoot: string, relativePath: string): boolean {

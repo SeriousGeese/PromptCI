@@ -1,7 +1,7 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import * as readline from 'node:readline/promises';
-import { scan, applyFixRecipe, callLlm } from '@promptci/core';
+import { scan, applyFixRecipe, callLlm, isWithinRoot } from '@promptci/core';
 import type { PromptCiIssue, FileChange } from '@promptci/core';
 import { loadConfig } from '../config.js';
 
@@ -142,7 +142,7 @@ export async function runFix(options: FixOptions): Promise<void> {
         for (const change of changes) {
           // Double-check file path security before writing
           const resolvedFile = path.resolve(resolvedPath, change.filePath);
-          if (!resolvedFile.startsWith(resolvedPath)) {
+          if (!isWithinRoot(resolvedPath, resolvedFile)) {
             throw new Error(`Path traversal guard triggered: "${change.filePath}" is outside repo root.`);
           }
           await fs.writeFile(resolvedFile, change.newContent, 'utf-8');
@@ -333,7 +333,7 @@ async function runLlmFix(issue: PromptCiIssue, resolvedPath: string): Promise<Fi
     }
 
     const targetFileResolved = path.resolve(resolvedPath, change.filePath);
-    if (!targetFileResolved.startsWith(resolvedPath)) {
+    if (!isWithinRoot(resolvedPath, targetFileResolved)) {
       throw new Error(`Path traversal guard triggered: "${change.filePath}" is outside repo root.`);
     }
 

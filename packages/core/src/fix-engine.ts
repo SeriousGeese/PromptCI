@@ -2,6 +2,7 @@ import * as path from 'node:path';
 import * as fs from 'node:fs/promises';
 import type { PromptCiIssue } from './types.js';
 import { renderPromptCiGitignore } from './promptci-gitignore.js';
+import { isWithinRoot } from './path-containment.js';
 
 export interface FileChange {
   filePath: string; // Absolute path
@@ -18,7 +19,7 @@ export function resolveSafePath(repoRoot: string, relativeOrAbsolutePath: string
     ? path.resolve(relativeOrAbsolutePath)
     : path.resolve(resolvedRoot, relativeOrAbsolutePath);
 
-  if (!resolvedPath.startsWith(resolvedRoot)) {
+  if (!isWithinRoot(resolvedRoot, resolvedPath)) {
     throw new Error(`Path traversal detected: "${relativeOrAbsolutePath}" is outside repo root "${resolvedRoot}"`);
   }
   return resolvedPath;
