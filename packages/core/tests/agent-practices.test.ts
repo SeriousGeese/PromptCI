@@ -101,6 +101,52 @@ describe('detectAgentPractices', () => {
     ).toBeUndefined();
   });
 
+  // ── Ask when unsure (FEAT-005) ────────────────────────────────────────────
+
+  it('flags missing ask-when-unsure instruction at warning severity', () => {
+    const issues = detectAgentPractices([MINIMAL_FILE]);
+    const issue = issues.find((i) => i.title.includes('ask when unsure'));
+    expect(issue).toBeDefined();
+    expect(issue!.severity).toBe('warning');
+    expect(issue!.confidence).toBe(0.75);
+    expect(issue!.category).toBe('agent_practices');
+  });
+
+  it('does NOT flag when uncertainty handling is present', () => {
+    const file = makeFile(
+      '# Rules\nIf you are uncertain about the correct approach, ask before proceeding.',
+    );
+    expect(
+      detectAgentPractices([file]).find((i) => i.title.includes('ask when unsure')),
+    ).toBeUndefined();
+  });
+
+  it('recognises "if unsure" / "don\'t guess" phrasing as uncertainty handling', () => {
+    const file = makeFile("# Rules\nIf unsure, say so. Don't guess.");
+    expect(
+      detectAgentPractices([file]).find((i) => i.title.includes('ask when unsure')),
+    ).toBeUndefined();
+  });
+
+  it('does NOT let the word "task" satisfy the "ask before" pattern', () => {
+    // Regression: an un-anchored /ask before/ matched the "ask" inside "task before".
+    const file = makeFile('# Rules\nFinish the current task before moving to the next.');
+    expect(
+      detectAgentPractices([file]).find((i) => i.title.includes('ask when unsure')),
+    ).toBeDefined();
+  });
+
+  it('keeps ask-when-unsure distinct from the honesty policy', () => {
+    // A file with only a post-hoc honesty policy must still be flagged for the
+    // missing before-the-fact uncertainty rule — the two are separate behaviors.
+    const file = makeFile(
+      '# Rules\nIf tests fail, report the failure honestly. Never claim success.',
+    );
+    const issues = detectAgentPractices([file]);
+    expect(issues.find((i) => i.title.includes('honestly'))).toBeUndefined();
+    expect(issues.find((i) => i.title.includes('ask when unsure'))).toBeDefined();
+  });
+
   // ── Read-before-edit ──────────────────────────────────────────────────────
 
   it('flags missing read-before-edit instruction at warning severity', () => {
@@ -150,6 +196,47 @@ describe('detectAgentPractices', () => {
     ).toBeUndefined();
   });
 
+  // ── Code preservation (FEAT-006) ──────────────────────────────────────────
+
+  it('flags missing code-preservation instruction at warning severity', () => {
+    const issues = detectAgentPractices([MINIMAL_FILE]);
+    const issue = issues.find((i) => i.title.includes('code-preservation'));
+    expect(issue).toBeDefined();
+    expect(issue!.severity).toBe('warning');
+    expect(issue!.confidence).toBe(0.7);
+  });
+
+  it('does NOT flag when code preservation is present', () => {
+    const file = makeFile(
+      '# Rules\nPreserve existing code and only change what the task requires.',
+    );
+    expect(
+      detectAgentPractices([file]).find((i) => i.title.includes('code-preservation')),
+    ).toBeUndefined();
+  });
+
+  it('recognises "don\'t delete working code" as code preservation', () => {
+    const file = makeFile("# Rules\nDon't delete working tests to make the build pass.");
+    expect(
+      detectAgentPractices([file]).find((i) => i.title.includes('code-preservation')),
+    ).toBeUndefined();
+  });
+
+  it('keeps code-preservation distinct from scope-control', () => {
+    // A file whose only guidance is about diff breadth (scope-control) must
+    // still be flagged for the missing preservation rule, and vice-versa —
+    // FEAT-006 acceptance: each behavior covered by exactly one check.
+    const scopeOnly = makeFile('# Rules\nPrefer minimal diffs and targeted fixes.');
+    const scopeIssues = detectAgentPractices([scopeOnly]);
+    expect(scopeIssues.find((i) => i.title.includes('scope-control'))).toBeUndefined();
+    expect(scopeIssues.find((i) => i.title.includes('code-preservation'))).toBeDefined();
+
+    const preserveOnly = makeFile('# Rules\nPreserve existing code; keep existing tests.');
+    const preserveIssues = detectAgentPractices([preserveOnly]);
+    expect(preserveIssues.find((i) => i.title.includes('code-preservation'))).toBeUndefined();
+    expect(preserveIssues.find((i) => i.title.includes('scope-control'))).toBeDefined();
+  });
+
   // ── Plan-first ────────────────────────────────────────────────────────────
 
   it('flags missing plan-first instruction (stays info)', () => {
@@ -186,12 +273,14 @@ describe('detectAgentPractices', () => {
       '/repo/CLAUDE.md',
     );
     const f2 = makeFile(
-      'Always read the file before editing it. Prefer focused diffs.',
+      'Always read the file before editing it. Prefer focused diffs. ' +
+        'Preserve existing code and only change what the task requires.',
       '/repo/AGENTS.md',
     );
     const f3 = makeFile(
       [
         'If tests fail, report the failure honestly.',
+        'If you are uncertain about the approach, ask before proceeding.',
         'Outline the approach before implementing complex changes.',
       ].join('\n'),
       '/repo/.github/copilot-instructions.md',
