@@ -42,5 +42,6 @@ export function ctx(repoRoot: string, policy?: { include?: string[]; exclude?: s
       instructionFileCount: 0,
       largestInstructionFiles: [],
     },
+    onDemandFiles: [],
   };
 }
