@@ -84,8 +84,10 @@ const CHECKS: PracticeCheck[] = [
     ],
     recommendation:
       'Add a rule such as: "If tests fail, report the failure. Never claim success when commands error or tests are skipped."',
-    severity: 'info',
-    confidence: 0.7,
+    // An AI that doesn't report uncertainty or failures is a production risk,
+    // not a style suggestion — elevated from info 0.70 (roadmap FEAT-003).
+    severity: 'warning',
+    confidence: 0.75,
     fixRecipe: 'If tests or commands fail, report the failure honestly. Never claim success when checks are skipped or error.',
   },
   {
@@ -108,8 +110,10 @@ const CHECKS: PracticeCheck[] = [
     ],
     recommendation:
       'Add a rule such as: "Always read a file fully before editing it."',
-    severity: 'info',
-    confidence: 0.7,
+    // Editing files without reading them is the #1 source of AI coding
+    // mistakes — elevated from info 0.70 (roadmap FEAT-003).
+    severity: 'warning',
+    confidence: 0.75,
     fixRecipe: 'Read a file before editing it. Preserve unrelated user changes.',
   },
   {
@@ -130,8 +134,10 @@ const CHECKS: PracticeCheck[] = [
     ],
     recommendation:
       'Add a rule such as: "Prefer focused, minimal diffs. Do not rewrite or refactor code unrelated to the current task."',
-    severity: 'info',
-    confidence: 0.65,
+    // Unconstrained scope produces sweeping unrelated diffs that are hard to
+    // review — elevated from info 0.65 (roadmap FEAT-003).
+    severity: 'warning',
+    confidence: 0.7,
     fixRecipe: 'Prefer focused, minimal diffs. Do not rewrite or refactor code unrelated to the current task.',
   },
   {
