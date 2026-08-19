@@ -3,6 +3,7 @@ import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
 import { runReviewDiff } from '../src/commands/review-diff.js';
 
 /**
@@ -432,5 +433,92 @@ describe('runReviewDiff CLI command', () => {
     const report = JSON.parse(stdoutOutput);
     expect(report.newIssuesCount).toBe(0);
     expect(report.resolvedIssuesCount).toBe(1);
+  });
+
+  // #64: base-fetch robustness against a depth-1 (shallow) clone.
+  //
+  // Reproduces the GitHub Action's environment: actions/checkout does a
+  // single-branch, depth-1 fetch of the PR head, so neither origin/main nor the
+  // base commit is present locally. The action's fallback fetch (same refspec)
+  // must bring in enough for review-diff to compare against origin/main. Uses a
+  // real `git clone --depth 1` over a file:// URL — a local-path clone would
+  // silently ignore --depth and hardlink the whole history, hiding the bug.
+  it('resolves origin/<base> in a depth-1 clone after the fallback fetch (#64)', async () => {
+    const originRepo = await makeTempDir();
+    const consumer = await makeTempDir();
+    try {
+      // Origin: main (base, clean) then a feature branch (PR head) that
+      // introduces a stale-year regression.
+      await initRepo(originRepo);
+      await writeFiles(originRepo, { 'CLAUDE.md': '## Rules\nEnsure 2026 compatibility guidelines.\n' });
+      commitAll(originRepo, 'base');
+      git(['checkout', '-b', 'feature'], originRepo);
+      await writeFiles(originRepo, { 'CLAUDE.md': '## Rules\nEnsure 2023 compatibility guidelines.\n' });
+      commitAll(originRepo, 'head');
+      git(['checkout', 'main'], originRepo);
+
+      // Depth-1, single-branch clone of the head — the actions/checkout default.
+      const url = pathToFileURL(originRepo).href;
+      git(['clone', '--depth', '1', '--single-branch', '--branch', 'feature', url, consumer], os.tmpdir());
+
+      // Preconditions: the checkout is shallow and origin/main is absent — the
+      // exact state that makes the fallback fetch necessary.
+      expect(git(['rev-parse', '--is-shallow-repository'], consumer)).toBe('true');
+      expect(() => git(['rev-parse', '--verify', 'origin/main^{commit}'], consumer)).toThrow();
+
+      // The action's fallback fetch, byte-for-byte the same refspec as action.yml.
+      git(['fetch', '--no-tags', '--prune', 'origin', '+refs/heads/main:refs/remotes/origin/main'], consumer);
+
+      await runReviewDiff({
+        baseBranch: 'origin/main',
+        scanPath: consumer,
+        json: true,
+        failOnRegression: false,
+      });
+
+      const report = JSON.parse(stdoutOutput);
+      // The head's stale year is a regression the base does not have.
+      expect(report.newIssuesCount).toBeGreaterThan(0);
+    } finally {
+      await fs.rm(originRepo, { recursive: true, force: true });
+      await fs.rm(consumer, { recursive: true, force: true });
+    }
+  });
+
+  // #64: the fallback fetch hardcodes the remote name `origin`. actions/checkout
+  // always uses `origin`, so this never bites in the action's real environment,
+  // but the constraint is worth pinning: a differently named remote makes the
+  // origin-targeted fetch fail, and the documented workaround (fetch via the
+  // real remote name into refs/remotes/origin/<base>) restores it.
+  it('the fallback fetch requires the remote to be named origin (#64 constraint)', async () => {
+    const originRepo = await makeTempDir();
+    const consumer = await makeTempDir();
+    try {
+      await initRepo(originRepo);
+      await writeFiles(originRepo, { 'CLAUDE.md': '## Rules\nEnsure 2026 compatibility guidelines.\n' });
+      commitAll(originRepo, 'base');
+      git(['checkout', '-b', 'feature'], originRepo);
+      await writeFiles(originRepo, { 'CLAUDE.md': '## Rules\nEnsure 2025 compatibility guidelines.\n' });
+      commitAll(originRepo, 'head');
+      git(['checkout', 'main'], originRepo);
+
+      const url = pathToFileURL(originRepo).href;
+      // Name the remote `upstream`, not `origin`.
+      git(['clone', '--depth', '1', '--single-branch', '--branch', 'feature',
+        '--origin', 'upstream', url, consumer], os.tmpdir());
+
+      // With no `origin` remote, the action's hardcoded-origin fetch errors.
+      expect(() =>
+        git(['fetch', '--no-tags', 'origin', '+refs/heads/main:refs/remotes/origin/main'], consumer),
+      ).toThrow();
+
+      // Documented workaround: fetch via the actual remote name into the same
+      // origin/<base> tracking ref the action compares against.
+      git(['fetch', '--no-tags', 'upstream', '+refs/heads/main:refs/remotes/origin/main'], consumer);
+      expect(git(['rev-parse', '--verify', 'origin/main^{commit}'], consumer)).toBeTruthy();
+    } finally {
+      await fs.rm(originRepo, { recursive: true, force: true });
+      await fs.rm(consumer, { recursive: true, force: true });
+    }
   });
 });
