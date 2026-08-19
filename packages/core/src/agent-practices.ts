@@ -10,8 +10,10 @@
  * Checks:
  *   - Verification loop     — "run lint/tests before saying done"
  *   - Honesty policy        — "report failures, don't fake success"
+ *   - Ask-when-unsure       — "say so and ask when uncertain, don't guess"
  *   - Read-before-edit      — "read a file before editing it"
  *   - Scope control         — "prefer focused diffs, don't rewrite unrelated code"
+ *   - Code preservation     — "preserve existing code, only change what's needed"
  *   - Plan-first guidance   — "outline the approach before coding"
  *   - No contradictory "do not edit" header in human-maintained files
  *
@@ -91,6 +93,37 @@ const CHECKS: PracticeCheck[] = [
     fixRecipe: 'If tests or commands fail, report the failure honestly. Never claim success when checks are skipped or error.',
   },
   {
+    // FEAT-005: uncertainty handling. Arguably the single most impactful missing
+    // instruction — an agent that guesses instead of asking produces confidently
+    // wrong work. Distinct from the honesty policy above: honesty is about
+    // reporting failures *after* a command runs; this is about surfacing doubt
+    // *before* acting, so a file can satisfy one and miss the other.
+    id: 'no-ask-when-unsure',
+    title: 'No "ask when unsure" instruction',
+    summary:
+      'No instruction found telling the agent to surface uncertainty — to ask or say so when it is unsure — ' +
+      'instead of guessing. Without this, agents proceed on assumptions and produce confidently wrong work.',
+    patterns: [
+      /\bif\s+(?:you(?:'|’)?re\s+|you\s+are\s+|ever\s+)?unsure\b/i,
+      /\bif\s+in\s+(?:any\s+)?doubt\b/i,
+      /\bwhen\s+(?:you(?:'|’)?re\s+|you\s+are\s+)?(?:unsure|uncertain)\b/i,
+      /\bif\s+(?:you(?:'|’)?re\s+|you\s+are\s+|it(?:'|’)?s\s+)?uncertain\b/i,
+      /\bif\s+you\s+(?:don(?:'|’)?t|do\s+not|dont)\s+know\b/i,
+      /\bask\s+(?:before|first|for\s+clarification|the\s+user|a\s+question|questions)\b/i,
+      /\bclarify\s+(?:before|first|with)\b/i,
+      /\b(?:don(?:'|’)?t|do\s+not|dont)\s+guess\b/i,
+      /\bsay\s+(?:you|that\s+you)\s+(?:don(?:'|’)?t|do\s+not|dont)\s+know\b/i,
+      /\breport\s+uncertainty\b/i,
+      /\backnowledge\s+(?:when|uncertainty|any\s+uncertainty)\b/i,
+    ],
+    recommendation:
+      'Add a rule such as: "If you are uncertain about the correct approach, say so and ask before proceeding rather than guessing."',
+    severity: 'warning',
+    confidence: 0.75,
+    fixRecipe:
+      'If you are uncertain about the correct approach, say so before proceeding rather than guessing.',
+  },
+  {
     id: 'no-read-before-edit',
     title: 'No "read before edit" instruction',
     summary:
@@ -139,6 +172,37 @@ const CHECKS: PracticeCheck[] = [
     severity: 'warning',
     confidence: 0.7,
     fixRecipe: 'Prefer focused, minimal diffs. Do not rewrite or refactor code unrelated to the current task.',
+  },
+  {
+    // FEAT-006: code preservation. Deliberately kept DISTINCT from
+    // `no-scope-control` above, which constrains the *breadth* of new changes
+    // ("prefer small, focused diffs"). This check constrains *destruction* of
+    // what already exists — deleting working code, dropping tests, or clobbering
+    // the user's uncommitted edits. An agent can honor one and violate the other
+    // (a tightly-scoped diff can still delete a working function), so the two
+    // behaviors are covered by two checks. The patterns are intentionally
+    // non-overlapping: scope-control keys on "focused/minimal/unrelated", this
+    // keys on "preserve/keep existing/only change what/don't delete".
+    id: 'no-preserve-scope',
+    title: 'No code-preservation instruction',
+    summary:
+      'No instruction found telling the agent to preserve existing code and only change what the task requires. ' +
+      'Without this, agents delete working code, drop tests, or overwrite unrelated edits to reach a passing state.',
+    patterns: [
+      /\bpreserve\s+(?:existing|unrelated|the\s+existing|current|working|any\s+existing)\b/i,
+      /\bpreserve\s+(?:unrelated\s+changes|the\s+user(?:'|’)?s?\s+(?:changes|edits|work))\b/i,
+      /\b(?:don(?:'|’)?t|do\s+not|dont|never)\s+(?:delete|remove|drop|strip)\s+(?:existing|working|unrelated|any)\b/i,
+      /\bkeep\s+(?:existing|the\s+existing|current|working)\s+(?:code|behaviou?r|functionality|logic|tests?)\b/i,
+      /\bonly\s+(?:change|modify|touch|edit|update)\s+(?:what|the\s+code\s+(?:that|you)|files?\s+(?:that|you)|lines?)\b/i,
+      /\b(?:don(?:'|’)?t|do\s+not|dont)\s+(?:modify|change|touch)\s+code\s+outside\b/i,
+      /\bleave\s+(?:unrelated|existing|working|other)\s+(?:code|files?|logic|behaviou?r)\s+(?:untouched|alone|intact|as[- ]is)\b/i,
+    ],
+    recommendation:
+      'Add a rule such as: "Preserve existing code and only change what the task requires. Do not delete working code, tests, or unrelated edits."',
+    severity: 'warning',
+    confidence: 0.7,
+    fixRecipe:
+      'Preserve existing code and only change what the task requires. Do not delete working code, tests, or unrelated edits.',
   },
   {
     id: 'no-plan-first',

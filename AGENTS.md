@@ -23,6 +23,8 @@ reference documentation.
   before saying a change is complete. Work is not done until all four pass.
 - **Report failures honestly.** If a command fails, report the failure; never claim success when
   checks error or are skipped, and never delete or skip a test to make the suite go green.
+- **Ask when unsure.** If you are uncertain about the correct approach, say so and ask before
+  proceeding rather than guessing.
 - **Read before you edit.** Read a file fully before editing it, and preserve unrelated changes
   already in the working tree.
 - **Keep diffs focused.** Prefer focused, minimal diffs; do not rewrite or refactor code
