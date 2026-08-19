@@ -120,3 +120,7 @@ Open a test PR from an allow-listed author. Expect:
 - **Reviewer down / out of credits** — the run goes red with bypass
   instructions in the PR comment; merge manually with
   `gh pr merge <n> --squash --delete-branch` once CI is green.
+
+## Rollout log
+
+- 2026-08-19 — stack merged (PR #77); runner artemis-promptci-pr-review online; ruleset + labels + variables live. This PR is the end-to-end verification of the review pipeline.
