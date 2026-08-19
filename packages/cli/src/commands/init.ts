@@ -11,8 +11,15 @@ const PROJECT_TYPES: ProjectType[] = CORE_PROJECT_TYPES.filter((t) => t !== 'aut
 // `apiUrl: 'http://localhost:3000'`, which pointed `upload`/`login` at the
 // user's own machine. `apiUrl` is now omitted — set it only when you actually
 // run a dashboard (see Docs/cli-reference.md).
+// `severityThreshold` is scan's default `--fail-on` gate, not a display filter:
+// every finding is still shown in the report; the threshold only decides which
+// severities make `scan` exit non-zero. Seeding a fresh config with 'high' keeps
+// the very first `promptci init && promptci scan` from exiting 1 on the ordinary
+// warning-level findings a new repo produces — CI fails on high/critical, while
+// warnings and info surface in the report without breaking the build. Users who
+// want a stricter gate can lower it (see Docs/cli-reference.md).
 const DEFAULT_CONFIG = {
-  severityThreshold: 'warning',
+  severityThreshold: 'high',
   projectType: 'auto',
 };
 

@@ -25,7 +25,15 @@ Common causes:
 - Dead-reference detector fires on source-code file paths (e.g. `lib/upload.ts`) — these are legitimate if the file exists in the repo but the fixture is instruction-files-only. In production scans against a real repo this resolves naturally.
 - Conflict detector fires on unrelated directives — if you see spurious conflicts, check if the matched subject words are actually the same concept.
 
-To reduce noise, raise the `severityThreshold` in config to `warning` or `high` so info-level findings are suppressed in CI.
+`severityThreshold` does **not** hide findings — every finding is always listed in the report. It only sets the default `--fail-on` gate (the lowest severity that makes `scan` exit non-zero), so *raising* it toward `critical` makes CI *more* lenient, not quieter. To genuinely reduce noise, use `exclude` patterns or inline `promptci-ignore` comments (see [cli-reference.md](cli-reference.md#severitythreshold-config-key)).
+
+### `init && scan` exits 1 on my very first run
+
+`scan` inherits `severityThreshold` from `.promptci/config.json` as its default `--fail-on`
+gate. Newer configs seed `"high"`, so warnings pass; if your config predates that (or was set
+to `"warning"`/`"info"`), the first scan exits 1 on warning-level findings. The failure message
+now names the threshold and where it came from. Raise it to `"high"` in the config, or pass an
+explicit `--fail-on high`. See [cli-reference.md](cli-reference.md#severitythreshold-config-key).
 
 ### "--fail-on" exits 1 unexpectedly in CI
 
