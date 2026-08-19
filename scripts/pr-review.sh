@@ -780,6 +780,15 @@ check_ci_status() {
   # `total: (…) or-else 0` form is a SYNTAX error, so nothing compiles at all.
   # The failure is logged, not swallowed — and the fallback carries api_failed
   # so the zero-checks grace never counts an unparseable poll (see wait_for_ci).
+  #
+  # `skipped` counts as NON-BLOCKING in all_success (alongside neutral): the
+  # enable-automerge job in auto-merge.yml has a job-level `if`, so every
+  # non-Dependabot/non-labeled PR gets a check run with conclusion=skipped on
+  # its head SHA. Treating skipped as not-success made all_success permanently
+  # false — failures=0, so wait_for_ci looped "N checks, waiting" for the full
+  # 1800s on EVERY such PR (hit live on PR #78's first keyed re-review). Merge
+  # safety is unaffected: the `main` ruleset independently requires the `ci`
+  # check to be green at merge time, so a red-or-absent ci still never merges.
   local parsed jq_exit=0
   parsed="$(echo "$api_result" | jq '
     {
@@ -794,7 +803,7 @@ check_ci_status() {
       ),
       all_success: (
         ([.check_runs[] | select(.name | startswith("🤖 Auto-Review") | not)] | length) > 0 and
-        ([.check_runs[] | select((.name | startswith("🤖 Auto-Review") | not) and .conclusion != "success" and .conclusion != "neutral")] | length) == 0
+        ([.check_runs[] | select((.name | startswith("🤖 Auto-Review") | not) and .conclusion != "success" and .conclusion != "neutral" and .conclusion != "skipped")] | length) == 0
       )
     }
   ' 2>&1)" || jq_exit=$?
