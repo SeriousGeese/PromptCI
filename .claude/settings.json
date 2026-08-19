@@ -1,0 +1,14 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c 'test -e packages/core/node_modules/fast-glob || pnpm install --prefer-offline'"
+          }
+        ]
+      }
+    ]
+  }
+}
