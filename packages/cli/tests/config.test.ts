@@ -104,4 +104,24 @@ describe('loadConfig', () => {
     );
     await expect(loadConfig(tmpDir)).rejects.toThrow('include');
   });
+
+  // FEAT-004: vagueGuidanceSeverity override
+  it.each(['info', 'warning'] as const)('accepts vagueGuidanceSeverity = %s', async (value) => {
+    await fs.writeFile(
+      path.join(tmpDir, '.promptci', 'config.json'),
+      JSON.stringify({ vagueGuidanceSeverity: value }),
+      'utf-8',
+    );
+    const config = await loadConfig(tmpDir);
+    expect(config.vagueGuidanceSeverity).toBe(value);
+  });
+
+  it('throws on an invalid vagueGuidanceSeverity (e.g. "high")', async () => {
+    await fs.writeFile(
+      path.join(tmpDir, '.promptci', 'config.json'),
+      JSON.stringify({ vagueGuidanceSeverity: 'high' }),
+      'utf-8',
+    );
+    await expect(loadConfig(tmpDir)).rejects.toThrow('vagueGuidanceSeverity');
+  });
 });

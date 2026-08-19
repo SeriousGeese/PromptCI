@@ -74,7 +74,8 @@ export const DETECTORS: DetectorDefinition[] = [
   },
   {
     id: 'vague-guidance',
-    run: (context) => detectVagueGuidance(context.files),
+    run: (context) =>
+      detectVagueGuidance(context.files, { severityOverride: context.vagueGuidanceSeverity }),
   },
   {
     id: 'dead-references',

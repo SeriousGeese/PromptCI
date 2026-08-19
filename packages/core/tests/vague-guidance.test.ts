@@ -311,3 +311,69 @@ describe('detectVagueGuidance — V4 code-fence stripping', () => {
     expect(issues).toHaveLength(0);
   });
 });
+
+// ── FEAT-004: severity tiers + config override ───────────────────────────────
+
+describe('detectVagueGuidance — FEAT-004 severity tiers', () => {
+  it('emits high-signal platitudes at warning 0.80', () => {
+    const file = makeFile('## Style\nWrite clean code and follow best practices at all times.');
+    const issues = detectVagueGuidance([file]);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].severity).toBe('warning');
+    expect(issues[0].confidence).toBe(0.8);
+  });
+
+  it('treats "SOLID principles", "clean architecture", "be careful" as warning', () => {
+    for (const phrase of [
+      'Follow SOLID principles when structuring modules.',
+      'Use clean architecture for every service.',
+      'Be careful when editing shared config files.',
+    ]) {
+      const issues = detectVagueGuidance([makeFile(`## Rules\n${phrase}`)]);
+      expect(issues).toHaveLength(1);
+      expect(issues[0].severity).toBe('warning');
+    }
+  });
+
+  it('emits soft style/UX phrases at info 0.75', () => {
+    const file = makeFile('## Goals\nThe app should deliver a great user experience for everyone.');
+    const issues = detectVagueGuidance([file]);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].severity).toBe('info');
+    expect(issues[0].confidence).toBe(0.75);
+  });
+
+  it('escalates a mixed section to warning when any high-signal phrase is present', () => {
+    // "great user experience" (soft) + "best practices" (high-signal) → warning.
+    const file = makeFile(
+      '## Goals\nDeliver a great user experience and follow best practices everywhere.',
+    );
+    const issues = detectVagueGuidance([file]);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].severity).toBe('warning');
+    expect(issues[0].confidence).toBe(0.8);
+  });
+});
+
+describe('detectVagueGuidance — FEAT-004 severityOverride config', () => {
+  it('forces a soft finding up to warning when overridden to "warning"', () => {
+    const file = makeFile('## Goals\nThe app should deliver a great user experience for everyone.');
+    const issues = detectVagueGuidance([file], { severityOverride: 'warning' });
+    expect(issues[0].severity).toBe('warning');
+    // Confidence still reflects the soft tier — only severity is overridden.
+    expect(issues[0].confidence).toBe(0.75);
+  });
+
+  it('forces a high-signal finding down to info when overridden to "info"', () => {
+    const file = makeFile('## Style\nWrite clean code and follow best practices at all times.');
+    const issues = detectVagueGuidance([file], { severityOverride: 'info' });
+    expect(issues[0].severity).toBe('info');
+    expect(issues[0].confidence).toBe(0.8);
+  });
+
+  it('uses the tiered default when no override is given', () => {
+    const file = makeFile('## Style\nWrite clean code everywhere.');
+    expect(detectVagueGuidance([file])[0].severity).toBe('warning');
+    expect(detectVagueGuidance([file], {})[0].severity).toBe('warning');
+  });
+});

@@ -194,6 +194,7 @@ export async function runReviewDiff(options: ReviewDiffOptions): Promise<void> {
       projectType: config.projectType,
       include: config.include,
       exclude: config.exclude,
+      vagueGuidanceSeverity: config.vagueGuidanceSeverity,
     };
 
     const baseReport = await scan({ repoPath: baseScanRoot, ...scanOptions });
