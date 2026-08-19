@@ -47,15 +47,27 @@ export async function runDoctor(options: DoctorOptions): Promise<void> {
   const major = parseInt(process.versions.node.split('.')[0], 10);
   const isNodeOk = major >= MIN_NODE_MAJOR;
 
-  // 2. Global executable check
-  let cliVersionStr: string;
-  let cliLinked = false;
+  // 2. Report the RUNNING CLI version — the one executing this doctor command.
+  // esbuild inlines this package.json at build time (same single source of truth
+  // as `promptci --version`), so it is the true version regardless of what a
+  // globally-linked `promptci` on PATH resolves to. The old code shelled out to
+  // `promptci --version`, which reported the GLOBAL link's version — misleading
+  // whenever you run a locally-built or `npx`'d CLI that differs from the global.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const runningVersion = (require('../../package.json') as { version: string }).version;
+
+  // Then note how any globally-linked `promptci` relates to this build.
+  //   null  → not linked; true → linked and matching; false → linked but different.
+  let globalLinkMatches: boolean | null;
+  let globalLinkedVersion = '';
   try {
-    const out = execSync('promptci --version', { stdio: ['ignore', 'pipe', 'ignore'], encoding: 'utf8' }).trim();
-    cliVersionStr = out;
-    cliLinked = true;
+    globalLinkedVersion = execSync('promptci --version', {
+      stdio: ['ignore', 'pipe', 'ignore'],
+      encoding: 'utf8',
+    }).trim();
+    globalLinkMatches = globalLinkedVersion === runningVersion;
   } catch {
-    cliVersionStr = 'Not linked globally (run pnpm link -g or npm link -g if desired)';
+    globalLinkMatches = null;
   }
 
   // 3. Config schema validation
@@ -168,10 +180,18 @@ export async function runDoctor(options: DoctorOptions): Promise<void> {
     criticalFailure = true;
   }
 
-  if (cliLinked) {
-    console.log(`\x1b[32m[✓]\x1b[0m Global CLI executable is linked (${cliVersionStr})`);
+  console.log(`\x1b[32m[✓]\x1b[0m PromptCI CLI version (running): ${runningVersion}`);
+  if (globalLinkMatches === true) {
+    console.log(`\x1b[32m[✓]\x1b[0m Global \`promptci\` is linked and matches (${globalLinkedVersion})`);
+  } else if (globalLinkMatches === false) {
+    console.log(
+      `\x1b[33m[!]\x1b[0m Global \`promptci\` on PATH is a different version (${globalLinkedVersion}); ` +
+        `it will not match this build`,
+    );
   } else {
-    console.log(`\x1b[33m[!]\x1b[0m Global CLI executable: ${cliVersionStr}`);
+    console.log(
+      `\x1b[33m[!]\x1b[0m Global \`promptci\` is not linked (run npm link -g or pnpm link -g if desired)`,
+    );
   }
 
   if (configOk) {

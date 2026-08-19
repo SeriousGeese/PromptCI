@@ -551,14 +551,29 @@ export function frontmatterStructureIssues(
   }
 
   for (const err of fm.errors) {
+    // BUG-007: surface a clear, user-facing finding that names the offending
+    // key and points at the offending line, rather than a generic "structural
+    // problem" anchored to the whole fence. The parser embeds the key (in
+    // quotes) and the line number in each error string; lift both out so the
+    // title and location are specific. Nested maps are the common trigger —
+    // e.g. `tools:` followed by an indented `read: true`.
+    const offendingKey = /"([^"]+)"/.exec(err)?.[1];
+    const errLine = Number(/\bline (\d+)\b/.exec(err)?.[1]);
+    const anchorLine = Number.isInteger(errLine) && errLine > 0
+      ? errLine
+      : (fm.fenceEndLine > 0 ? fm.fenceEndLine : 1);
     issues.push(aiConfigIssue({
       id: sid('fm-error', `${filePath}|${err}`),
-      title: `${surface.noun} frontmatter has a structural problem`,
+      title: offendingKey
+        ? `${surface.noun} frontmatter has an unsupported key "${offendingKey}"`
+        : `${surface.noun} frontmatter has a structural problem`,
       summary: `${filePath}: ${err}.`,
       filePaths: [filePath],
-      locations: [{ filePath, startLine: 1, endLine: fm.fenceEndLine > 0 ? fm.fenceEndLine : 1 }],
+      locations: [{ filePath, startLine: anchorLine, endLine: anchorLine }],
       evidence: [err],
-      recommendation: 'Fix the frontmatter so it is valid YAML with flat, unique keys.',
+      recommendation:
+        'Fix the frontmatter so it is valid YAML with flat, unique keys. ' +
+        'Nested maps are not supported — flatten the offending key or move it into the body.',
       confidence: 0.7,
     }));
   }

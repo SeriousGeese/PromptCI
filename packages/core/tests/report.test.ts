@@ -597,6 +597,39 @@ describe('archiveExistingReport', () => {
       await fs.rm(tmp, { recursive: true, force: true });
     }
   });
+
+  it('writes the history index atomically and leaves no .tmp behind (BUG-005)', async () => {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'promptci-archive-'));
+    try {
+      const promptciDir = path.join(tmp, '.promptci');
+      await fs.mkdir(promptciDir, { recursive: true });
+      await fs.writeFile(
+        path.join(promptciDir, 'report.json'),
+        JSON.stringify({ generatedAt: '2026-01-02T03:04:05.678Z', healthScore: 91, issues: [{ severity: 'warning' }] }),
+        'utf8',
+      );
+      await fs.writeFile(path.join(promptciDir, 'latest.md'), '# old report\n', 'utf8');
+
+      const entry = await archiveExistingReport(
+        tmp,
+        path.join(promptciDir, 'latest.md'),
+        path.join(promptciDir, 'report.json'),
+      );
+      expect(entry).not.toBeNull();
+
+      // The index parses (never a half-written file) and holds the entry.
+      const index = await readHistoryIndex(tmp);
+      expect(index).toHaveLength(1);
+      expect(index[0]!.healthScore).toBe(91);
+
+      // No temp file is left dangling next to the committed index.
+      const historyDir = path.join(promptciDir, 'history');
+      const leftovers = await fs.readdir(historyDir);
+      expect(leftovers.some((f) => f.endsWith('.tmp'))).toBe(false);
+    } finally {
+      await fs.rm(tmp, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('Trend Insights', () => {

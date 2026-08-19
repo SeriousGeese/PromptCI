@@ -130,6 +130,32 @@ describe('runReviewDiff CLI command', () => {
     expect(stdoutOutput).toContain('Instruction may reference outdated content');
   });
 
+  it('handles --path naming a subdirectory absent in the base commit', async () => {
+    await initRepo(tmpDir);
+    await writeFiles(tmpDir, { 'CLAUDE.md': '## Rules\nUse TypeScript.\n' });
+    commitAll(tmpDir, 'base');
+    git(['branch', 'base-branch'], tmpDir);
+
+    // HEAD adds a brand-new subdirectory whose instruction file has a finding.
+    await writeFiles(tmpDir, { 'sub/CLAUDE.md': '## Rules\nEnsure 2023 compatibility guidelines.\n' });
+    commitAll(tmpDir, 'head adds sub/');
+
+    // Scanning sub/ must not crash even though the base commit has no sub/.
+    await runReviewDiff({
+      baseBranch: 'base-branch',
+      scanPath: path.join(tmpDir, 'sub'),
+      json: false,
+      failOnRegression: false,
+    });
+
+    // The absence is noted, and the finding under sub/ is reported as new
+    // (the base side is empty, so it cannot be paired away as pre-existing).
+    expect(stderrOutput).toContain('does not exist in the base commit');
+    expect(stdoutOutput).toContain('[+] New Issues:');
+    expect(stdoutOutput).toContain('Instruction may reference outdated content');
+    expect(stdoutOutput).not.toContain('New Issues:    0');
+  });
+
   it('identifies regressions (new issues) and exits 1 if failOnRegression is true', async () => {
     await initRepo(tmpDir);
     await writeFiles(tmpDir, { 'CLAUDE.md': '## Rules\nEnsure 2026 compatibility guidelines.\n' });

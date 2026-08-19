@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { parseFrontmatter, asStringList } from '../src/ai-config.js';
+import { parseFrontmatter, asStringList, frontmatterStructureIssues } from '../src/ai-config.js';
+import type { FrontmatterSurface } from '../src/ai-config.js';
 
 describe('parseFrontmatter', () => {
   it('returns present=false when there is no frontmatter', () => {
@@ -103,6 +104,33 @@ describe('parseFrontmatter', () => {
     const fm = parseFrontmatter('﻿---\nname: x\n---\n');
     expect(fm.present).toBe(true);
     expect(fm.data.name).toBe('x');
+  });
+});
+
+describe('frontmatterStructureIssues — nested-map finding (BUG-007)', () => {
+  const surface: FrontmatterSurface = {
+    idPrefix: 'skill',
+    noun: 'Skill',
+    why: 'A valid block provides name/description.',
+    recommendation: 'Add a `---` block.',
+  };
+
+  it('names the offending nested key in the title and anchors to its line', () => {
+    const content = ['---', 'name: demo', 'tools:', '  read: true', '  write: false', '---', 'body'].join('\n');
+    const fm = parseFrontmatter(content);
+    const issues = frontmatterStructureIssues('SKILL.md', content, fm, surface);
+
+    // One finding per unsupported nested key, each naming the key (not generic).
+    const readIssue = issues.find((i) => i.title.includes('"read"'));
+    expect(readIssue).toBeDefined();
+    expect(readIssue!.title).not.toContain('structural problem');
+    expect(readIssue!.summary).toContain('read');
+    // Anchored to the offending line (`  read: true` is line 4), not line 1.
+    expect(readIssue!.locations[0]?.startLine).toBe(4);
+
+    const writeIssue = issues.find((i) => i.title.includes('"write"'));
+    expect(writeIssue).toBeDefined();
+    expect(writeIssue!.locations[0]?.startLine).toBe(5);
   });
 });
 
