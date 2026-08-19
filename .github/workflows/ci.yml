@@ -19,9 +19,11 @@ concurrency:
 
 # Least privilege. Without an explicit block the job inherits the repository's
 # default token scope, which can be read/write on everything. This workflow
-# only reads the repo and runs pnpm.
+# reads the repo and runs pnpm; statuses:write exists ONLY for the
+# dispatched-run commit status below.
 permissions:
   contents: read
+  statuses: write
 
 jobs:
   ci:
@@ -90,3 +92,27 @@ jobs:
           pnpm selfscan
           node scripts/health-badge.mjs
           git diff --exit-code -- .promptci/health-badge.json
+
+      # Required-check visibility for DISPATCHED runs (see scripts/pr-review.sh):
+      # the auto-review bot's branch pushes use GITHUB_TOKEN, which fires no
+      # workflows, so the bot dispatches this workflow explicitly — but a
+      # workflow_dispatch run's check run never attaches to any PR's check
+      # rollup, and the `main` ruleset's required "ci" check therefore stays
+      # unsatisfied even when the run is green. The bot's merge then fails with
+      # "base branch policy prohibits the merge" (hit live on PR #78). A legacy
+      # commit STATUS with context "ci" DOES attach to the rollup and satisfies
+      # the required check, so dispatched runs publish one explicitly — success
+      # or failure, so a red dispatched run can never be mistaken for pending.
+      # pull_request/push runs skip this: their check run attaches naturally.
+      - name: Publish commit status (dispatched runs only)
+        if: ${{ github.event_name == 'workflow_dispatch' && always() }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          state=success
+          [ "${{ job.status }}" = "success" ] || state=failure
+          gh api "repos/${{ github.repository }}/statuses/${{ github.sha }}" \
+            -f state="$state" -f context=ci \
+            -f description="dispatched CI run (run_id ${{ github.run_id }})" \
+            -f target_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          echo "Published commit status ci=$state on ${{ github.sha }}"

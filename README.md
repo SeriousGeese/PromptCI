@@ -129,10 +129,16 @@ and a confidence value.
 
 ```json
 {
-  "severityThreshold": "warning",
+  "severityThreshold": "high",
   "projectType": "auto"
 }
 ```
+
+`severityThreshold` is `scan`'s default `--fail-on` gate — the lowest severity that
+makes a scan exit non-zero. It does **not** hide findings; the report always lists
+everything. The default `"high"` lets a fresh `promptci init && promptci scan` pass on
+ordinary warning-level findings while still failing CI on high/critical issues. See
+[Docs/cli-reference.md](Docs/cli-reference.md#severitythreshold-config-key) for details.
 
 Suppress a finding inline where it is wrong for your project:
 
