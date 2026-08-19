@@ -3,6 +3,7 @@ import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import type { FileType, InstructionFile, InstructionSection, ScanInput } from './types.js';
 import { scanFencedLines } from './markdown-fences.js';
+import { isWithinRoot } from './path-containment.js';
 
 const DEFAULT_PATTERNS = [
   // Core AI instruction files
@@ -195,9 +196,8 @@ export async function scanFiles(input: ScanInput): Promise<InstructionFile[]> {
   for (const relPath of relativePaths) {
     const absPath = path.resolve(repoRoot, relPath);
 
-    // Path traversal guard
-    const relative = path.relative(repoRoot, absPath);
-    if (relative.startsWith('..') || path.isAbsolute(relative)) {
+    // Path traversal guard: skip anything a glob result resolves outside the root.
+    if (!isWithinRoot(repoRoot, absPath)) {
       continue;
     }
 

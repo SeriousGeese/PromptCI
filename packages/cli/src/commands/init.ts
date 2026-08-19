@@ -1,7 +1,7 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import * as readline from 'node:readline';
-import { detectProjectType, renderPromptCiGitignore, PROJECT_TYPES as CORE_PROJECT_TYPES, type ProjectType } from '@promptci/core';
+import { detectProjectType, renderPromptCiGitignore, isWithinRoot, PROJECT_TYPES as CORE_PROJECT_TYPES, type ProjectType } from '@promptci/core';
 
 // Every core project type except 'auto', which is offered implicitly by
 // accepting the detected type rather than as a menu entry.
@@ -252,8 +252,7 @@ Before finalizing any changes, perform these steps:
 export function resolveSafePath(targetPath: string, fileRelativePath: string): string {
   const resolvedTarget = path.resolve(targetPath);
   const resolvedFile = path.resolve(resolvedTarget, fileRelativePath);
-  const relative = path.relative(resolvedTarget, resolvedFile);
-  if (relative.startsWith('..') || path.isAbsolute(relative)) {
+  if (!isWithinRoot(resolvedTarget, resolvedFile)) {
     throw new Error(`Path escapes target directory: ${fileRelativePath}`);
   }
   return resolvedFile;
