@@ -1,0 +1,45 @@
+name: Auto-merge (Dependabot + automerge label)
+# LLM-free, GitHub-hosted auto-merge path. Owns exactly two PR classes:
+#  - Dependabot PRs
+#  - PRs a human labeled `automerge`
+# It enables GitHub's native auto-merge (squash), which merges only after the
+# branch ruleset's required checks (ci) pass. This path is deliberately
+# DISJOINT from the pr-auto-review bot: dependabot[bot] must NOT be added to
+# AUTO_REVIEW_AUTOMERGE_AUTHORS.
+#
+# pull_request_target is safe here because this job never checks out or
+# executes PR code — it only calls the GitHub API on the PR.
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, labeled, ready_for_review]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  enable-automerge:
+    if: >-
+      !github.event.pull_request.draft &&
+      (github.event.pull_request.user.login == 'dependabot[bot]' ||
+       contains(github.event.pull_request.labels.*.name, 'automerge'))
+    runs-on: ubuntu-latest
+    steps:
+      - name: Enable squash auto-merge
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: |
+          # --auto waits for required status checks (the `ci` check required
+          # by the main ruleset) before merging. A do-not-merge/hold/blocked
+          # label is respected here too: skip enabling rather than queueing a
+          # merge a human parked.
+          labels="$(gh pr view "$PR_URL" --json labels --jq '[.labels[].name | ascii_downcase] | join(",")')"
+          case ",${labels}," in
+            *,do-not-merge,*|*,hold,*|*,blocked,*)
+              echo "PR carries a merge-hold label (${labels}) — not enabling auto-merge"
+              exit 0
+              ;;
+          esac
+          gh pr merge --auto --squash "$PR_URL"
+          echo "Auto-merge enabled for $PR_URL"

@@ -171,9 +171,17 @@ export async function runScan(options: ScanOptions): Promise<void> {
         isValidSeverity(i.severity) &&
         anyIssuesMeetThreshold({ ...report, issues: [i] }, effectiveFailOn),
     ).length;
+    // Name where the threshold came from. When it was inherited from the config
+    // file (no --fail-on flag), an unexpected exit 1 is otherwise a mystery — the
+    // user never typed a threshold on the command line.
+    const source =
+      options.failOn !== undefined
+        ? 'from --fail-on'
+        : 'from severityThreshold in .promptci/config.json';
     console.error(
-      `\nFailed: ${matching} issue(s) at or above "${effectiveFailOn}" threshold. ` +
-        `See ${written.mdPath} for details.`,
+      `\nFailed: ${matching} issue(s) at or above the "${effectiveFailOn}" threshold (${source}). ` +
+        `See ${written.mdPath} for details.\n` +
+        `Raise the gate with --fail-on <severity> or edit severityThreshold to only fail on higher severities.`,
     );
     process.exit(1);
   }

@@ -8,8 +8,12 @@
 #   bash scripts/setup-labels.sh
 #
 # These back the issue templates (.github/ISSUE_TEMPLATE/) and Dependabot
-# (.github/dependabot.yml). The merge-control and type/changelog labels are
-# applied by maintainers by hand today — no automation reads them yet.
+# (.github/dependabot.yml). Automation reads two families:
+#  - merge control: scripts/pr-review.sh treats do-not-merge/hold/blocked as a
+#    hard hold (review + comment only, never merge or push fixes), and
+#    .github/workflows/auto-merge.yml respects them too; `automerge` opts a
+#    non-Dependabot PR into the LLM-free auto-merge path.
+#  - type/changelog: .github/release.yml maps them into release notes.
 set -euo pipefail
 
 GH_CLI="${GH_CLI:-gh}"
@@ -26,6 +30,7 @@ echo "Applying labels to $REPO..."
 label "do-not-merge" "B60205" "Do not merge — maintainer hold on all merges"
 label "hold"         "B60205" "Temporarily hold — do not merge yet"
 label "blocked"      "B60205" "Blocked on something external — do not merge"
+label "automerge"    "0E8A16" "auto-merge.yml: squash-merge automatically once required checks pass"
 
 # ── Type / changelog categories ──────────────────────────────────────────────
 label "breaking-change" "D93F0B" "Backwards-incompatible change"

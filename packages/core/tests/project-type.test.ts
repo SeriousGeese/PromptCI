@@ -104,4 +104,47 @@ describe('detectProjectType', () => {
       await fs.rm(tmp, { recursive: true, force: true });
     }
   });
+
+  // Regression: a root package.json (dropped by JS tooling like husky/prettier)
+  // must not shadow the more specific Unity/.NET markers.
+
+  it('unity: package.json + Assets/ProjectVersion.txt detects "unity" (not typescript)', async () => {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'promptci-unity-pkg-'));
+    try {
+      await fs.writeFile(path.join(tmp, 'package.json'), '{"devDependencies":{"prettier":"*"}}');
+      await fs.mkdir(path.join(tmp, 'Assets'));
+      await fs.mkdir(path.join(tmp, 'ProjectSettings'));
+      await fs.writeFile(
+        path.join(tmp, 'ProjectSettings', 'ProjectVersion.txt'),
+        'm_EditorVersion: 6000.0.0f1',
+      );
+      const result = await detectProjectType(tmp);
+      expect(result).toBe('unity');
+    } finally {
+      await fs.rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('dotnet: package.json + *.sln detects "dotnet" (not typescript)', async () => {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'promptci-dotnet-pkg-'));
+    try {
+      await fs.writeFile(path.join(tmp, 'package.json'), '{"devDependencies":{"husky":"*"}}');
+      await fs.writeFile(path.join(tmp, 'MyApp.sln'), '');
+      const result = await detectProjectType(tmp);
+      expect(result).toBe('dotnet');
+    } finally {
+      await fs.rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('typescript: plain package.json (no unity/dotnet markers) detects "typescript"', async () => {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'promptci-ts-pkg-'));
+    try {
+      await fs.writeFile(path.join(tmp, 'package.json'), '{"name":"plain"}');
+      const result = await detectProjectType(tmp);
+      expect(result).toBe('typescript');
+    } finally {
+      await fs.rm(tmp, { recursive: true, force: true });
+    }
+  });
 });
