@@ -1,6 +1,14 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
-import { scan, generateJsonReport, writeReport, createBaseline, assertValidBaseline } from '@promptci/core';
+import {
+  scan,
+  generateJsonReport,
+  writeReport,
+  createBaseline,
+  assertValidBaseline,
+  resolveTargetModel,
+  TARGET_MODELS,
+} from '@promptci/core';
 
 import type { IssueSeverity, PromptCiIssue, Baseline } from '@promptci/core';
 import { loadConfig } from '../config.js';
@@ -17,6 +25,7 @@ export type ScanOptions = {
   failOnBudget?: boolean;
   contextBudget?: number;
   fileContextBudget?: number;
+  targetModel?: string;
 };
 
 const SEVERITY_VALUES: IssueSeverity[] = ['info', 'warning', 'high', 'critical'];
@@ -51,6 +60,15 @@ export async function runScan(options: ScanOptions): Promise<void> {
   }
 
   // CLI flags take precedence over config file values
+  const effectiveTargetModel = options.targetModel ?? config.targetModel;
+  if (effectiveTargetModel !== undefined && resolveTargetModel(effectiveTargetModel) === undefined) {
+    console.error(
+      `Error: invalid --target-model value "${effectiveTargetModel}". ` +
+        `Must be one of: ${TARGET_MODELS.join(', ')} (or a family alias like "claude"/"gpt"/"gemini").`,
+    );
+    process.exit(1);
+  }
+
   const effectiveFailOn: IssueSeverity | undefined =
     options.failOn ?? config.severityThreshold;
 
@@ -126,6 +144,7 @@ export async function runScan(options: ScanOptions): Promise<void> {
     baseline,
     contextBudget: options.contextBudget ?? config.contextBudget,
     fileContextBudget: options.fileContextBudget ?? config.fileContextBudget,
+    targetModel: effectiveTargetModel,
     vagueGuidanceSeverity: config.vagueGuidanceSeverity,
   });
 

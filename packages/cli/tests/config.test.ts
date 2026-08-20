@@ -124,4 +124,27 @@ describe('loadConfig', () => {
     );
     await expect(loadConfig(tmpDir)).rejects.toThrow('vagueGuidanceSeverity');
   });
+
+  // FEAT-012: targetModel preset
+  it.each(['claude-opus-5', 'gpt-5', 'gemini-2.5-pro', 'claude'])(
+    'accepts a valid targetModel (%s)',
+    async (targetModel) => {
+      await fs.writeFile(
+        path.join(tmpDir, '.promptci', 'config.json'),
+        JSON.stringify({ targetModel }),
+        'utf-8',
+      );
+      const config = await loadConfig(tmpDir);
+      expect(config.targetModel).toBe(targetModel);
+    },
+  );
+
+  it('throws on an unknown targetModel, naming the offending key', async () => {
+    await fs.writeFile(
+      path.join(tmpDir, '.promptci', 'config.json'),
+      JSON.stringify({ targetModel: 'gpt-9-ultra' }),
+      'utf-8',
+    );
+    await expect(loadConfig(tmpDir)).rejects.toThrow('targetModel');
+  });
 });

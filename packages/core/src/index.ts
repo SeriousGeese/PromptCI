@@ -38,6 +38,14 @@ export type { FileChange } from './fix-engine.js';
 export { isWithinRoot, resolveWithinRoot } from './path-containment.js';
 export { optimizeContext } from './context-optimizer.js';
 export type { OptimizeOptions, OptimizeResult } from './context-optimizer.js';
+export {
+  TARGET_MODELS,
+  MODEL_BUDGETS_REVIEW_BY,
+  resolveTargetModel,
+  modelBudget,
+  budgetForTargetModel,
+} from './model-budgets.js';
+export type { TargetModel, ModelBudget } from './model-budgets.js';
 
 
 export {

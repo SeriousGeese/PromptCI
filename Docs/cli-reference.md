@@ -15,6 +15,7 @@ promptci scan --fail-on-new <severity>      # exit 1 only if NEW issues (not in 
 promptci scan --fail-on-budget              # exit 1 if any context bloat issues are found
 promptci scan --context-budget <chars>      # override total context budget (in characters)
 promptci scan --file-context-budget <chars> # override per-file context budget (in characters)
+promptci scan --target-model <model>        # scale context-bloat thresholds to a model preset (e.g. claude-opus-5)
 
 # Context Analysis
 promptci context analyze                    # print context analysis without writing scan reports
@@ -99,6 +100,30 @@ platitudes ("write clean code", "best practices", "SOLID principles", "clean arc
 experience", "user-friendly", …) are `info`. Set the key to `warning` to hold all vague guidance
 to the stricter tier, or to `info` to demote every vague-guidance finding below a `warning` gate.
 The override changes only the severity; each finding's confidence still reflects its matched tier.
+
+## `targetModel` config key
+
+`.promptci/config.json` may set `targetModel` to scale the **context-bloat** thresholds to the
+model that will actually carry the instructions each turn. A fixed character budget is a blunt
+instrument — 30k characters is a large slice of a small context window but a rounding error in a
+1M-token one — so the preset derives a total and per-file character budget from the model's
+approximate context window.
+
+- Recognised model ids: `claude-opus-5`, `claude-opus-4-8`, `claude-sonnet-5`, `claude-sonnet-4-6`,
+  `claude-haiku-4-5`, `claude-fable-5`, `gpt-5`, `gpt-5-mini`, `gemini-2.5-pro`, `gemini-2.5-flash`.
+  Short family aliases also work: `claude`, `claude-opus`, `claude-sonnet`, `claude-haiku`, `gpt`,
+  `openai`, `copilot`, `gemini`.
+- `--target-model <model>` on the command line **overrides** the config value.
+- An explicit `--context-budget` / `--file-context-budget` (flag or config) **overrides the preset**
+  for that budget — the preset only fills in the budgets you did not set yourself.
+- Same preset in local scans and the GitHub Action: set `targetModel` in `.promptci/config.json`
+  and both the `scan` and `review-diff` paths pick it up.
+- An unknown model name is a hard, actionable error at scan time (it names the offending key and
+  lists the valid ids) rather than a silent fallback.
+
+The window numbers behind the presets are approximate and used only to scale the heuristic; a dated
+staleness guard in the test suite fails when the table ages out, forcing a periodic refresh so it
+cannot silently rot.
 
 ## How `review-diff` compares two revisions
 
