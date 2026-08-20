@@ -23,14 +23,27 @@ git checkout -b bump-vX.Y.Z
 (cd packages/cli && pnpm version X.Y.Z --no-git-tag-version)
 (cd packages/core && pnpm version X.Y.Z --no-git-tag-version)
 
+# Same PR: bump the composite action's pin to match (see the note below on why
+# this can't wait for a follow-up PR). Confirm there's exactly one match first.
+grep -n "cli_version:" -A8 action.yml   # verify a single `default: '...'` line
+# then update that default from the old version to X.Y.Z, by hand or a checked sed
+
 pnpm check-versions
 
-git add packages/cli/package.json packages/core/package.json
+git add packages/cli/package.json packages/core/package.json action.yml
 git commit -m "chore: bump version to X.Y.Z"
 ```
 
 Both `pnpm version` calls run from *inside* the package directory — see SKILL.md for why
 `pnpm --filter <pkg> version` doesn't work.
+
+**Why `action.yml` is in this same commit, not a later PR:**
+`packages/cli/tests/action-yml.test.ts` asserts the action's `cli_version` default equals
+`packages/cli/package.json`'s version. It reads both files directly, so the moment you bump the
+package it fails *inside this bump PR* — not, as you might expect, only on some later `main` run.
+CI gates merge on a green `ci` check, so the PR cannot go green (and cannot merge) unless the pin
+is bumped in the same change. Bundle it here. (Confirmed on the first real release, v0.1.0 /
+PR #95, 2026-08-20.)
 
 ## 2. Open the PR and get it merged
 
@@ -87,29 +100,22 @@ or just watch the Actions tab. If it fails partway — say, core published but c
 failed — a retry is safe: `npm publish` refuses to republish a version already live, so
 re-running just picks up wherever it left off.
 
-## 5. Follow-up PR: keep the composite action's CLI pin in sync
+## 5. The composite action's CLI pin — already done in step 1
 
 The composite GitHub Action at action.yml pins a specific `cli_version` default on purpose, so a
-release can't silently change behavior for every consumer's pipeline mid-run.
-`packages/cli/tests/action-yml.test.ts` asserts that default equals `packages/cli/package.json`'s
-version — and starts failing on the next CI run against `main` until you bump it. Do this as its
-own PR, right after the publish above actually succeeds:
+release can't silently change behavior for every consumer's pipeline mid-run. That pin was bumped
+as part of the version-bump PR in step 1, because `packages/cli/tests/action-yml.test.ts` forces
+it into the same change (see the "Why `action.yml` is in this same commit" note there).
+
+So there is **no separate follow-up PR** for the pin. Just confirm the merged `main` already has
+it in sync:
 
 ```bash
 git checkout main && git pull
-git checkout -b bump-action-yml-vX.Y.Z
-grep -n "cli_version:" -A5 action.yml
+git show HEAD:action.yml | grep "default:"                 # should read X.Y.Z
+git show HEAD:packages/cli/package.json | grep '"version"' # same X.Y.Z
 ```
 
-Confirm there's exactly one `default: '...'` line in that block before editing. Then update it
-to the new version (by hand, or a targeted `sed` once you've confirmed the match is unambiguous),
-and:
-
-```bash
-git add action.yml
-git commit -m "chore: bump action.yml cli_version to X.Y.Z"
-git push -u origin bump-action-yml-vX.Y.Z
-gh pr create --title "chore: bump action.yml cli_version to X.Y.Z" \
-  --body "Keeps the composite action's pin in sync with the newly published @promptci/cli@X.Y.Z."
-gh pr merge --merge
-```
+If for some reason the pin *didn't* make it into the bump PR (e.g. a future refactor moves the
+test), the action installs a `cli_version` that doesn't exist on npm yet and `main` CI goes red —
+fix it immediately with a one-line PR bumping only `action.yml`'s `default`.
