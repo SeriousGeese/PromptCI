@@ -1,6 +1,6 @@
 {
   "name": "@promptci/core",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "Deterministic scanner for AI coding instruction files (CLAUDE.md, AGENTS.md, .cursorrules) — detectors, scoring, and report generation",
   "license": "Apache-2.0",
   "type": "module",
