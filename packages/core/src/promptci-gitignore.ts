@@ -10,6 +10,10 @@
  * serve. `config.json` is carved out for the same reason: a per-repo config
  * that only lives on one developer's machine is not a per-repo config.
  *
+ * `custom-rules.json` is carved out on the same principle: custom rules must be
+ * committed for a local scan and the GitHub Action to see the same rules — a
+ * gitignored rule file would make the two disagree.
+ *
  * Two details of the pattern are load-bearing:
  *
  *   - `.promptci/*` rather than `.promptci/`. Git does not descend into an
@@ -23,10 +27,11 @@
  *     showing up as untracked files.
  */
 export const PROMPTCI_GITIGNORE_LINES: readonly string[] = [
-  '# PromptCI: ignore generated reports, keep the shared baseline and config',
+  '# PromptCI: ignore generated reports, keep the shared baseline, config, and custom rules',
   '**/.promptci/*',
   '!**/.promptci/baseline.json',
   '!**/.promptci/config.json',
+  '!**/.promptci/custom-rules.json',
 ];
 
 /** The same stanza as text, LF-terminated. Callers on CRLF files should re-join. */

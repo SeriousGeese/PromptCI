@@ -8,5 +8,6 @@ coverage/
 **/.promptci/*
 !**/.promptci/baseline.json
 !**/.promptci/config.json
+!**/.promptci/custom-rules.json
 !**/.promptci/health-badge.json
 .DS_Store

@@ -171,10 +171,11 @@ describe('runInit', () => {
   // baseline.json — `scan --baseline` / `--fail-on-new` read it from the CI
   // checkout, so a wholesale `.promptci/` defeats the ratchet.
   const EXPECTED_IGNORE =
-    '# PromptCI: ignore generated reports, keep the shared baseline and config\n' +
+    '# PromptCI: ignore generated reports, keep the shared baseline, config, and custom rules\n' +
     '**/.promptci/*\n' +
     '!**/.promptci/baseline.json\n' +
-    '!**/.promptci/config.json\n';
+    '!**/.promptci/config.json\n' +
+    '!**/.promptci/custom-rules.json\n';
 
   it('appends the baseline-preserving .promptci rules to .gitignore in non-interactive mode', async () => {
     const gitignorePath = path.join(tmpDir, '.gitignore');
