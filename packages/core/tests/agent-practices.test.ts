@@ -1045,3 +1045,29 @@ describe('detectAgentPractices — AP6 forwarding pointers', () => {
     expect(claudeGaps.length).toBeGreaterThan(0);
   });
 });
+
+// ── Example fixtures (AGENTS.md: every detector change needs a fixture that
+// triggers it and a case that must stay clean) ────────────────────────────────
+
+describe('detectAgentPractices — example fixtures', () => {
+  it('fixture-basic triggers the uncertainty and code-preservation checks', async () => {
+    const { scanFiles } = await import('../src/scanner.js');
+    const path = await import('node:path');
+    const { fileURLToPath } = await import('node:url');
+    const fixtures = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../examples');
+    const files = await scanFiles({ repoPath: path.join(fixtures, 'fixture-basic') });
+    const issues = detectAgentPractices(files);
+    expect(issues.find((i) => i.title.includes('ask when unsure'))).toBeDefined();
+    expect(issues.find((i) => i.title.includes('code-preservation'))).toBeDefined();
+  });
+
+  it('fixture-clean stays clean for every agent-practices check', async () => {
+    const { scanFiles } = await import('../src/scanner.js');
+    const path = await import('node:path');
+    const { fileURLToPath } = await import('node:url');
+    const fixtures = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../examples');
+    const files = await scanFiles({ repoPath: path.join(fixtures, 'fixture-clean') });
+    const issues = detectAgentPractices(files);
+    expect(issues).toEqual([]);
+  });
+});

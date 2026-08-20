@@ -3,11 +3,27 @@ import * as fs from 'node:fs/promises';
 import type { PromptCiIssue } from './types.js';
 import { renderPromptCiGitignore } from './promptci-gitignore.js';
 import { isWithinRoot } from './path-containment.js';
+import { gitignoreLineMatchesTarget } from './security-pack.js';
 
 export interface FileChange {
   filePath: string; // Absolute path
   originalContent: string;
   newContent: string;
+}
+
+/**
+ * True when an active (non-comment) line of the given .gitignore content
+ * already covers `target`, using the same segment-based matching as the
+ * security-pack detector. The fix side must agree with the detector: a
+ * substring test would let an entry like `mydist/` suppress adding `dist/`
+ * even though the detector (correctly) still flags `dist` as unignored.
+ */
+function gitignoreCovers(content: string, target: string): boolean {
+  return content
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l && !l.startsWith('#'))
+    .some((line) => gitignoreLineMatchesTarget(line, target));
 }
 
 /**
@@ -45,7 +61,7 @@ export async function applyFixRecipe(
       // file doesn't exist, which is fine
     }
 
-    if (!content.includes('.promptci/')) {
+    if (!gitignoreCovers(content, '.promptci')) {
       const lineEnding = content.includes('\r\n') ? '\r\n' : '\n';
       // BUG-7: write the baseline-preserving stanza, not a bare `.promptci/`
       // — the latter also ignores baseline.json and breaks the CI ratchet.
@@ -79,7 +95,7 @@ export async function applyFixRecipe(
       const m = /Directory "([^"]+)" exists/.exec(ev);
       if (m && m[1]) {
         const dirName = m[1];
-        if (!content.includes(`${dirName}/`)) {
+        if (!gitignoreCovers(content, dirName)) {
           newLines += `${dirName}/${lineEnding}`;
         }
       }

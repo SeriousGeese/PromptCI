@@ -3,7 +3,8 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import * as fs from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
-import { detectProjectType } from '../src/project-type.js';
+import { detectProjectType, detectProjectTypeFromContent } from '../src/project-type.js';
+import type { InstructionFile } from '../src/types.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURES = path.resolve(__dirname, '../../../examples');
@@ -146,5 +147,37 @@ describe('detectProjectType', () => {
     } finally {
       await fs.rm(tmp, { recursive: true, force: true });
     }
+  });
+});
+
+describe('detectProjectTypeFromContent', () => {
+  function file(content: string): InstructionFile {
+    return {
+      path: 'AGENTS.md',
+      fileType: 'agents',
+      content,
+      sections: [],
+      lineCount: content.split('\n').length,
+      charCount: content.length,
+      estimatedTokens: Math.round(content.length / 4),
+    };
+  }
+
+  // The content fallback must use the same dotnet-before-typescript ordering as
+  // the file-system probe: .NET instructions commonly mention JS tooling
+  // (npm run, jest for docs sites, husky), and those broad typescript signals
+  // must not shadow the specific .NET ones.
+  it('classifies a .NET repo that also mentions JS tooling as "dotnet"', () => {
+    const result = detectProjectTypeFromContent([
+      file('Build with dotnet build MyApp.sln. Run npm run docs for the docs site. Tests use xunit.'),
+    ]);
+    expect(result).toBe('dotnet');
+  });
+
+  it('classifies pure JS tooling content as "typescript"', () => {
+    const result = detectProjectTypeFromContent([
+      file('Run npm run build and vitest. tsconfig strict mode is required.'),
+    ]);
+    expect(result).toBe('typescript');
   });
 });
