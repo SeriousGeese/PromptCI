@@ -96,12 +96,15 @@ versions together — they must release in lockstep.
 1. Bump `version` to the same value in both packages (`pnpm check-versions` fails otherwise),
    merge to `main`.
 2. Tag and push: `git tag v0.0.2 && git push origin v0.0.2`.
-3. The workflow verifies, checks tag vs. package versions, publishes core then cli with npm
+3. Approve the run when it pauses on the `release` environment (Actions tab → the queued
+   Publish run → "Review deployments").
+4. The workflow verifies, checks tag vs. package versions, publishes core then cli with npm
    provenance, then re-checks what npm serves for both.
-4. Update `cli_version` in [action.yml](action.yml) to match, in a follow-up PR (kept honest by
+5. Update `cli_version` in [action.yml](action.yml) to match, in a follow-up PR (kept honest by
    `packages/cli/tests/action-yml.test.ts`).
 
-Needs an `NPM_TOKEN` repo secret with publish rights on both packages.
+Publishing authenticates via npm [trusted publishing](https://docs.npmjs.com/trusted-publishers)
+(OIDC): both packages trust the workflow plus the `release` environment, so no npm token exists.
 
 ## Changing a detector
 

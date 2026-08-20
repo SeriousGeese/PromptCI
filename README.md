@@ -183,8 +183,9 @@ and no `.env` file to create:
 - `PROMPTCI_NO_UPDATE_NOTIFIER` — PromptCI-specific alias for the same opt-out.
 - `CI` — when set (as CI providers do automatically), the version check is skipped too.
 
-Nothing else in the package inspects the environment. (Release automation in this repo uses
-`NPM_TOKEN` to publish to npm, but the CLI never reads it at runtime.)
+Nothing else in the package inspects the environment. (Release automation in this repo
+publishes to npm via OIDC trusted publishing — no npm token exists anywhere, and the CLI
+reads no credentials at runtime.)
 
 Never print, commit, or log secrets, tokens, or credentials — read any such variable silently, without echoing its value.
 

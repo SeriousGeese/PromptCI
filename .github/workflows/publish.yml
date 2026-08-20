@@ -23,15 +23,22 @@ permissions:
 jobs:
   publish:
     # Guard against a fork pushing a matching tag to its own copy of this
-    # workflow: it would fail for lack of NPM_TOKEN anyway, but fail fast and
+    # workflow: npm's trusted publisher only trusts THIS repo's publish.yml,
+    # so a fork's run could never authenticate anyway — but fail fast and
     # skip the noise rather than running the whole build first.
     if: github.repository == 'SeriousGeese/PromptCI'
     runs-on: ubuntu-latest
+    # Deployment gate: the `release` environment requires a maintainer to
+    # approve the run before any step executes. The npm trusted publisher
+    # config for both packages names this environment, so npm rejects a
+    # publish from any run that didn't pass through it.
+    environment: release
     permissions:
       contents: read
-      # Required for `npm provenance` — the OIDC token is exchanged for a
-      # signed attestation tying the published tarball to this exact
-      # workflow run and commit.
+      # Required for npm trusted publishing (OIDC) and `npm provenance` —
+      # the OIDC token authenticates the publish (no long-lived npm token
+      # exists) and is exchanged for a signed attestation tying the
+      # published tarball to this exact workflow run and commit.
       id-token: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -41,11 +48,21 @@ jobs:
       - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
         # version is read from the packageManager field in package.json
 
+      # No registry-url here: that input writes an .npmrc that reads
+      # NODE_AUTH_TOKEN, which no longer exists — auth is OIDC-only via npm
+      # trusted publishing, and an .npmrc pointing at an unset env var makes
+      # npm fail with "Failed to replace env in config".
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '22'
           cache: 'pnpm'
-          registry-url: 'https://registry.npmjs.org'
+
+      # Trusted publishing needs npm >= 11.5.1; Node 22 ships npm 10.x. The
+      # publish steps below use npm directly (not `pnpm publish`) because the
+      # pnpm major pinned in packageManager predates OIDC trusted-publishing
+      # support.
+      - name: Update npm for trusted publishing
+        run: npm install -g npm@11
 
       - name: Install
         run: pnpm install --frozen-lockfile
@@ -78,15 +95,19 @@ jobs:
       # core first: it has no runtime dependency on cli, and publishing it
       # first means a partial failure below never leaves cli live without a
       # matching core.
+      #
+      # npm publish (not pnpm publish) — see the npm@11 step above. The one
+      # behavioral difference: npm does not rewrite cli's `workspace:*`
+      # devDependency on core. That's inert in the published tarball —
+      # devDependencies are never installed by consumers, and core ships
+      # inside cli's dist as an esbuild snapshot regardless.
       - name: Publish @promptci/core
-        run: pnpm --filter @promptci/core publish --provenance --access public --no-git-checks
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        working-directory: packages/core
+        run: npm publish --provenance --access public
 
       - name: Publish @promptci/cli
-        run: pnpm --filter @promptci/cli publish --provenance --access public --no-git-checks
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        working-directory: packages/cli
+        run: npm publish --provenance --access public
 
       # Belt-and-suspenders: confirm what npm now actually serves for both
       # packages agrees with each other and with the tag, catching registry
