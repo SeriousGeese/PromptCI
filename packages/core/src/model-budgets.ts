@@ -100,8 +100,13 @@ function roundChars(n: number): number {
 /** Resolve a raw targetModel string (case-insensitive, alias-aware) to a known model, or undefined. */
 export function resolveTargetModel(name: string): TargetModel | undefined {
   const key = name.trim().toLowerCase();
-  if (key in MODEL_CONTEXT_WINDOWS) return key as TargetModel;
-  return MODEL_ALIASES[key];
+  // hasOwnProperty, not `in`: the `in` operator checks the prototype chain
+  // too, so "constructor"/"toString"/"__proto__" would match and return an
+  // invalid model id, producing NaN budgets downstream.
+  if (Object.prototype.hasOwnProperty.call(MODEL_CONTEXT_WINDOWS, key))
+    return key as TargetModel;
+  if (Object.prototype.hasOwnProperty.call(MODEL_ALIASES, key)) return MODEL_ALIASES[key];
+  return undefined;
 }
 
 /** Derive the char budgets for a known model from its context window. */
