@@ -102,7 +102,7 @@ const CHECKS: PracticeCheck[] = [
     title: 'No "ask when unsure" instruction',
     summary:
       'No instruction found telling the agent to surface uncertainty — to ask or say so when it is unsure — ' +
-      'instead of guessing. Without this, agents proceed on assumptions and produce confidently wrong work.',
+      'instead of guessing. Without this, agents may proceed on assumptions and produce confidently wrong work.',
     patterns: [
       /\bif\s+(?:you(?:'|’)?re\s+|you\s+are\s+|ever\s+)?unsure\b/i,
       /\bif\s+in\s+(?:any\s+)?doubt\b/i,
@@ -187,7 +187,7 @@ const CHECKS: PracticeCheck[] = [
     title: 'No code-preservation instruction',
     summary:
       'No instruction found telling the agent to preserve existing code and only change what the task requires. ' +
-      'Without this, agents delete working code, drop tests, or overwrite unrelated edits to reach a passing state.',
+      'Without this, agents may delete working code, drop tests, or overwrite unrelated edits to reach a passing state.',
     patterns: [
       /\bpreserve\s+(?:existing|unrelated|the\s+existing|current|working|any\s+existing)\b/i,
       /\bpreserve\s+(?:unrelated\s+changes|the\s+user(?:'|’)?s?\s+(?:changes|edits|work))\b/i,

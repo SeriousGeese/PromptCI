@@ -12,6 +12,22 @@ import json
 import re
 
 
+def as_fixes_dict(parsed):
+    """Coerce a parsed JSON value to a fixes dict, or None if it isn't one.
+
+    The caller pipes the result through `jq 'has("fixes")'`, which errors on a
+    non-object — so returning a bare array/string here used to short-circuit
+    the later strategies (including the plain-text "clean review" fallback)
+    and reject the whole tier. A bare list of fix objects is common LLM
+    formatting drift; wrap it instead of discarding the response.
+    """
+    if isinstance(parsed, dict):
+        return parsed
+    if isinstance(parsed, list) and all(isinstance(x, dict) for x in parsed):
+        return {"fixes": parsed}
+    return None
+
+
 def extract_fixes(llm_response: dict) -> dict:
     """Extract the fixes JSON from an LLM response dict."""
     try:
@@ -27,13 +43,17 @@ def extract_fixes(llm_response: dict) -> dict:
     if m:
         raw = m.group(1).strip()
         try:
-            return json.loads(raw)
+            result = as_fixes_dict(json.loads(raw))
+            if result is not None:
+                return result
         except json.JSONDecodeError:
             pass
 
     # Strategy 2: Try parsing the entire response as JSON
     try:
-        return json.loads(content)
+        result = as_fixes_dict(json.loads(content))
+        if result is not None:
+            return result
     except json.JSONDecodeError:
         pass
 

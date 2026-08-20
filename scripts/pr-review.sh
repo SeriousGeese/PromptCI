@@ -711,6 +711,16 @@ apply_fixes() {
       continue
     fi
 
+    # Containment guard: the path comes from the LLM, which reads attacker-
+    # controlled PR content (prompt injection). Reject absolute paths and any
+    # `..` segment so a fix can never write outside the PR checkout on the
+    # runner — the core package guards every write the same way (isWithinRoot).
+    if [[ "$path" = /* ]] || [[ "/${path}/" == *"/../"* ]]; then
+      log "  REJECTED ${path} (path escapes the PR checkout): ${desc}"
+      printf -- '- **%s** (REJECTED: path outside the PR checkout) — %s\n' "$path" "$desc" >> "$DROPPED_FIXES_FILE"
+      continue
+    fi
+
     full_path="${WORK_DIR}/${path}"
 
     # Guard against LLM returning null/None as string values
@@ -758,14 +768,19 @@ if old in content:
         f.write(content)
     sys.exit(0)
 
-# Strategy 2: whitespace-normalized match
-old_norm = re.sub(r'\s+', ' ', old.strip())
-content_norm = re.sub(r'\s+', ' ', content)
-if old_norm in content_norm:
-    content = content.replace(old, new, 1)
-    with open(path, 'w') as f:
-        f.write(content)
-    sys.exit(0)
+# Strategy 2: whitespace-flexible match. Tokenize old on whitespace and allow
+# any whitespace run between tokens, replacing the ACTUAL matched span. (The
+# previous version checked a normalized copy but then replaced the un-normalized
+# old_string — guaranteed absent after Strategy 1 failed — so it rewrote the
+# file unchanged, exited 0, and the fix was reported as applied when it wasn't.)
+tokens = old.split()
+if tokens:
+    pattern = r'\s+'.join(re.escape(t) for t in tokens)
+    new_content, n = re.subn(pattern, lambda m: new, content, count=1)
+    if n == 1 and new_content != content:
+        with open(path, 'w') as f:
+            f.write(new_content)
+        sys.exit(0)
 
 # Strategy 3: leading/trailing line match
 old_lines = old.strip().split('\n')
@@ -829,13 +844,18 @@ check_ci_status() {
   # 1800s on EVERY such PR (hit live on PR #78's first keyed re-review). Merge
   # safety is unaffected: the `main` ruleset independently requires the `ci`
   # check to be green at merge time, so a red-or-absent ci still never merges.
+  #
+  # Terminal non-success conclusions (cancelled, timed_out, action_required,
+  # stale) count toward `failures` so a completed-but-dead run fast-fails as
+  # blocked instead of spinning the full POLL_TIMEOUT — the same 1800s hang the
+  # skipped fix cured, reachable via any other unlisted conclusion.
   local parsed jq_exit=0
   parsed="$(echo "$api_result" | jq '
     {
       total: ([.check_runs[] | select(.name | startswith("🤖 Auto-Review") | not)] | length),
       completed: ([.check_runs[] | select((.name | startswith("🤖 Auto-Review") | not) and .status == "completed")] | length),
       success: ([.check_runs[] | select((.name | startswith("🤖 Auto-Review") | not) and .conclusion == "success")] | length),
-      failures: ([.check_runs[] | select((.name | startswith("🤖 Auto-Review") | not) and .conclusion == "failure")] | length),
+      failures: ([.check_runs[] | select((.name | startswith("🤖 Auto-Review") | not) and (.conclusion == "failure" or .conclusion == "cancelled" or .conclusion == "timed_out" or .conclusion == "action_required" or .conclusion == "stale"))] | length),
       neutral: ([.check_runs[] | select((.name | startswith("🤖 Auto-Review") | not) and .conclusion == "neutral")] | length),
       all_completed: (
         ([.check_runs[] | select(.name | startswith("🤖 Auto-Review") | not)] | length) > 0 and
@@ -1126,7 +1146,11 @@ main() {
   pr_latest_message="$($GH_CLI pr view "$PR_NUMBER" --repo "$REPO" --json commits --jq '.commits[-1].messageHeadline // ""' 2>/dev/null || echo "")"
   log "PR latest commit message: ${pr_latest_message}"
   local is_bot_commit=false
-  if [[ "$pr_latest_message" == "fix(auto-review):"* ]] || [[ "$pr_latest_message" == "chore: merge"* ]]; then
+  # The sync-merge match requires the full "chore: merge … (auto-review sync)"
+  # shape this pipeline generates (section 3 below) — a bare "chore: merge"*
+  # prefix also matched ordinary human commits like "chore: merge cleanup
+  # scripts", skipping review entirely for allowlisted authors.
+  if [[ "$pr_latest_message" == "fix(auto-review):"* ]] || [[ "$pr_latest_message" == "chore: merge "*"(auto-review sync)" ]]; then
     is_bot_commit=true
   fi
   if [ "$is_bot_commit" = "true" ] && [ "$automerge_eligible" = "true" ]; then

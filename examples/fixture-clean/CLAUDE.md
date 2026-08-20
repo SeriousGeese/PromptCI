@@ -25,3 +25,14 @@ all tests across packages.
 Use Vitest. Tests live in `packages/*/tests/`. Each new detector must have
 unit tests covering the happy path, empty input, and at least one edge case.
 Run `pnpm test` before opening a PR.
+
+## Working Practices
+
+- If tests or commands fail, report the failure honestly; never claim success
+  when checks error.
+- If you are unsure about the correct approach, ask before proceeding rather
+  than guessing.
+- Always read a file fully before editing it.
+- Prefer minimal diffs; do not rewrite unrelated code.
+- Preserve existing code and only change what the task requires.
+- For complex or multi-file tasks, outline the approach before writing code.

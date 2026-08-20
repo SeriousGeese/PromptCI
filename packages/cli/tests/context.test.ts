@@ -224,14 +224,15 @@ describe('runContextOptimize', () => {
     expect(docsFileExists).toBe(false);
   });
 
-  // With no TTY and no --no-interactive, a confirmation prompt would block
-  // forever; the shared helper errors clearly instead of hanging.
-  it('errors instead of hanging when interactive with no TTY', async () => {
+  // When a confirmation prompt is needed and stdin ends with no answer, the
+  // shared helper errors clearly instead of hanging on the prompt.
+  it('errors instead of hanging when interactive and stdin ends unanswered', async () => {
     await fs.writeFile(path.join(tmpDir, 'AGENTS.md'), VOLATILE_AGENTS_MD, 'utf-8');
 
+    const { Readable } = await import('node:stream');
     const { runContextOptimize } = await import('../src/commands/context.js');
     await expect(
-      runContextOptimize({ scanPath: tmpDir, write: true, interactive: true, isTTY: false }),
+      runContextOptimize({ scanPath: tmpDir, write: true, interactive: true, input: Readable.from([]) }),
     ).rejects.toThrow('process.exit(1)');
 
     const content = await fs.readFile(path.join(tmpDir, 'AGENTS.md'), 'utf-8');

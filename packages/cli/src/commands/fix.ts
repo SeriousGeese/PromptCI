@@ -76,11 +76,21 @@ export async function runFix(options: FixOptions): Promise<void> {
       `Summary:    ${issue.summary}`,
     ],
     changes: () => applyFixRecipe(issue, resolvedPath),
+    // Duplicate consolidation replaces the line ranges recorded at scan time.
+    // If an earlier unit in this run rewrote one of the same files, those
+    // ranges point at shifted content, so the unit must be skipped and picked
+    // up by a re-run instead of editing the wrong lines. Content-based recipes
+    // (.gitignore appends) compose safely and don't need this.
+    skipIfModified:
+      issue.category === 'duplicate'
+        ? issue.locations.map((loc) => path.resolve(resolvedPath, loc.filePath))
+        : undefined,
   }));
 
   let appliedCount: number;
+  let staleSkippedCount: number;
   try {
-    ({ appliedCount } = await applyChangesInteractively(units, {
+    ({ appliedCount, staleSkippedCount } = await applyChangesInteractively(units, {
       repoRoot: resolvedPath,
       dryRun: options.dryRun,
       interactive: options.interactive,
@@ -106,6 +116,12 @@ export async function runFix(options: FixOptions): Promise<void> {
       vagueGuidanceSeverity: config.vagueGuidanceSeverity,
     });
     console.log(`\nFixes complete. Initial score: ${report.healthScore}/100 -> New score: ${finalReport.healthScore}/100`);
+    if (staleSkippedCount > 0) {
+      console.log(
+        `${staleSkippedCount} fix(es) were skipped because an earlier fix changed the same file. ` +
+          'Run `promptci fix` again to apply them.',
+      );
+    }
   } else if (options.dryRun) {
     console.log('\nDry run complete. No changes were made.');
   } else {

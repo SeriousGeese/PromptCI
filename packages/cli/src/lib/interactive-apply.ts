@@ -6,15 +6,21 @@
  * near-identical copy of the "print a colored diff, ask y/N, write on yes"
  * loop; this module is the single implementation both call.
  *
- * Two invariants it enforces for every caller:
+ * Invariants it enforces for every caller:
  *   - Nothing is written without the diff having been shown first, and — unless
  *     the caller opts out with `interactive: false` — without a confirmation.
- *   - A confirmation prompt is never issued into a non-TTY with no scripted
- *     answers: readline.question would block forever, so we fail fast instead.
+ *   - Piped stdin is a valid way to answer prompts (`printf 'y\n' | promptci fix`),
+ *     but a prompt whose input ends with no answer left fails fast with
+ *     NonInteractiveError instead of blocking forever. Units that produce no
+ *     changes never need a prompt, so a no-op run succeeds even with no TTY.
+ *   - A unit whose line numbers were computed at scan time is skipped (not
+ *     applied against shifted content) when an earlier unit in the same run
+ *     already rewrote one of the files it targets — see `skipIfModified`.
  */
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import * as readline from 'node:readline/promises';
+import type { Readable } from 'node:stream';
 import { isWithinRoot } from '@promptci/core';
 import type { FileChange } from '@promptci/core';
 
@@ -29,6 +35,15 @@ export type ApplyUnit = {
    * it (two issues that both edit `.gitignore` must compose, not clobber).
    */
   changes: FileChange[] | (() => Promise<FileChange[]>);
+  /**
+   * Absolute paths whose scan-time line numbers this unit's changes depend on.
+   * If an earlier unit in the same run wrote any of them, this unit's recorded
+   * line ranges may point at shifted content, so it is skipped with a re-run
+   * hint instead of being applied against the wrong lines. Content-based
+   * changes (e.g. `.gitignore` appends) compose safely and should leave this
+   * unset.
+   */
+  skipIfModified?: string[];
 };
 
 export type InteractiveApplyOptions = {
@@ -42,18 +57,23 @@ export type InteractiveApplyOptions = {
   answers?: string[];
   /** Confirmation prompt text. */
   promptText?: string;
-  /** Whether stdin is a TTY. Injectable for tests; defaults to process.stdin.isTTY. */
-  isTTY?: boolean;
+  /** Input stream for prompts. Injectable for tests; defaults to process.stdin. */
+  input?: Readable;
   /** Output sink. Defaults to console.log. */
   log?: (msg?: string) => void;
 };
 
-export type InteractiveApplyResult = { appliedCount: number };
+export type InteractiveApplyResult = {
+  appliedCount: number;
+  /** Units skipped because an earlier unit rewrote a file they target (see `skipIfModified`). */
+  staleSkippedCount: number;
+};
 
 /**
- * Thrown when an interactive apply is requested with no TTY and no scripted
- * answers — the caller should print `.message` and exit non-zero rather than
- * hang on a prompt nobody can answer.
+ * Thrown when a confirmation prompt is actually needed but can never be
+ * answered — stdin is not a TTY and ended without providing an answer, and no
+ * scripted answers were given. The caller should print `.message` and exit
+ * non-zero rather than hang on a prompt nobody can answer.
  */
 export class NonInteractiveError extends Error {
   constructor(message: string) {
@@ -71,28 +91,77 @@ export async function applyChangesInteractively(
 ): Promise<InteractiveApplyResult> {
   const log = options.log ?? ((m = '') => console.log(m));
   const isInteractive = options.interactive !== false;
-  const isTTY = options.isTTY ?? Boolean(process.stdin.isTTY);
   const promptText = options.promptText ?? '\nApply this change? (y/N): ';
 
-  // A prompt into a non-TTY with nothing to read blocks forever. Surface it as
-  // a clear, actionable error before any file is touched.
-  if (!options.dryRun && isInteractive && !options.answers && !isTTY) {
-    throw new NonInteractiveError(
-      'No interactive terminal detected, so the confirmation prompt cannot be answered. ' +
-        'Re-run with --no-interactive to apply changes without prompting, or run inside a TTY.',
-    );
-  }
-
+  // readline reads answers from a TTY and from piped stdin alike, so
+  // `printf 'y\n' | promptci fix` works. If the input is already exhausted when
+  // a prompt is needed (e.g. stdin is /dev/null in CI), the prompt site throws
+  // a clear NonInteractiveError instead of blocking forever. Units that produce
+  // no changes never prompt, so a no-op run needs no input at all.
   const rl =
     !options.dryRun && isInteractive && !options.answers
-      ? readline.createInterface({ input: process.stdin, output: process.stdout })
+      ? readline.createInterface({ input: options.input ?? process.stdin, output: process.stdout })
       : null;
 
+  // Buffer lines as they arrive instead of using rl.question: piped input can
+  // deliver its lines (and EOF) before a question is ever asked, and
+  // rl.question drops lines that arrive with no question pending and rejects
+  // once the interface closes. With a buffer, early answers wait for their
+  // prompt and EOF resolves to null exactly when no answer is left.
+  const pendingLines: string[] = [];
+  let lineWaiter: ((line: string | null) => void) | null = null;
+  let inputClosed = false;
+  if (rl) {
+    rl.on('line', (line) => {
+      if (lineWaiter) {
+        const w = lineWaiter;
+        lineWaiter = null;
+        w(line);
+      } else {
+        pendingLines.push(line);
+      }
+    });
+    rl.on('close', () => {
+      inputClosed = true;
+      if (lineWaiter) {
+        const w = lineWaiter;
+        lineWaiter = null;
+        w(null);
+      }
+    });
+  }
+  /** Prints the prompt and resolves with the next input line, or null on EOF. */
+  function nextAnswer(prompt: string): Promise<string | null> {
+    process.stdout.write(prompt);
+    if (pendingLines.length > 0) return Promise.resolve(pendingLines.shift()!);
+    if (inputClosed) return Promise.resolve(null);
+    return new Promise((resolve) => {
+      lineWaiter = resolve;
+    });
+  }
+
   let appliedCount = 0;
+  let staleSkippedCount = 0;
   let answerIndex = 0;
+  const written = new Set<string>();
 
   try {
     for (const unit of units) {
+      const staleFiles = (unit.skipIfModified ?? [])
+        .map((p) => path.resolve(options.repoRoot, p))
+        .filter((p) => written.has(p));
+      if (staleFiles.length > 0) {
+        log('\n' + RULE);
+        for (const line of unit.headerLines ?? []) log(line);
+        const rels = staleFiles.map((p) => path.relative(options.repoRoot, p)).join(', ');
+        log(
+          `Skipped: ${rels} changed earlier in this run, so this fix's line numbers may be stale. ` +
+            'Re-run the command to apply it against the updated file.',
+        );
+        staleSkippedCount++;
+        continue;
+      }
+
       const raw = typeof unit.changes === 'function' ? await unit.changes() : unit.changes;
       const changes = dedupeChangesByFile(raw);
       if (changes.length === 0) continue;
@@ -116,7 +185,13 @@ export async function applyChangesInteractively(
           log(`${promptText}${ans}`);
           apply = ans.toLowerCase().trim() === 'y';
         } else if (rl) {
-          const answer = await rl.question(promptText);
+          const answer = await nextAnswer(promptText);
+          if (answer === null) {
+            throw new NonInteractiveError(
+              'The confirmation prompt could not be answered: stdin is not an interactive terminal and ended with no answer. ' +
+                'Re-run with --no-interactive to apply changes without prompting, pipe answers on stdin, or run inside a TTY.',
+            );
+          }
           apply = answer.toLowerCase().trim() === 'y';
         } else {
           apply = false;
@@ -137,6 +212,7 @@ export async function applyChangesInteractively(
         }
         await fs.mkdir(path.dirname(resolvedFile), { recursive: true });
         await fs.writeFile(resolvedFile, change.newContent, 'utf-8');
+        written.add(resolvedFile);
         log(`Applied change to ${path.relative(options.repoRoot, resolvedFile)}`);
       }
       appliedCount++;
@@ -145,7 +221,7 @@ export async function applyChangesInteractively(
     rl?.close();
   }
 
-  return { appliedCount };
+  return { appliedCount, staleSkippedCount };
 }
 
 /**

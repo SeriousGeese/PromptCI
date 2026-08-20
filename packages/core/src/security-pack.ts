@@ -150,7 +150,7 @@ function matchesAny(text: string, patterns: RegExp[]): boolean {
  * block the match, but a differently-named file/dir never accidentally
  * satisfies it).
  */
-function gitignoreLineMatchesTarget(line: string, target: string): boolean {
+export function gitignoreLineMatchesTarget(line: string, target: string): boolean {
   if (line.startsWith('!')) return false;
   const clean = line.replace(/^\/+|\/+$/g, '');
   const segments = clean.split('/');

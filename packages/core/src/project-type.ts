@@ -100,7 +100,12 @@ export async function detectProjectType(repoRoot: string): Promise<ProjectType> 
  * scan returns 'unknown' (e.g. repos that only contain instruction files, no source).
  * Checks the combined content of all scanned instruction files for strong signals.
  *
- * Detection order: nextjs → unity → typescript → dotnet → python → go → rust → unknown
+ * Detection order: nextjs → unity → dotnet → typescript → python → go → rust → unknown
+ *
+ * .NET is checked before typescript for the same reason as in the file-system
+ * probe above: .NET repos commonly mention JS tooling (pnpm, npm run, jest) in
+ * their instructions, so the broader typescript signals must not shadow the
+ * more specific .NET ones.
  */
 export function detectProjectTypeFromContent(files: InstructionFile[]): ProjectType {
   const combined = files.map((f) => f.content).join('\n');
@@ -111,11 +116,11 @@ export function detectProjectTypeFromContent(files: InstructionFile[]): ProjectT
   if ((/\bunity\b/i.test(combined) && /\b(lts|editor|hub|engine)\b/i.test(combined)) || /\bmonobehaviour\b|\bunityengine\b|\bgameobject\b|\bprefab\b|\bscriptableobject\b/i.test(combined)) {
     return 'unity';
   }
-  if (/\btypescript\b|\btsconfig\b|\btsc\s|\bpnpm\b|\bnpm\s+run\b|\bvitest\b|\bjest\b/i.test(combined)) {
-    return 'typescript';
-  }
   if (/\bdotnet\b|\.sln\b|\.csproj\b|\bxunit\b|\bnunit\b|\bmstest\b/i.test(combined)) {
     return 'dotnet';
+  }
+  if (/\btypescript\b|\btsconfig\b|\btsc\s|\bpnpm\b|\bnpm\s+run\b|\bvitest\b|\bjest\b/i.test(combined)) {
+    return 'typescript';
   }
   if (/\bpython\b|\bpip\b|\bpoetry\b|\bvenv\b|\bpytest\b|\bpyproject\.toml\b/i.test(combined)) {
     return 'python';

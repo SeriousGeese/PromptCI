@@ -99,6 +99,36 @@ describe('applyFixRecipe — .gitignore recipes', () => {
     expect(changes[0]!.newContent).toContain('dist/');
     expect(changes[0]!.newContent).toContain('coverage/');
   });
+
+  // The fix must use the same segment-based matching as the detector: a line
+  // like `mydist/` must not suppress adding `dist/`, or the fix silently
+  // no-ops on an issue the detector keeps flagging forever.
+  it('appends a directory even when another entry contains its name as a substring', async () => {
+    await fs.writeFile(path.join(dir, '.gitignore'), 'mydist/\n', 'utf-8');
+    const changes = await applyFixRecipe(
+      issue({
+        id: 'security-pack-unignored-dirs',
+        category: 'context_bloat',
+        evidence: ['Directory "dist" exists but is not ignored in .gitignore.'],
+      }),
+      dir,
+    );
+    expect(changes).toHaveLength(1);
+    expect(changes[0]!.newContent).toContain('mydist/\ndist/');
+  });
+
+  it('appends the .promptci stanza even when a substring-similar entry exists', async () => {
+    await fs.writeFile(path.join(dir, '.gitignore'), 'foo.promptci/\n', 'utf-8');
+    const changes = await applyFixRecipe(issue({ id: 'security-pack-no-promptci-gitignore' }), dir);
+    expect(changes).toHaveLength(1);
+    expect(changes[0]!.newContent).toContain('**/.promptci/*');
+  });
+
+  it('treats an existing globstar .promptci stanza as covered', async () => {
+    await fs.writeFile(path.join(dir, '.gitignore'), '**/.promptci/*\n!**/.promptci/baseline.json\n', 'utf-8');
+    const changes = await applyFixRecipe(issue({ id: 'security-pack-no-promptci-gitignore' }), dir);
+    expect(changes).toEqual([]);
+  });
 });
 
 describe('applyFixRecipe — duplicate consolidation', () => {

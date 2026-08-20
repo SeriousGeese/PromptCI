@@ -1,5 +1,6 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
+import type { Readable } from 'node:stream';
 import { analyzeContext, scanFiles, optimizeContext } from '@promptci/core';
 import type { ContextAnalysis, PromptCiIssue } from '@promptci/core';
 import { loadConfig } from '../config.js';
@@ -104,8 +105,8 @@ export type ContextOptimizeOptions = {
   interactive?: boolean;
   /** Scripted confirmation answers (tests / piped input). */
   answers?: string[];
-  /** Whether stdin is a TTY. Injectable for tests. */
-  isTTY?: boolean;
+  /** Input stream for prompts. Injectable for tests; defaults to process.stdin. */
+  input?: Readable;
 };
 
 export async function runContextOptimize(options: ContextOptimizeOptions): Promise<void> {
@@ -162,7 +163,7 @@ export async function runContextOptimize(options: ContextOptimizeOptions): Promi
       dryRun: !apply,
       interactive: options.interactive ?? false,
       answers: options.answers,
-      isTTY: options.isTTY,
+      input: options.input,
       promptText: '\nApply this change? (y/N): ',
       log: print,
     }));
