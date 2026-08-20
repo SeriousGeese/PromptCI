@@ -39,12 +39,14 @@ describe('discoverAiConfigFiles', () => {
     writeFile(dir, '.claude/settings.json', '{}');
     writeFile(dir, '.mcp.json', '{}');
     writeFile(dir, '.cursor/rules/style.mdc', 'body');
+    writeFile(dir, '.github/instructions/ts.instructions.md', 'body');
     expect(discoverAiConfigFiles(dir)).toEqual({
       skills: ['.claude/skills/pdf/SKILL.md'],
       agents: ['.claude/agents/reviewer.md'],
       settings: ['.claude/settings.json'],
       mcp: ['.mcp.json'],
       cursorRules: ['.cursor/rules/style.mdc'],
+      copilotInstructions: ['.github/instructions/ts.instructions.md'],
     });
   });
 

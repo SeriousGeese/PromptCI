@@ -27,6 +27,13 @@ export type ContextBloatThresholds = {
    */
   readmeFileWarning: number;
   readmeFileHigh: number;
+  /**
+   * Lower char thresholds for `.windsurfrules`: Windsurf silently truncates a
+   * rules file past ~6,000 characters, and the combined global+workspace budget
+   * is ~12,000. Rules past the limit never reach the model.
+   */
+  windsurfFileWarning: number;
+  windsurfFileHigh: number;
 };
 
 const DEFAULTS: ContextBloatThresholds = {
@@ -39,6 +46,10 @@ const DEFAULTS: ContextBloatThresholds = {
   // naturally run longer than pure instruction files. Use a relaxed threshold.
   readmeFileWarning: 15_000,
   readmeFileHigh: 30_000,
+  // Windsurf truncates a `.windsurfrules` file beyond ~6,000 characters; 12,000
+  // is the combined global+workspace budget. Tighter than the generic bars.
+  windsurfFileWarning: 6_000,
+  windsurfFileHigh: 12_000,
 };
 
 function fileIssueId(filePath: string): string {
@@ -98,24 +109,43 @@ export function detectContextBloat(
   for (const file of files) {
     const { charCount, estimatedTokens, path: filePath, fileType } = file;
 
-    // README files are project docs consumed for context — use relaxed thresholds
-    const warnThreshold = fileType === 'readme' ? t.readmeFileWarning : t.fileWarning;
-    const highThreshold = fileType === 'readme' ? t.readmeFileHigh : t.fileHigh;
+    // Per-file-type thresholds: READMEs are project docs consumed for context
+    // (relaxed), while `.windsurfrules` is truncated by Windsurf past a low
+    // char limit (tighter, with Windsurf-specific guidance).
+    let warnThreshold = t.fileWarning;
+    let highThreshold = t.fileHigh;
+    if (fileType === 'readme') {
+      warnThreshold = t.readmeFileWarning;
+      highThreshold = t.readmeFileHigh;
+    } else if (fileType === 'windsurf') {
+      warnThreshold = t.windsurfFileWarning;
+      highThreshold = t.windsurfFileHigh;
+    }
+
+    const isWindsurf = fileType === 'windsurf';
+    // Windsurf silently drops rules past its truncation limit, so the guidance
+    // is about staying under the limit, not just "trim/split for cost".
+    const windsurfRecommendation =
+      `Trim the file under ~${t.windsurfFileWarning.toLocaleString()} characters, or split it into ` +
+      'scoped `.windsurf/rules/*.md` files so each loads only when relevant — Windsurf ' +
+      'silently truncates rules past its limit, so later rules never reach the model.';
 
     if (charCount >= highThreshold) {
       issues.push({
         id: fileIssueId(filePath),
         severity: 'high',
         category: 'context_bloat',
-        title: 'Instruction file is very large',
-        summary: `File is ${charCount.toLocaleString()} chars, above high threshold (${highThreshold.toLocaleString()}).`,
+        title: isWindsurf ? '.windsurfrules is past the Windsurf size limit' : 'Instruction file is very large',
+        summary: isWindsurf
+          ? `File is ${charCount.toLocaleString()} chars, past Windsurf's ~${t.windsurfFileHigh.toLocaleString()}-char combined budget — rules beyond the ~${t.windsurfFileWarning.toLocaleString()}-char limit are silently truncated.`
+          : `File is ${charCount.toLocaleString()} chars, above high threshold (${highThreshold.toLocaleString()}).`,
         filePaths: [filePath],
         locations: [{ filePath }],
         evidence: [
           `charCount: ${charCount.toLocaleString()}`,
           `estimatedTokens: ~${estimatedTokens.toLocaleString()}`,
         ],
-        recommendation: 'Consider splitting this file.',
+        recommendation: isWindsurf ? windsurfRecommendation : 'Consider splitting this file.',
         confidence: 1.0,
         tags: COST_TAGS,
       });
@@ -124,15 +154,17 @@ export function detectContextBloat(
         id: fileIssueId(filePath),
         severity: 'warning',
         category: 'context_bloat',
-        title: 'Instruction file may be too large',
-        summary: `File is ${charCount.toLocaleString()} chars, above warning threshold (${warnThreshold.toLocaleString()}).`,
+        title: isWindsurf ? '.windsurfrules may exceed the Windsurf size limit' : 'Instruction file may be too large',
+        summary: isWindsurf
+          ? `File is ${charCount.toLocaleString()} chars, past Windsurf's ~${t.windsurfFileWarning.toLocaleString()}-char truncation limit — rules beyond it may be silently dropped.`
+          : `File is ${charCount.toLocaleString()} chars, above warning threshold (${warnThreshold.toLocaleString()}).`,
         filePaths: [filePath],
         locations: [{ filePath }],
         evidence: [
           `charCount: ${charCount.toLocaleString()}`,
           `estimatedTokens: ~${estimatedTokens.toLocaleString()}`,
         ],
-        recommendation: 'Consider trimming this file.',
+        recommendation: isWindsurf ? windsurfRecommendation : 'Consider trimming this file.',
         confidence: 1.0,
         tags: COST_TAGS,
       });
