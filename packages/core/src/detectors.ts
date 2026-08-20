@@ -20,6 +20,9 @@ import { detectMcpConfig } from './mcp-config-detector.js';
 import { detectCursorRules } from './cursor-rules-detector.js';
 import { detectCopilotInstructions } from './copilot-instructions-detector.js';
 import { detectWindsurfRules } from './windsurf-detector.js';
+import { detectNegativeInstructionOverload } from './negative-instructions.js';
+import { detectBuriedCriticalInstructions } from './buried-critical.js';
+import { detectWithinSectionDedup } from './within-section-dedup.js';
 import type { PromptCiIssue } from './types.js';
 import type { RepoContext } from './repo-context.js';
 
@@ -36,6 +39,10 @@ export const DETECTORS: DetectorDefinition[] = [
   {
     id: 'duplicate-headings',
     run: (context) => detectDuplicateHeadings(context.files),
+  },
+  {
+    id: 'within-section-dedup',
+    run: (context) => detectWithinSectionDedup(context.files),
   },
   {
     id: 'conflicts',
@@ -134,6 +141,14 @@ export const DETECTORS: DetectorDefinition[] = [
   {
     id: 'ai-config-windsurf-rules',
     run: (context) => detectWindsurfRules(context),
+  },
+  {
+    id: 'negative-instructions',
+    run: (context) => detectNegativeInstructionOverload(context.files),
+  },
+  {
+    id: 'buried-critical',
+    run: (context) => detectBuriedCriticalInstructions(context.files),
   },
 ];
 
