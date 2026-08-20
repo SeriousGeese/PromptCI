@@ -56,6 +56,28 @@ describe('detectContextBloat', () => {
     expect(highIssues[0]?.severity).toBe('high');
   });
 
+  it('uses tighter thresholds and Windsurf-specific guidance for .windsurfrules', () => {
+    // 6,500 chars is under the generic 8,000 file warning but over Windsurf's
+    // ~6,000-char truncation limit — it should still warn, with Windsurf wording.
+    const warn = detectContextBloat([makeFile('/repo/.windsurfrules', 'windsurf', 6500)]);
+    const sizeWarn = warn.filter((i) => i.category === 'context_bloat');
+    expect(sizeWarn).toHaveLength(1);
+    expect(sizeWarn[0]?.severity).toBe('warning');
+    expect(sizeWarn[0]?.title).toContain('.windsurfrules');
+    expect(sizeWarn[0]?.recommendation).toContain('Windsurf');
+
+    // Over the ~12,000-char combined budget → high.
+    const high = detectContextBloat([makeFile('/repo/.windsurfrules', 'windsurf', 12500)]);
+    const sizeHigh = high.filter((i) => i.category === 'context_bloat');
+    expect(sizeHigh).toHaveLength(1);
+    expect(sizeHigh[0]?.severity).toBe('high');
+    expect(sizeHigh[0]?.title).toContain('.windsurfrules');
+  });
+
+  it('does not flag a small .windsurfrules under the Windsurf warning threshold', () => {
+    expect(detectContextBloat([makeFile('/repo/.windsurfrules', 'windsurf', 5000)])).toEqual([]);
+  });
+
   it('flags copilot files exceeding line warning threshold', () => {
     const files = [makeFile('/repo/copilot-instructions.md', 'copilot', 1000, 1005)]; // defaults copilot lines warn = 1000
     const issues = detectContextBloat(files);

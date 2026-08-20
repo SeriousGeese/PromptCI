@@ -97,6 +97,10 @@ const AI_CONFIG_GLOBS = {
   settings: ['.claude/settings.json', '.claude/settings.local.json'],
   mcp: ['.mcp.json'],
   cursorRules: ['.cursor/rules/**/*.mdc'],
+  // GitHub Copilot per-file instructions. The legacy single-file
+  // `.github/copilot-instructions.md` has no `applyTo` support, so it is NOT
+  // discovered here — only the per-file format under `.github/instructions/`.
+  copilotInstructions: ['.github/instructions/**/*.md'],
 } as const;
 
 /** Pre-discovered config files per surface, as sorted repo-relative POSIX paths. */
@@ -111,11 +115,13 @@ export type AiConfigFiles = {
   mcp: string[];
   /** Cursor project rules: `.cursor/rules/**\/*.mdc`. */
   cursorRules: string[];
+  /** GitHub Copilot per-file instructions: `.github/instructions/**\/*.md`. */
+  copilotInstructions: string[];
 };
 
 /** An AiConfigFiles with every surface empty — for contexts built without discovery. */
 export function emptyAiConfigFiles(): AiConfigFiles {
-  return { skills: [], agents: [], settings: [], mcp: [], cursorRules: [] };
+  return { skills: [], agents: [], settings: [], mcp: [], cursorRules: [], copilotInstructions: [] };
 }
 
 /**
@@ -171,6 +177,7 @@ export function discoverAiConfigFiles(
     settings: discover(AI_CONFIG_GLOBS.settings),
     mcp: discover(AI_CONFIG_GLOBS.mcp),
     cursorRules: discover(AI_CONFIG_GLOBS.cursorRules),
+    copilotInstructions: discover(AI_CONFIG_GLOBS.copilotInstructions),
   };
 }
 
