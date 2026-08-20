@@ -84,7 +84,7 @@ gh run watch --repo SeriousGeese/PromptCI
 ```
 
 or just watch the Actions tab. If it fails partway — say, core published but cli's step then
-failed — a retry is safe: `pnpm publish` refuses to republish a version already live, so
+failed — a retry is safe: `npm publish` refuses to republish a version already live, so
 re-running just picks up wherever it left off.
 
 ## 5. Follow-up PR: keep the composite action's CLI pin in sync
