@@ -39,6 +39,7 @@ const VALID_ISSUE_CATEGORIES = [
   'agent_practices',
   'ai_config',
   'security',
+  'custom',
 ] as const;
 
 

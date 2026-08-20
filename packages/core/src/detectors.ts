@@ -23,6 +23,7 @@ import { detectWindsurfRules } from './windsurf-detector.js';
 import { detectNegativeInstructionOverload } from './negative-instructions.js';
 import { detectBuriedCriticalInstructions } from './buried-critical.js';
 import { detectWithinSectionDedup } from './within-section-dedup.js';
+import { runCustomRules } from './custom-rules.js';
 import type { PromptCiIssue } from './types.js';
 import type { RepoContext } from './repo-context.js';
 
@@ -149,6 +150,10 @@ export const DETECTORS: DetectorDefinition[] = [
   {
     id: 'buried-critical',
     run: (context) => detectBuriedCriticalInstructions(context.files),
+  },
+  {
+    id: 'custom-rules',
+    run: (context) => runCustomRules(context.files, context.customRules, context.repoRoot),
   },
 ];
 

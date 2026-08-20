@@ -8,6 +8,8 @@ import type { ManifestData } from './manifest-consistency.js';
 import { isOnDemandFileType } from './types.js';
 import type { InstructionFile, ProjectType, ScanInput, ScanMetrics } from './types.js';
 import { budgetForTargetModel } from './model-budgets.js';
+import { loadCustomRules } from './custom-rules.js';
+import type { CustomRule } from './custom-rules.js';
 
 export type PackageManagerName = 'pnpm' | 'npm' | 'yarn' | 'bun' | 'unknown';
 
@@ -64,6 +66,11 @@ export type RepoContext = {
    * `aiConfig`, independent of this array.
    */
   onDemandFiles: InstructionFile[];
+  /**
+   * Validated rules loaded from `.promptci/custom-rules.json` (empty when the
+   * file is absent). Interpreted by the `custom-rules` detector.
+   */
+  customRules: CustomRule[];
 };
 
 const LOCKFILES = [
@@ -282,12 +289,14 @@ export async function buildRepoContext(input: ScanInput): Promise<RepoContext> {
     projectType = detectProjectTypeFromContent(files);
   }
 
-  const [packageJson, pyproject, requirements, lockfiles, workflows] = await Promise.all([
+  const [packageJson, pyproject, requirements, lockfiles, workflows, customRules] = await Promise.all([
     readRootFile(repoRoot, 'package.json'),
     readRootFile(repoRoot, 'pyproject.toml'),
     readRootFile(repoRoot, 'requirements.txt'),
     existingRootFiles(repoRoot, LOCKFILES),
     readWorkflowFacts(repoRoot),
+    // Throws a clear CustomRulesError on malformed config, surfaced at scan time.
+    loadCustomRules(repoRoot),
   ]);
 
   const manifests: ManifestData = {};
@@ -314,5 +323,6 @@ export async function buildRepoContext(input: ScanInput): Promise<RepoContext> {
     fileContextBudget: input.fileContextBudget ?? modelPreset?.fileContextBudget,
     vagueGuidanceSeverity: input.vagueGuidanceSeverity,
     onDemandFiles,
+    customRules,
   };
 }

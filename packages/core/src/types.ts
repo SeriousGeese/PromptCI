@@ -42,7 +42,9 @@ export type IssueCategory =
   | 'command_validity'
   | 'agent_practices'
   | 'ai_config'
-  | 'security';
+  | 'security'
+  // Findings produced by the user's own `.promptci/custom-rules.json` rules.
+  | 'custom';
 
 export type InstructionSection = {
   id: string;
