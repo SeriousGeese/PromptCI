@@ -7,10 +7,6 @@ import { detectProjectType, renderPromptCiGitignore, isWithinRoot, PROJECT_TYPES
 // accepting the detected type rather than as a menu entry.
 const PROJECT_TYPES: ProjectType[] = CORE_PROJECT_TYPES.filter((t) => t !== 'auto');
 
-// BUG-4: this used to seed every generated config with
-// `apiUrl: 'http://localhost:3000'`, which pointed `upload`/`login` at the
-// user's own machine. `apiUrl` is now omitted — set it only when you actually
-// run a dashboard (see Docs/cli-reference.md).
 // `severityThreshold` is scan's default `--fail-on` gate, not a display filter:
 // every finding is still shown in the report; the threshold only decides which
 // severities make `scan` exit non-zero. Seeding a fresh config with 'high' keeps
@@ -434,7 +430,7 @@ export async function runInit(targetPath: string, options?: InitOptions): Promis
 
     await fs.writeFile(configPath, JSON.stringify(DEFAULT_CONFIG, null, 2) + '\n', 'utf-8');
     console.log(`Created ${configPath}`);
-    console.log('Edit it to set include/exclude patterns, severityThreshold, projectType, and apiUrl.');
+    console.log('Edit it to set include/exclude patterns, severityThreshold, and projectType.');
   }
 
   // 5. Gitignore Check

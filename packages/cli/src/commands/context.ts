@@ -1,8 +1,9 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { analyzeContext, scanFiles, optimizeContext } from '@promptci/core';
-import type { ContextAnalysis, PromptCiIssue, FileChange } from '@promptci/core';
+import type { ContextAnalysis, PromptCiIssue } from '@promptci/core';
 import { loadConfig } from '../config.js';
+import { applyChangesInteractively, NonInteractiveError, type ApplyUnit } from '../lib/interactive-apply.js';
 
 export type ContextAnalyzeOptions = {
   scanPath?: string;
@@ -95,13 +96,24 @@ export type ContextOptimizeOptions = {
   dryRun?: boolean;
   /** Required to actually modify files. */
   write?: boolean;
+  /**
+   * Prompt for confirmation before each write. `--write` is itself the explicit
+   * opt-in to apply, so this defaults to false (apply without prompting); tests
+   * and callers that want per-change confirmation pass `interactive: true`.
+   */
+  interactive?: boolean;
+  /** Scripted confirmation answers (tests / piped input). */
+  answers?: string[];
+  /** Whether stdin is a TTY. Injectable for tests. */
+  isTTY?: boolean;
 };
 
 export async function runContextOptimize(options: ContextOptimizeOptions): Promise<void> {
   // `context optimize` rewrites instruction files in place and moves whole
   // sections into new documents, with no undo. It used to do that by default
   // with only --dry-run to opt out; previewing is now the default and --write
-  // is the explicit opt-in.
+  // is the explicit opt-in. Both paths run through the shared diff/confirm
+  // helper so a preview and a real apply render identically.
   const apply = options.write === true && options.dryRun !== true;
 
   if (options.write && options.dryRun) {
@@ -139,88 +151,39 @@ export async function runContextOptimize(options: ContextOptimizeOptions): Promi
     print(`\nProposed caching optimization changes (${changes.length} change(s)):`);
   }
 
-  for (const change of changes) {
-    print('\n================================================================================');
-    showDiffPreview(change, resolvedPath);
-    print('--------------------------------------------------------------------------------');
+  // Each change is its own confirmation unit. optimizeContext produces a single
+  // change per file, so no per-file merge is needed here.
+  const units: ApplyUnit[] = changes.map((change) => ({ changes: [change] }));
 
-    if (apply) {
-      await fs.mkdir(path.dirname(change.filePath), { recursive: true });
-      await fs.writeFile(change.filePath, change.newContent, 'utf-8');
-      print(`Applied change to ${path.relative(resolvedPath, change.filePath)}`);
-    } else {
-      print(`[Preview] ${path.relative(resolvedPath, change.filePath)} would be rewritten. No changes written.`);
+  let appliedCount: number;
+  try {
+    ({ appliedCount } = await applyChangesInteractively(units, {
+      repoRoot: resolvedPath,
+      dryRun: !apply,
+      interactive: options.interactive ?? false,
+      answers: options.answers,
+      isTTY: options.isTTY,
+      promptText: '\nApply this change? (y/N): ',
+      log: print,
+    }));
+  } catch (err) {
+    if (err instanceof NonInteractiveError) {
+      console.error(`Error: ${err.message}`);
+      process.exit(1);
     }
+    throw err;
   }
 
-  if (apply) {
+  if (!apply) {
+    print('\nPreview only — no changes were made. Re-run with --write to apply them.');
+  } else if (appliedCount > 0) {
     print('\nOptimization complete.');
   } else {
-    print('\nPreview only — no changes were made. Re-run with --write to apply them.');
+    print('\nNo changes applied.');
   }
 }
 
 function print(msg: string = '') {
   process.stdout.write(msg + '\n');
-}
-
-function showDiffPreview(change: FileChange, repoRoot: string) {
-  const relPath = path.relative(repoRoot, change.filePath);
-
-  if (change.originalContent === '') {
-    print(`File: ${relPath} (new file)`);
-    const newLines = change.newContent.split(/\r?\n/);
-    for (const line of newLines) {
-      print(`\x1b[32m+ ${line}\x1b[0m`);
-    }
-    return;
-  }
-
-  print(`File: ${relPath}`);
-
-  const origLines = change.originalContent.split(/\r?\n/);
-  const newLines = change.newContent.split(/\r?\n/);
-
-  if (origLines.length === newLines.length) {
-    for (let i = 0; i < origLines.length; i++) {
-      if (origLines[i] !== newLines[i]) {
-        print(`  Line ${i + 1}:`);
-        print(`\x1b[31m- ${origLines[i]}\x1b[0m`);
-        print(`\x1b[32m+ ${newLines[i]}\x1b[0m`);
-      }
-    }
-  } else {
-    let startDiverge = 0;
-    while (
-      startDiverge < origLines.length &&
-      startDiverge < newLines.length &&
-      origLines[startDiverge] === newLines[startDiverge]
-    ) {
-      startDiverge++;
-    }
-
-    let endDivergeOrig = origLines.length - 1;
-    let endDivergeNew = newLines.length - 1;
-    while (
-      endDivergeOrig >= startDiverge &&
-      endDivergeNew >= startDiverge &&
-      origLines[endDivergeOrig] === newLines[endDivergeNew]
-    ) {
-      endDivergeOrig--;
-      endDivergeNew--;
-    }
-
-    print(`  Replacement in lines ${startDiverge + 1} to ${endDivergeOrig + 1}:`);
-    for (let i = startDiverge; i <= endDivergeOrig; i++) {
-      if (origLines[i] !== undefined) {
-        print(`\x1b[31m- ${origLines[i]}\x1b[0m`);
-      }
-    }
-    for (let i = startDiverge; i <= endDivergeNew; i++) {
-      if (newLines[i] !== undefined) {
-        print(`\x1b[32m+ ${newLines[i]}\x1b[0m`);
-      }
-    }
-  }
 }
 

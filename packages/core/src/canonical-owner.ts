@@ -1,6 +1,7 @@
 import * as crypto from 'node:crypto';
 import * as path from 'node:path';
 import type { InstructionFile, PromptCiIssue } from './types.js';
+import { snippet } from './evidence.js';
 
 /**
  * Canonical Owner and Forwarding Detector.
@@ -59,8 +60,9 @@ export function detectCanonicalOwner(files: InstructionFile[]): PromptCiIssue[] 
             break;
           }
         }
-        const snippet = (matchText ?? '').replace(/\s+/g, ' ').trim();
-        return `${path.basename(f.path)}: "${snippet}"`;
+        // Authority phrases are short fixed strings — well under the shared
+        // snippet's default clip — so this only collapses whitespace + trims.
+        return `${path.basename(f.path)}: "${snippet(matchText ?? '')}"`;
       }),
       recommendation:
         'Designate ONE file (usually AGENTS.md) as the canonical source. ' +

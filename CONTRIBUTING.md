@@ -109,8 +109,7 @@ Detector changes shift results for every user, so they carry extra requirements.
 
 1. **Stay deterministic.** Detectors are rule-based. No LLM calls, no network requests, no
    clock or randomness in detector code. The same input must always produce the same report.
-   (`callLlm` in core is an optional helper for downstream consumers — nothing in the scan
-   pipeline may call it.)
+   Nothing in this repo calls an LLM — there is no model client in the package at all.
 2. **Add fixtures.** Repos under `examples/` are the scanner's test corpus
    (`fixture-basic`, `fixture-clean`, `fixture-conflicts`, `fixture-suppression`, and others).
    A new rule needs both a fixture that triggers it and a case that must stay clean.

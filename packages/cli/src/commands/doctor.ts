@@ -2,8 +2,6 @@ import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { execSync } from 'node:child_process';
 import { loadConfig } from '../config.js';
-import { readAuthConfig } from '../auth-config.js';
-import { API_URL_ENV, resolveApiUrl } from '../api-url.js';
 
 export type DoctorOptions = {
   scanPath?: string;
@@ -126,46 +124,6 @@ export async function runDoctor(options: DoctorOptions): Promise<void> {
     }
   }
 
-  // 5. LLM Keys check
-  const openaiKey = process.env.OPENAI_API_KEY;
-  const anthropicKey = process.env.ANTHROPIC_API_KEY;
-  const hasKeys = !!openaiKey || !!anthropicKey;
-
-  // 6. Auth status check
-  const authConfig = await readAuthConfig();
-  const now = Math.floor(Date.now() / 1000);
-  const hasToken = !!authConfig.access_token && (!authConfig.expires_at || authConfig.expires_at > now);
-
-  // 7. Dashboard connection check.
-  // Only reached when a URL is actually configured — doctor used to fetch
-  // localhost:3000/api/health on every run, including for the majority of
-  // users who never touch the dashboard.
-  const resolvedApiUrl = await resolveApiUrl({ scanPath: resolvedPath });
-  let dashboardConnected = false;
-  const dashboardConfigured = resolvedApiUrl !== undefined;
-  let dashboardMessage =
-    `No dashboard URL configured — skipped (set ${API_URL_ENV} or "apiUrl" in .promptci/config.json to check it)`;
-
-  if (resolvedApiUrl) {
-    const apiUrl = resolvedApiUrl.url;
-    try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 3000);
-      const res = await globalThis.fetch(`${apiUrl}/api/health`, {
-        signal: controller.signal,
-      });
-      clearTimeout(timeoutId);
-      if (res.ok) {
-        dashboardConnected = true;
-        dashboardMessage = `Connected to dashboard at ${apiUrl}`;
-      } else {
-        dashboardMessage = `Dashboard at ${apiUrl} returned status ${res.status}`;
-      }
-    } catch (err) {
-      dashboardMessage = `Could not connect to ${apiUrl}: ${err instanceof Error ? err.message : String(err)}`;
-    }
-  }
-
   console.log('PromptCI System Diagnostics (Doctor)');
   console.log('--------------------------------------------------');
 
@@ -210,29 +168,6 @@ export async function runDoctor(options: DoctorOptions): Promise<void> {
     console.log(`\x1b[33m[!]\x1b[0m Gitignore protection: ${gitignoreMsg}`);
   } else {
     console.log(`\x1b[36m[i]\x1b[0m Gitignore protection: ${gitignoreMsg}`);
-  }
-
-  // `fix --llm` and `explain` call the model provider directly from this
-  // process, so a dashboard login is no substitute for a local key.
-  if (hasKeys) {
-    const keysUsed = [openaiKey ? 'OpenAI' : '', anthropicKey ? 'Anthropic' : ''].filter(Boolean).join(', ');
-    console.log(`\x1b[32m[✓]\x1b[0m LLM API Keys: Configured (${keysUsed})`);
-  } else {
-    console.log(`\x1b[33m[!]\x1b[0m LLM API Keys: Neither OPENAI_API_KEY nor ANTHROPIC_API_KEY is configured (explain/fix --llm run locally and are disabled without one)`);
-  }
-
-  if (hasToken) {
-    console.log(`\x1b[32m[✓]\x1b[0m Dashboard Authentication: Authenticated`);
-  } else {
-    console.log(`\x1b[33m[!]\x1b[0m Dashboard Authentication: Not authenticated (run promptci login to set up)`);
-  }
-
-  if (dashboardConnected) {
-    console.log(`\x1b[32m[✓]\x1b[0m Dashboard connection: ${dashboardMessage}`);
-  } else if (dashboardConfigured) {
-    console.log(`\x1b[33m[!]\x1b[0m Dashboard connection: ${dashboardMessage}`);
-  } else {
-    console.log(`\x1b[36m[i]\x1b[0m Dashboard connection: ${dashboardMessage}`);
   }
 
   console.log('--------------------------------------------------');

@@ -12,6 +12,7 @@
 
 import * as crypto from 'node:crypto';
 import type { InstructionFile, InstructionSection, PromptCiIssue } from './types.js';
+import { snippet } from './evidence.js';
 
 /**
  * Cross-file: sections shorter than this (normalised chars) are too noisy to flag.
@@ -92,11 +93,6 @@ function jaccardSimilarity(a: Set<string>, b: Set<string>): number {
     if (b.has(token)) intersectionSize++;
   }
   return intersectionSize / (a.size + b.size - intersectionSize);
-}
-
-/** First 200 chars of a string, trimmed. */
-function snippet(text: string): string {
-  return text.length <= 200 ? text : `${text.slice(0, 200)}…`;
 }
 
 function isBoilerplateHeading(heading: string | undefined): boolean {
@@ -335,11 +331,19 @@ export function detectDuplicates(files: InstructionFile[]): PromptCiIssue[] {
         endLine: s.endLine,
       })),
       evidence: [
-        snippet(sections[0]!.normalizedText),
+        // normalizedText is already whitespace-collapsed; keep the prior
+        // 200-char clip (the shared snippet defaults to 120).
+        snippet(sections[0]!.normalizedText, 200),
         `Duplicated size: ~${duplicateTokens} tokens`,
       ],
       recommendation:
         `Consolidate these sections into one canonical location (e.g. AGENTS.md) and use forwarding pointers to save ~${duplicateTokens} tokens per session. If both are intentional, add a comment clarifying the distinction.`,
+      // `applyFixRecipe` can consolidate a duplicate that spans MULTIPLE files
+      // (pick a canonical file, replace the copies with a forwarding pointer).
+      // A cluster confined to one file has no other file to point at, so it
+      // stays advisory. Same-file duplicate *headings* are handled by the other
+      // detectors below and are never auto-applied.
+      autoApplySafe: fileCount >= 2,
       confidence,
     });
   }

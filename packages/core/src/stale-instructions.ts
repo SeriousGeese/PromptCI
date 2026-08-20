@@ -14,6 +14,7 @@
 import * as crypto from 'node:crypto';
 import type { InstructionFile, InstructionSection, PromptCiIssue } from './types.js';
 import { stripCodeBlocks } from './markdown-fences.js';
+import { snippet } from './evidence.js';
 
 // ─── Pattern definitions ──────────────────────────────────────────────────────
 
@@ -134,11 +135,6 @@ function issueId(section: InstructionSection, tag: string): string {
   const key = `${section.filePath}:${section.startLine}:${tag}`;
   const hash = crypto.createHash('sha1').update(key).digest('hex').slice(0, 12);
   return `stale-${hash}`;
-}
-
-function snippet(text: string, maxLen = 120): string {
-  const clean = text.replace(/\s+/g, ' ').trim();
-  return clean.length <= maxLen ? clean : `${clean.slice(0, maxLen)}…`;
 }
 
 function collectMatches(text: string, re: RegExp): string[] {

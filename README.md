@@ -15,8 +15,10 @@ PromptCI scans AI coding instruction files (`CLAUDE.md`, `AGENTS.md`, `.cursorru
 instructions, README-style context, and more) and produces actionable health reports so you can
 catch instruction rot before it costs you.
 
-The scanner is **deterministic and rule-based** — no LLM calls, no network access, identical
-output for identical input. It runs entirely on your machine; your files never leave it.
+The scanner is **deterministic and rule-based** — no LLM calls, identical output for identical
+input. It runs entirely on your machine; your files never leave it. The only network request
+the package ever makes is a once-a-day, best-effort npm version check (see
+[Hosted dashboard](#hosted-dashboard) for how to disable it).
 
 ## Why
 
@@ -62,7 +64,6 @@ Common commands:
 ```bash
 npx @promptci/cli scan --path /path/to/repo    # scan a specific repo
 npx @promptci/cli init                         # create .promptci/config.json
-npx @promptci/cli explain                      # explain findings (BYO OpenAI/Anthropic key)
 npx @promptci/cli fix                          # apply deterministic fix recipes
 npx @promptci/cli doctor                       # diagnose setup problems
 ```
@@ -165,12 +166,27 @@ Docs/     — reference documentation
 ## Hosted dashboard
 
 A hosted dashboard (scan history, improvement metrics, LLM-assisted fixes, GitHub PR
-integration) is developed separately and is not part of this repository. The
-`login`, `auth`, and `upload` CLI commands connect to it; everything else works without it.
+integration) is developed separately and is not part of this repository. This package is the
+offline scanner only — it contains no LLM, auth, or upload code and makes no network requests
+beyond the once-a-day npm version check described below.
 
-There is no public endpoint yet, so those commands need one supplied explicitly — via
-`--url`, the `PROMPTCI_API_URL` environment variable, or `apiUrl` in
-`.promptci/config.json`. They error out rather than guessing a default.
+The one network touch in this package is a best-effort check against the npm registry, at most
+once per day, for a newer `@promptci/cli` release. It never blocks a command and is skipped
+entirely when `CI`, `NO_UPDATE_NOTIFIER`, or `PROMPTCI_NO_UPDATE_NOTIFIER` is set.
+
+## Environment variables
+
+The CLI reads only a few environment variables, all optional — there is no required configuration
+and no `.env` file to create:
+
+- `NO_UPDATE_NOTIFIER` — set to any value to disable the once-a-day npm version check.
+- `PROMPTCI_NO_UPDATE_NOTIFIER` — PromptCI-specific alias for the same opt-out.
+- `CI` — when set (as CI providers do automatically), the version check is skipped too.
+
+Nothing else in the package inspects the environment. (Release automation in this repo uses
+`NPM_TOKEN` to publish to npm, but the CLI never reads it at runtime.)
+
+Never print, commit, or log secrets, tokens, or credentials — read any such variable silently, without echoing its value.
 
 ## Contributing
 

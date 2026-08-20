@@ -4,11 +4,7 @@ import { runScan } from './commands/scan.js';
 import { runInit } from './commands/init.js';
 import { runFix } from './commands/fix.js';
 import { runReviewDiff } from './commands/review-diff.js';
-import { runUpload } from './commands/upload.js';
-import { runLogin } from './commands/login.js';
-import { runAuth, type AuthSubcommand } from './commands/auth.js';
 import { runContextAnalyze, runContextOptimize } from './commands/context.js';
-import { runExplain } from './commands/explain.js';
 import { runDoctor } from './commands/doctor.js';
 import { getNewVersionNotice } from './commands/version-notice.js';
 
@@ -79,29 +75,18 @@ program
   .option('--issue <id>', 'fix a specific issue by its ID')
   .option('--no-interactive', 'disable interactive prompting and apply all fixes')
   .option('--dry-run', 'print proposed changes without writing to disk')
-  .option('--llm', 'use an LLM to automatically resolve vague or conflicting instructions')
   .action(async (opts: {
     path?: string;
     issue?: string;
     interactive?: boolean;
     dryRun?: boolean;
-    llm?: boolean;
   }) => {
     await runFix({
       scanPath: opts.path,
       issueId: opts.issue,
       interactive: opts.interactive,
       dryRun: opts.dryRun || false,
-      llm: opts.llm || false,
     });
-  });
-
-program
-  .command('explain')
-  .description('Generate a prioritized, human-readable cleanup plan for scan issues using an LLM')
-  .option('--path <dir>', 'target directory to scan and explain (default: current directory)')
-  .action(async (opts: { path?: string }) => {
-    await runExplain({ scanPath: opts.path });
   });
 
 program
@@ -153,18 +138,6 @@ program
     await runDoctor({ scanPath: opts.path });
   });
 
-program
-  .command('upload')
-  .description('Upload the latest scan report to your PromptCI dashboard')
-  .option('--path <dir>', 'repo directory containing .promptci/ (default: current directory)')
-  .option(
-    '--url <url>',
-    'dashboard API URL (overrides PROMPTCI_API_URL and config; required if neither is set)',
-  )
-  .action(async (opts: { path?: string; url?: string }) => {
-    await runUpload({ uploadPath: opts.path, url: opts.url });
-  });
-
 const contextCommand = program
   .command('context')
   .description('Analyze instruction context size, cost, and retrieval-readiness');
@@ -189,29 +162,6 @@ contextCommand
   .option('--dry-run', 'print the diff without modifying files (the default)')
   .action(async (opts: { path?: string; dryRun?: boolean; write?: boolean }) => {
     await runContextOptimize({ scanPath: opts.path, dryRun: opts.dryRun, write: opts.write });
-  });
-
-program
-  .command('login')
-  .description('Authenticate the CLI with your PromptCI dashboard via GitHub OAuth')
-  .option(
-    '--url <url>',
-    'dashboard URL (overrides PROMPTCI_API_URL and config; required if neither is set)',
-  )
-  .action(async (opts: { url?: string }) => {
-    await runLogin({ url: opts.url });
-  });
-
-program
-  .command('auth <subcommand> [args...]')
-  .description(
-    'Manage CLI authentication tokens\n' +
-      '  set-token <token>  Store your access token\n' +
-      '  status             Show current auth state\n' +
-      '  logout             Clear stored token',
-  )
-  .action(async (sub: string, args: string[]) => {
-    await runAuth(sub as AuthSubcommand, args);
   });
 
 async function main(): Promise<void> {

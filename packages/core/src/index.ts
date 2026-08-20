@@ -28,10 +28,9 @@ export { analyzeContext } from './context-analysis.js';
 export type { ContextAnalysis } from './context-analysis.js';
 export { scan } from './scan.js';
 export { computeFingerprint, createBaseline, filterNewIssues, assertValidBaseline } from './baseline.js';
-export { applyFixRecipe, resolveSafePath } from './fix-engine.js';
+export { applyFixRecipe, resolveSafePath, isRepairable } from './fix-engine.js';
 export type { FileChange } from './fix-engine.js';
 export { isWithinRoot, resolveWithinRoot } from './path-containment.js';
-export { callLlm } from './llm.js';
 export { optimizeContext } from './context-optimizer.js';
 export type { OptimizeOptions, OptimizeResult } from './context-optimizer.js';
 

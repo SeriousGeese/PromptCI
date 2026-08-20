@@ -39,15 +39,12 @@ explicit `--fail-on high`. See [cli-reference.md](cli-reference.md#severitythres
 
 The exit code is 1 whenever any issue meets or exceeds the threshold. Use `--fail-on high` (not `warning`) for a less strict CI gate while you're cleaning up existing findings.
 
-### "Error: no dashboard URL configured"
+### Does PromptCI phone home?
 
-`login` and `upload` talk to a dashboard that has no public endpoint yet, so they will not
-guess one. Pass `--url https://your-dashboard`, set `PROMPTCI_API_URL`, or add `apiUrl` to
-`.promptci/config.json`. `promptci login --url <url>` remembers the value in
-`~/.promptci/global.json` for later runs.
-
-Everything else — `scan`, `fix`, `context`, `review-diff`, `doctor` — works without a
-dashboard.
+No. This package is the offline scanner: `scan`, `fix`, `context`, `review-diff`, `doctor`, and
+`init` all run entirely on your machine and make no network requests. The single exception is a
+best-effort npm version check that runs at most once a day and never blocks a command; disable it
+by setting `CI`, `NO_UPDATE_NOTIFIER`, or `PROMPTCI_NO_UPDATE_NOTIFIER`.
 
 ### review-diff: "Could not resolve base branch/commit"
 

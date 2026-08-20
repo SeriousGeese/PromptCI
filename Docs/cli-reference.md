@@ -32,7 +32,6 @@ promptci fix                                # interactively fix deterministic is
 promptci fix --issue <id>                   # fix a specific issue by its ID
 promptci fix --no-interactive               # apply all fixes without prompting
 promptci fix --dry-run                      # preview changes without writing to disk
-promptci fix --llm                          # use an LLM to resolve vague or conflicting instructions
 
 # Branch Diff
 promptci review-diff                        # compare current branch against main
@@ -43,24 +42,12 @@ promptci review-diff --fail-on-regression   # exit 1 if score decreases or new i
 promptci review-diff --fail-on <severity>   # exit 1 if any issue on this branch is at or above severity
 promptci review-diff --working-tree         # compare uncommitted work instead of the HEAD commit
 
-# Explain
-promptci explain                            # generate a prioritized LLM-written cleanup plan
-promptci explain --path <dir>               # explain issues in a specific directory
-
 # Doctor
 promptci doctor                             # verify config, .gitignore, and system dependencies
 promptci doctor --path <dir>                # check a specific directory
 
 # Setup
 promptci init                               # create .promptci/config.json and add the .promptci/ ignore rules
-
-# Dashboard (optional — requires an explicit URL, see below)
-promptci login                              # open browser for GitHub OAuth sign-in
-promptci login --url <url>                  # point at a dashboard and remember it
-promptci auth set-token <token>             # store a token retrieved from the dashboard
-promptci auth status                        # show whether a token is configured
-promptci auth logout                        # clear the stored token
-promptci upload                             # upload last scan to the hosted dashboard
 
 promptci --version
 promptci --help
@@ -112,23 +99,6 @@ platitudes ("write clean code", "best practices", "SOLID principles", "clean arc
 experience", "user-friendly", …) are `info`. Set the key to `warning` to hold all vague guidance
 to the stricter tier, or to `info` to demote every vague-guidance finding below a `warning` gate.
 The override changes only the severity; each finding's confidence still reflects its matched tier.
-
-## Dashboard URL
-
-`login`, `upload`, and `doctor`'s connectivity check need a dashboard endpoint. There is
-**no built-in default** — the hosted dashboard has no public domain yet, and defaulting to
-`http://localhost:3000` only produced connection-refused errors against the user's own machine.
-
-Resolution order, first match wins:
-
-1. `--url <url>` (`login` and `upload`)
-2. `PROMPTCI_API_URL`
-3. `apiUrl` in the project's `.promptci/config.json`
-4. `apiUrl` in `~/.promptci/global.json` (written by `promptci login --url ...`)
-
-If none is set, `login` and `upload` exit 1 with instructions, and `doctor` reports the
-dashboard check as skipped instead of contacting anything. The value must be an absolute
-`http`/`https` URL.
 
 ## How `review-diff` compares two revisions
 

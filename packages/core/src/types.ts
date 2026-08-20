@@ -74,7 +74,15 @@ export type PromptCiIssue = {
   locations: Array<{ filePath: string; startLine?: number; endLine?: number }>;
   evidence: string[];
   recommendation: string;
+  /** Advisory, human-readable "here's how to fix it" text. Not machine-applied. */
   fixRecipe?: string;
+  /**
+   * True only when `applyFixRecipe` implements a mechanical, reversible edit for
+   * this issue and it is safe to auto-apply. Gates `promptci fix` (see
+   * `isRepairable`). Detectors set this deliberately per recipe — it is never
+   * inferred from the presence of `fixRecipe`, which is usually advisory prose.
+   */
+  autoApplySafe?: boolean;
   confidence: number;
   tags?: string[];
   impact?: 'high' | 'medium' | 'low';
