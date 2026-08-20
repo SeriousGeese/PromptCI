@@ -7,6 +7,7 @@ import { scanFiles } from './scanner.js';
 import type { ManifestData } from './manifest-consistency.js';
 import { isOnDemandFileType } from './types.js';
 import type { InstructionFile, ProjectType, ScanInput, ScanMetrics } from './types.js';
+import { budgetForTargetModel } from './model-budgets.js';
 
 export type PackageManagerName = 'pnpm' | 'npm' | 'yarn' | 'bun' | 'unknown';
 
@@ -294,6 +295,10 @@ export async function buildRepoContext(input: ScanInput): Promise<RepoContext> {
   if (pyproject) manifests.pyproject = pyproject;
   if (requirements !== undefined) manifests.requirements = requirements;
 
+  // Unknown targetModel names are ignored here (no preset); the CLI config
+  // loader validates the name up front and raises a clear error instead.
+  const modelPreset = input.targetModel ? budgetForTargetModel(input.targetModel) : undefined;
+
   return {
     repoRoot,
     files,
@@ -303,8 +308,10 @@ export async function buildRepoContext(input: ScanInput): Promise<RepoContext> {
     workflows,
     aiConfig: discoverAiConfigFiles(repoRoot, input),
     metrics: buildMetrics(files, onDemandFiles),
-    contextBudget: input.contextBudget,
-    fileContextBudget: input.fileContextBudget,
+    // A targetModel preset scales the context-bloat thresholds to that model's
+    // window, but an explicit budget (flag or config) always wins over it.
+    contextBudget: input.contextBudget ?? modelPreset?.contextBudget,
+    fileContextBudget: input.fileContextBudget ?? modelPreset?.fileContextBudget,
     vagueGuidanceSeverity: input.vagueGuidanceSeverity,
     onDemandFiles,
   };

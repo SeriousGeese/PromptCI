@@ -203,6 +203,13 @@ export type ScanInput = {
   contextBudget?: number;
   fileContextBudget?: number;
   /**
+   * FEAT-012: a target-model preset name (e.g. `claude-opus-5`) that scales the
+   * context-bloat thresholds to that model's context window. An explicit
+   * `contextBudget`/`fileContextBudget` always overrides the preset. Surfaced
+   * as the `targetModel` config key and `--target-model` flag.
+   */
+  targetModel?: string;
+  /**
    * FEAT-004: force every vague-guidance finding to this severity, overriding
    * the detector's high-signal/soft tiering. Surfaced as the
    * `vagueGuidanceSeverity` config key.

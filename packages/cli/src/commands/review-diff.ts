@@ -217,6 +217,12 @@ export async function runReviewDiff(options: ReviewDiffOptions): Promise<void> {
       projectType: config.projectType,
       include: config.include,
       exclude: config.exclude,
+      // Threaded so a `.promptci/config.json` context budget / targetModel
+      // preset applies identically in the Action's regression path and a local
+      // scan (full CI/local parity).
+      contextBudget: config.contextBudget,
+      fileContextBudget: config.fileContextBudget,
+      targetModel: config.targetModel,
       vagueGuidanceSeverity: config.vagueGuidanceSeverity,
     };
 

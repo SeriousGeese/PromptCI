@@ -42,6 +42,10 @@ program
   .option('--fail-on-budget', 'exit non-zero if any context bloat issue is found')
   .option('--context-budget <chars>', 'override total context budget (in characters)')
   .option('--file-context-budget <chars>', 'override per-file context budget (in characters)')
+  .option(
+    '--target-model <model>',
+    'scale context-bloat thresholds to a model preset (e.g. claude-opus-5, gpt-5, gemini-2.5-pro); --context-budget overrides it',
+  )
   .action(async (opts: {
     path?: string;
     json?: boolean;
@@ -53,6 +57,7 @@ program
     failOnBudget?: boolean;
     contextBudget?: string;
     fileContextBudget?: string;
+    targetModel?: string;
   }) => {
     await runScan({
       scanPath: opts.path,
@@ -65,6 +70,7 @@ program
       failOnBudget: opts.failOnBudget,
       contextBudget: opts.contextBudget ? parseInt(opts.contextBudget, 10) : undefined,
       fileContextBudget: opts.fileContextBudget ? parseInt(opts.fileContextBudget, 10) : undefined,
+      targetModel: opts.targetModel,
     });
   });
 

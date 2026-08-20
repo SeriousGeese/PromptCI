@@ -1,6 +1,6 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
-import { PROJECT_TYPES } from '@promptci/core';
+import { PROJECT_TYPES, TARGET_MODELS, resolveTargetModel } from '@promptci/core';
 import type { IssueSeverity, ProjectType } from '@promptci/core';
 
 export type CliConfig = {
@@ -10,6 +10,7 @@ export type CliConfig = {
   projectType?: ProjectType;
   contextBudget?: number;
   fileContextBudget?: number;
+  targetModel?: string;
   vagueGuidanceSeverity?: 'info' | 'warning';
 };
 
@@ -82,6 +83,14 @@ export async function loadConfig(scanPath: string): Promise<CliConfig> {
     if (typeof obj.fileContextBudget !== 'number' || obj.fileContextBudget <= 0)
       throw new Error(`config.fileContextBudget must be a positive number`);
     config.fileContextBudget = obj.fileContextBudget;
+  }
+  if ('targetModel' in obj) {
+    if (typeof obj.targetModel !== 'string' || resolveTargetModel(obj.targetModel) === undefined)
+      throw new Error(
+        `config.targetModel must be one of: ${TARGET_MODELS.join(', ')} ` +
+          `(or a family alias like "claude"/"gpt"/"gemini")`,
+      );
+    config.targetModel = obj.targetModel;
   }
   if ('vagueGuidanceSeverity' in obj) {
     if (obj.vagueGuidanceSeverity !== 'info' && obj.vagueGuidanceSeverity !== 'warning')
