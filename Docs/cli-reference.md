@@ -2,6 +2,9 @@
 
 Detailed command-line interface documentation for PromptCI.
 
+For repo-specific checks beyond the built-in detectors, see
+[custom-rules.md](custom-rules.md) — the `.promptci/custom-rules.json` rule format.
+
 ```bash
 # Scanning
 promptci scan                               # scan current directory

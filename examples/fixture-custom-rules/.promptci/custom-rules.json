@@ -1,0 +1,24 @@
+{
+  "rules": [
+    {
+      "id": "require-license",
+      "type": "absentPattern",
+      "pattern": "SPDX-License-Identifier",
+      "message": "Instruction files must reference an SPDX license identifier",
+      "severity": "warning"
+    },
+    {
+      "id": "no-todo",
+      "type": "forbiddenPattern",
+      "pattern": "TODO",
+      "message": "Leftover TODO in instruction files",
+      "severity": "info"
+    },
+    {
+      "id": "require-setup-section",
+      "type": "requiredSection",
+      "heading": "Setup",
+      "message": "Instructions must include a Setup section"
+    }
+  ]
+}

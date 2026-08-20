@@ -46,6 +46,15 @@ export {
   budgetForTargetModel,
 } from './model-budgets.js';
 export type { TargetModel, ModelBudget } from './model-budgets.js';
+export {
+  loadCustomRules,
+  parseCustomRules,
+  runCustomRules,
+  CustomRulesError,
+  CUSTOM_RULE_TYPES,
+  CUSTOM_RULES_FILE,
+} from './custom-rules.js';
+export type { CustomRule, CustomRuleType } from './custom-rules.js';
 
 
 export {
