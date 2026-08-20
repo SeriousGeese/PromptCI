@@ -45,14 +45,16 @@ The scan writes two files and prints a summary with a health score and top fixes
 - `.promptci/latest.md` — human-readable Markdown report
 - `.promptci/report.json` — machine-readable JSON
 
-Ignore the generated reports but keep `.promptci/baseline.json` and `.promptci/config.json`
-committed — the CI ratchet (`--baseline` / `--fail-on-new`) reads the baseline from the checkout.
-`promptci init` writes this for you:
+Ignore the generated reports but keep `.promptci/baseline.json`, `.promptci/config.json`, and
+`.promptci/custom-rules.json` committed — the CI ratchet (`--baseline` / `--fail-on-new`) reads
+the baseline from the checkout, and custom rules must be committed so a local scan and the
+GitHub Action see the same checks. `promptci init` writes this for you:
 
 ```gitignore
 **/.promptci/*
 !**/.promptci/baseline.json
 !**/.promptci/config.json
+!**/.promptci/custom-rules.json
 ```
 
 Both details matter: `.promptci/*` rather than `.promptci/`, because git does not descend into
@@ -152,6 +154,10 @@ Suppress a finding inline where it is wrong for your project:
 <!-- promptci-ignore: context_bloat
      reason: This section documents a product feature, not pasted output. -->
 ```
+
+Add repo-specific checks in `.promptci/custom-rules.json` — deterministic `forbiddenPattern` and
+`requiredSection` rules that run alongside the built-in detectors. Commit the file so a local
+scan and CI evaluate the same rules; see [Docs/custom-rules.md](Docs/custom-rules.md).
 
 ## Repository structure
 
