@@ -33,7 +33,7 @@ inputs:
     required: false
     # Keep in sync with packages/cli/package.json on every release — this is
     # the version the action installs for every consumer.
-    default: '0.0.1'
+    default: '0.1.0'
 
 runs:
   using: 'composite'
