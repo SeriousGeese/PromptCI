@@ -22,6 +22,8 @@ export { detectSubagents } from './subagents-detector.js';
 export { detectHooksSettings } from './hooks-settings-detector.js';
 export { detectMcpConfig } from './mcp-config-detector.js';
 export { detectCursorRules } from './cursor-rules-detector.js';
+export { detectCopilotInstructions } from './copilot-instructions-detector.js';
+export { detectWindsurfRules } from './windsurf-detector.js';
 export { parseFrontmatter, discoverAiConfigFiles, emptyAiConfigFiles } from './ai-config.js';
 export type { Frontmatter, FrontmatterValue, AiConfigFiles } from './ai-config.js';
 export { analyzeContext } from './context-analysis.js';

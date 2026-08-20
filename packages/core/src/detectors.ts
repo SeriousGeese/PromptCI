@@ -18,6 +18,8 @@ import { detectSubagents } from './subagents-detector.js';
 import { detectHooksSettings } from './hooks-settings-detector.js';
 import { detectMcpConfig } from './mcp-config-detector.js';
 import { detectCursorRules } from './cursor-rules-detector.js';
+import { detectCopilotInstructions } from './copilot-instructions-detector.js';
+import { detectWindsurfRules } from './windsurf-detector.js';
 import type { PromptCiIssue } from './types.js';
 import type { RepoContext } from './repo-context.js';
 
@@ -124,6 +126,14 @@ export const DETECTORS: DetectorDefinition[] = [
   {
     id: 'ai-config-cursor-rules',
     run: (context) => detectCursorRules(context),
+  },
+  {
+    id: 'ai-config-copilot-instructions',
+    run: (context) => detectCopilotInstructions(context),
+  },
+  {
+    id: 'ai-config-windsurf-rules',
+    run: (context) => detectWindsurfRules(context),
   },
 ];
 
