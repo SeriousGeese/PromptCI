@@ -6,6 +6,7 @@ import * as fs from 'node:fs/promises';
 import * as nodePath from 'node:path';
 import type { IssueSeverity, PromptCiIssue, ScanReport, ScanReportJson, ScanTrend } from './types.js';
 import { computeFingerprint } from './baseline.js';
+import { snippet } from './evidence.js';
 
 export type WriteReportOptions = {
   /** Override path for the markdown report (default: <repoPath>/.promptci/latest.md) */
@@ -61,6 +62,73 @@ const SEVERITY_ORDER: Record<IssueSeverity, number> = {
   warning: 2,
   info: 3,
 };
+
+// Title-case severity names for group headings (SEVERITY_LABEL is SHOUTING).
+const SEVERITY_TITLE: Record<IssueSeverity, string> = {
+  critical: 'Critical',
+  high: 'High',
+  warning: 'Warning',
+  info: 'Info',
+};
+
+// Anchor + heading for the dedicated AI Setup group (the five ai_config
+// detectors: skills, subagents, hooks/settings, MCP, cursor rules).
+const AI_SETUP_ANCHOR = 'ai-setup';
+
+const SEVERITY_ANCHOR: Record<IssueSeverity, string> = {
+  critical: 'issues-critical',
+  high: 'issues-high',
+  warning: 'issues-warning',
+  info: 'issues-info',
+};
+
+// Cap the "Files Scanned" enumeration so a large repo does not bury the report
+// under an unbounded list. The header still reports the true total; overflow is
+// summarised as "…and N more".
+const FILES_SCANNED_CAP = 50;
+
+/**
+ * One rendered issue group: a stable anchor, a display heading (with its own
+ * count), and the issues that belong to it, already sorted.
+ */
+type IssueGroup = {
+  anchor: string;
+  heading: string;
+  issues: PromptCiIssue[];
+};
+
+/**
+ * Partition issues into rendered groups: the five `ai_config` detectors get a
+ * dedicated "AI Setup" section first, then everything else is grouped by
+ * severity. Groups with no issues are omitted so the TOC only lists real
+ * sections. Ordering within each group reuses `sortedIssues` for stability.
+ */
+function buildIssueGroups(issues: PromptCiIssue[]): IssueGroup[] {
+  const groups: IssueGroup[] = [];
+
+  const aiSetup = sortedIssues(issues.filter((i) => i.category === 'ai_config'));
+  if (aiSetup.length > 0) {
+    groups.push({
+      anchor: AI_SETUP_ANCHOR,
+      heading: `🤖 AI Setup (${aiSetup.length})`,
+      issues: aiSetup,
+    });
+  }
+
+  const rest = issues.filter((i) => i.category !== 'ai_config');
+  const bySeverity = groupIssuesBySeverity(rest);
+  for (const sev of ['critical', 'high', 'warning', 'info'] as IssueSeverity[]) {
+    const list = sortedIssues(bySeverity.get(sev)!);
+    if (list.length === 0) continue;
+    groups.push({
+      anchor: SEVERITY_ANCHOR[sev],
+      heading: `${SEVERITY_EMOJI[sev]} ${SEVERITY_TITLE[sev]} (${list.length})`,
+      issues: list,
+    });
+  }
+
+  return groups;
+}
 
 /**
  * Return a path relative to repoPath for display in reports.
@@ -152,21 +220,16 @@ function sortedIssues(issues: PromptCiIssue[]): PromptCiIssue[] {
   });
 }
 
-/**
- * Truncate evidence strings so the report stays readable.
- * Evidence items are often normalised section blobs — 100 chars is enough.
- */
-function truncateEvidence(ev: string, maxLen = 100): string {
-  const single = ev.replace(/\s+/g, ' ').trim();
-  return single.length <= maxLen ? single : `${single.slice(0, maxLen)}…`;
-}
-
 function renderIssue(issue: PromptCiIssue, idx: number, rel: (p: string) => string): string {
   const emoji = SEVERITY_EMOJI[issue.severity];
   const label = SEVERITY_LABEL[issue.severity];
   const lines: string[] = [];
 
-  lines.push(`### ${idx}. ${emoji} [${label}] ${issue.title}`);
+  lines.push(`#### ${idx}. ${emoji} [${label}] ${issue.title}`);
+  lines.push('');
+  // Render the stable issue id so suppression / baseline workflows can copy it
+  // straight out of the markdown report (it previously lived only in report.json).
+  lines.push(`**ID:** \`${issue.id}\``);
   lines.push('');
   lines.push(`${issue.summary}`);
   lines.push('');
@@ -193,7 +256,8 @@ function renderIssue(issue: PromptCiIssue, idx: number, rel: (p: string) => stri
   if (issue.evidence.length > 0) {
     lines.push('**Evidence:**');
     for (const ev of issue.evidence) {
-      lines.push(`- ${truncateEvidence(ev)}`);
+      // Evidence items are often normalised section blobs — 100 chars is enough.
+      lines.push(`- ${snippet(ev, 100)}`);
     }
     lines.push('');
   }
@@ -313,13 +377,26 @@ export function generateMarkdownReport(report: ScanReport): string {
     lines.push('## Issues');
     lines.push('');
 
-    const ordered = sortedIssues(issues);
-    ordered.forEach((issue, i) => {
-      lines.push(renderIssue(issue, i + 1, rel));
+    const groups = buildIssueGroups(issues);
+
+    // Mini table of contents — jump links to each non-empty group.
+    lines.push(`**Jump to:** ${groups.map((g) => `[${g.heading}](#${g.anchor})`).join(' · ')}`);
+    lines.push('');
+
+    for (const group of groups) {
+      // Explicit anchor so the TOC links resolve regardless of how a given
+      // markdown renderer slugifies emoji/parenthesised headings.
+      lines.push(`<a id="${group.anchor}"></a>`);
       lines.push('');
-      lines.push('---');
+      lines.push(`### ${group.heading}`);
       lines.push('');
-    });
+      group.issues.forEach((issue, i) => {
+        lines.push(renderIssue(issue, i + 1, rel));
+        lines.push('');
+        lines.push('---');
+        lines.push('');
+      });
+    }
   }
 
   // Suppressed issues
@@ -343,12 +420,18 @@ export function generateMarkdownReport(report: ScanReport): string {
     lines.push('');
   }
 
-  // Files scanned
+  // Files scanned — capped so a large repo doesn't bury the report; the header
+  // already carries the true total.
   if (filesScanned.length > 0) {
     lines.push('## Files Scanned');
     lines.push('');
-    for (const f of filesScanned) {
+    const shown = filesScanned.slice(0, FILES_SCANNED_CAP);
+    for (const f of shown) {
       lines.push(`- \`${rel(f.path)}\` (${f.fileType}, ${f.lineCount} lines, ~${f.estimatedTokens} tokens)`);
+    }
+    const overflow = filesScanned.length - shown.length;
+    if (overflow > 0) {
+      lines.push(`- …and ${overflow} more`);
     }
     lines.push('');
   }
@@ -357,7 +440,8 @@ export function generateMarkdownReport(report: ScanReport): string {
   lines.push('---');
   lines.push(
     '> Findings are heuristic. Review each item before acting. ' +
-      'This report identifies patterns — it does not auto-fix.',
+      'Some can be applied automatically with `promptci fix`; others are advisory ' +
+      'and must be edited by hand.',
   );
   lines.push('');
   lines.push('*Generated by [PromptCI](https://github.com/SeriousGeese/PromptCI)*');

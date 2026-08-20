@@ -120,7 +120,7 @@ export async function applyFixRecipe(
   // 4. Duplicate Markdown Section Consolidation
   if (issue.category === 'duplicate' && issue.locations.length >= 2) {
     // 4a. Identify canonical path: AGENTS.md preferred, otherwise the first in location list
-    let canonicalLoc = issue.locations.find(loc => 
+    let canonicalLoc = issue.locations.find(loc =>
       path.basename(loc.filePath).toLowerCase() === 'agents.md'
     );
     if (!canonicalLoc) {
@@ -129,11 +129,21 @@ export async function applyFixRecipe(
     const canonicalPath = resolveSafePath(repoRoot, canonicalLoc.filePath);
     const canonicalBase = path.basename(canonicalPath);
 
-    // 4b. In all other files containing duplicates, replace the section body with a pointer link
+    // 4b. Group the non-canonical locations by file. A single file can contain
+    // the duplicated section more than once; computing one FileChange per
+    // location from the original content and writing them in sequence would
+    // clobber all but the last, so each file is rewritten exactly once with
+    // every one of its duplicate ranges replaced (BUG: same-file collision).
+    const byFile = new Map<string, Array<{ startLine?: number; endLine?: number }>>();
     for (const loc of issue.locations) {
       const filePath = resolveSafePath(repoRoot, loc.filePath);
       if (filePath === canonicalPath) continue; // skip canonical file
+      const list = byFile.get(filePath) ?? [];
+      list.push(loc);
+      byFile.set(filePath, list);
+    }
 
+    for (const [filePath, locs] of byFile) {
       let content: string;
       try {
         content = await fs.readFile(filePath, 'utf-8');
@@ -142,51 +152,57 @@ export async function applyFixRecipe(
       }
 
       const lines = content.split(/\r?\n/);
-      const hasCRLF = content.includes('\r\n');
-      const lineEnding = hasCRLF ? '\r\n' : '\n';
+      const lineEnding = content.includes('\r\n') ? '\r\n' : '\n';
 
-      const startIdx = (loc.startLine ?? 1) - 1;
-      const endIdx = (loc.endLine ?? lines.length) - 1;
-
-      // Find relative path from current file to canonical file for clean Markdown links
+      // Relative path from this file to the canonical file for a clean link.
       const relPath = path.relative(path.dirname(filePath), canonicalPath).replace(/\\/g, '/');
       const linkTarget = relPath.startsWith('.') ? relPath : `./${relPath}`;
-
-      // Extract the section lines
-      const sectionLines = lines.slice(startIdx, endIdx + 1);
-      
-      let headingLine = '';
-      let replaceStartIdx = startIdx;
-
-      // Check if the section starts with a heading line (e.g. "## Deployment")
-      // If so, we preserve the heading and replace only the body below it.
-      if (sectionLines.length > 0 && sectionLines[0].trim().startsWith('#')) {
-        headingLine = sectionLines[0];
-        replaceStartIdx = startIdx + 1;
-      }
-
       const pointerText = `See canonical instructions in [${canonicalBase}](${linkTarget}) for details.`;
-      
-      // Construct the new lines
-      const prefixLines = lines.slice(0, replaceStartIdx);
-      const suffixLines = lines.slice(endIdx + 1);
-      
-      let newSectionContent: string[];
-      if (headingLine) {
-        newSectionContent = [pointerText];
-      } else {
-        newSectionContent = [pointerText];
+
+      // Replace each duplicate range bottom-up so an earlier (higher-line)
+      // replacement never shifts the indices of ranges still to be processed.
+      const ranges = locs
+        .map(loc => ({
+          startIdx: (loc.startLine ?? 1) - 1,
+          endIdx: (loc.endLine ?? lines.length) - 1,
+        }))
+        .sort((a, b) => b.startIdx - a.startIdx);
+
+      let working = lines;
+      for (const { startIdx, endIdx } of ranges) {
+        const sectionLines = working.slice(startIdx, endIdx + 1);
+        // Preserve a leading heading line (e.g. "## Deployment") and replace
+        // only the body below it; otherwise replace the whole range.
+        const hasHeading = sectionLines.length > 0 && sectionLines[0].trim().startsWith('#');
+        const replaceStartIdx = hasHeading ? startIdx + 1 : startIdx;
+        working = [
+          ...working.slice(0, replaceStartIdx),
+          pointerText,
+          ...working.slice(endIdx + 1),
+        ];
       }
 
-      const finalLines = [...prefixLines, ...newSectionContent, ...suffixLines];
-      
       changes.push({
         filePath,
         originalContent: content,
-        newContent: finalLines.join(lineEnding),
+        newContent: working.join(lineEnding),
       });
     }
   }
 
   return changes;
+}
+
+/**
+ * True when `promptci fix` may mechanically apply this issue's recipe.
+ *
+ * Driven by the explicit `autoApplySafe` flag the emitting detector sets — it is
+ * deliberately NOT `Boolean(issue.fixRecipe)`. Most `fixRecipe` strings are
+ * advisory prose that needs human judgment (stale years, framework/runtime
+ * guidance, agent-practices), and auto-applying them would corrupt files. Only
+ * the handful of recipes that `applyFixRecipe` implements as a mechanical,
+ * reversible edit are marked safe at their source.
+ */
+export function isRepairable(issue: PromptCiIssue): boolean {
+  return issue.autoApplySafe === true;
 }

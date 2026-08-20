@@ -8,8 +8,8 @@ sign-off — read [CONTRIBUTING.md](CONTRIBUTING.md); this file does not repeat 
 ## What this repo is
 
 PromptCI is a deterministic, rule-based scanner for AI coding instruction files. It makes no
-LLM calls and no network requests, and it must produce identical output for identical input.
-Two pnpm workspace packages do the work:
+LLM calls, makes no network request other than a best-effort daily npm version check, and must
+produce identical output for identical input. Two pnpm workspace packages do the work:
 
 - `packages/core` (`@promptci/core`) — the scanner engine: detectors, scoring, report generation.
 - `packages/cli` (`@promptci/cli`) — the `promptci` command-line entrypoint.
@@ -38,11 +38,13 @@ reference documentation.
 
 ## Determinism is the core constraint
 
-Detectors are rule-based. No LLM calls, no network, no clock or randomness in detector code — the
-same input must always produce the same report. (`callLlm` in core is an optional helper for
-downstream consumers; nothing in the scan pipeline may call it.) Every detector change needs a
-fixture under `examples/` that triggers it and a case that must stay clean, and findings must be
-worded cautiously — "possible conflict", not a certainty.
+Detectors are rule-based. Nothing in this repo calls an LLM, period — there is no model client,
+no auth, and no upload code in the package. No network, no clock, and no randomness in detector
+code either, so the same input always produces the same report. (The one deliberate exception is
+the best-effort, once-a-day npm version check in the CLI, which never affects scan output and is
+opt-out via `CI` / `NO_UPDATE_NOTIFIER` / `PROMPTCI_NO_UPDATE_NOTIFIER`.) Every detector change
+needs a fixture under `examples/` that triggers it and a case that must stay clean, and findings
+must be worded cautiously — "possible conflict", not a certainty.
 
 ## PromptCI scans itself
 

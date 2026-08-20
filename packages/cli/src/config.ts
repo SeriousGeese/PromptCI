@@ -8,7 +8,6 @@ export type CliConfig = {
   exclude?: string[];
   severityThreshold?: IssueSeverity;
   projectType?: ProjectType;
-  apiUrl?: string;
   contextBudget?: number;
   fileContextBudget?: number;
   vagueGuidanceSeverity?: 'info' | 'warning';
@@ -73,11 +72,6 @@ export async function loadConfig(scanPath: string): Promise<CliConfig> {
     if (!isProjectType(obj.projectType))
       throw new Error(`config.projectType must be one of: ${VALID_PROJECT_TYPES.join(', ')}`);
     config.projectType = obj.projectType;
-  }
-  if ('apiUrl' in obj) {
-    if (typeof obj.apiUrl !== 'string')
-      throw new Error(`config.apiUrl must be a string`);
-    config.apiUrl = obj.apiUrl;
   }
   if ('contextBudget' in obj) {
     if (typeof obj.contextBudget !== 'number' || obj.contextBudget <= 0)

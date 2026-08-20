@@ -176,6 +176,68 @@ describe('generateMarkdownReport', () => {
     expect(md.toLowerCase()).toContain('review');
   });
 
+  it('renders each issue with its ID', () => {
+    const issue = makeIssue({ id: 'duplicate-deadbeef1234' });
+    const md = generateMarkdownReport(makeReport({ issues: [issue] }));
+    expect(md).toContain('**ID:** `duplicate-deadbeef1234`');
+  });
+
+  it('groups issues with a per-group count and a mini table of contents', () => {
+    const md = generateMarkdownReport(
+      makeReport({
+        issues: [
+          makeIssue({ id: 'a', severity: 'high', category: 'duplicate', title: 'Dup' }),
+          makeIssue({ id: 'b', severity: 'warning', category: 'stale_instruction', title: 'Stale 1' }),
+          makeIssue({ id: 'c', severity: 'warning', category: 'stale_instruction', title: 'Stale 2' }),
+        ],
+      }),
+    );
+    // Mini TOC with jump links
+    expect(md).toContain('**Jump to:**');
+    expect(md).toContain('(#issues-high)');
+    expect(md).toContain('(#issues-warning)');
+    // Group headings with counts and anchors
+    expect(md).toContain('<a id="issues-high"></a>');
+    expect(md).toContain('### 🟠 High (1)');
+    expect(md).toContain('<a id="issues-warning"></a>');
+    expect(md).toContain('### 🟡 Warning (2)');
+  });
+
+  it('gives the ai_config detectors a dedicated AI Setup section', () => {
+    const md = generateMarkdownReport(
+      makeReport({
+        issues: [
+          makeIssue({ id: 'skill-1', category: 'ai_config', severity: 'high', title: 'Skill issue' }),
+          makeIssue({ id: 'dup-1', category: 'duplicate', severity: 'high', title: 'Dup issue' }),
+        ],
+      }),
+    );
+    expect(md).toContain('<a id="ai-setup"></a>');
+    expect(md).toContain('### 🤖 AI Setup (1)');
+    expect(md).toContain('(#ai-setup)');
+    // The AI Setup group is listed before the severity groups in the TOC.
+    expect(md.indexOf('(#ai-setup)')).toBeLessThan(md.indexOf('(#issues-high)'));
+    // ai_config issues are NOT duplicated into the severity groups.
+    expect(md).toContain('### 🟠 High (1)');
+  });
+
+  it('caps the Files Scanned list and notes the overflow count', () => {
+    const files = Array.from({ length: 62 }, (_, i) =>
+      makeFile({ path: `/repo/file-${i}.md` }),
+    );
+    const md = generateMarkdownReport(makeReport({ repoPath: '/repo', filesScanned: files }));
+    expect(md).toContain('**Files scanned:** 62'); // header keeps the true total
+    expect(md).toContain('- …and 12 more'); // 62 - 50 cap
+    expect(md).toContain('`file-0.md`');
+    expect(md).not.toContain('`file-50.md`'); // beyond the cap
+  });
+
+  it('footer reflects that promptci fix exists and drops the "does not auto-fix" claim', () => {
+    const md = generateMarkdownReport(makeReport());
+    expect(md).toContain('promptci fix');
+    expect(md).not.toContain('it does not auto-fix');
+  });
+
   it('produces valid output for a completely empty scan (no files, no issues)', () => {
     const report = makeReport({ filesScanned: [], issues: [], topFixes: [], healthScore: 100 });
     const md = generateMarkdownReport(report);

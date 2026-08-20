@@ -345,6 +345,9 @@ export function detectSecurityPack(context: RepoContext): PromptCiIssue[] {
         '\n\nUse `.promptci/*` rather than `.promptci/` — git does not descend into an ignored ' +
         'directory, so the `!` negations only work against the directory\'s contents.',
       fixRecipe: PROMPTCI_GITIGNORE_BLOCK,
+      // `applyFixRecipe` appends the baseline-preserving stanza deterministically
+      // — a mechanical, reversible edit, so `promptci fix` may auto-apply it.
+      autoApplySafe: true,
       confidence: 0.9,
     });
   }
@@ -382,6 +385,9 @@ export function detectSecurityPack(context: RepoContext): PromptCiIssue[] {
       evidence: unignoredDirs.map((d) => `Directory "${d}" exists but is not ignored in .gitignore.`),
       recommendation: `Add generated directories to .gitignore. For example: "${unignoredDirs.map((d) => `${d}/`).join(', ')}"`,
       fixRecipe: unignoredDirs.map((d) => `echo "${d}/" >> .gitignore`).join('\n'),
+      // `applyFixRecipe` appends each missing directory to .gitignore — a
+      // mechanical, reversible edit, so `promptci fix` may auto-apply it.
+      autoApplySafe: true,
       confidence: 0.8,
     });
   }

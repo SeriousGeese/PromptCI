@@ -5,8 +5,7 @@ scoring, and report generation for AI coding instruction files (`CLAUDE.md`, `AG
 `.cursorrules`, Copilot instructions, and more).
 
 Deterministic and rule-based — no LLM calls, no network access, identical output for
-identical input. `callLlm` is exported as an optional helper for callers that layer LLM
-features on top; the scanner itself never uses it.
+identical input. The package contains no model client, auth, or upload code.
 
 ## Usage
 

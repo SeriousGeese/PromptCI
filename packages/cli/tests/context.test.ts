@@ -119,7 +119,8 @@ describe('runContextOptimize', () => {
     await runContextOptimize({ scanPath: tmpDir, dryRun: true });
 
     expect(stdoutOutput).toContain('Proposed caching optimization changes');
-    expect(stdoutOutput).toContain('would be rewritten');
+    expect(stdoutOutput).toContain('No changes written');
+    expect(stdoutOutput).not.toContain('Applied change to');
 
     // original file should not have been updated on disk
     const content = await fs.readFile(path.join(tmpDir, 'AGENTS.md'), 'utf-8');
@@ -199,5 +200,41 @@ describe('runContextOptimize', () => {
     const newContent = await fs.readFile(path.join(tmpDir, 'Docs', 'tasks.md'), 'utf-8');
     expect(newContent).toContain('# Tasks');
     expect(newContent).toContain('Current Branch: main');
+  });
+
+  // A declined confirmation must leave every file untouched — the whole point of
+  // routing --write through the shared confirm helper.
+  it('leaves files untouched when the confirmation is declined', async () => {
+    await fs.writeFile(path.join(tmpDir, 'AGENTS.md'), VOLATILE_AGENTS_MD, 'utf-8');
+
+    const { runContextOptimize } = await import('../src/commands/context.js');
+    await runContextOptimize({ scanPath: tmpDir, write: true, interactive: true, answers: ['n'] });
+
+    expect(stdoutOutput).toContain('Skipped.');
+    expect(stdoutOutput).not.toContain('Applied change to');
+    expect(stdoutOutput).toContain('No changes applied.');
+
+    const content = await fs.readFile(path.join(tmpDir, 'AGENTS.md'), 'utf-8');
+    expect(content).toBe(VOLATILE_AGENTS_MD);
+
+    const docsFileExists = await fs
+      .access(path.join(tmpDir, 'Docs', 'tasks.md'))
+      .then(() => true)
+      .catch(() => false);
+    expect(docsFileExists).toBe(false);
+  });
+
+  // With no TTY and no --no-interactive, a confirmation prompt would block
+  // forever; the shared helper errors clearly instead of hanging.
+  it('errors instead of hanging when interactive with no TTY', async () => {
+    await fs.writeFile(path.join(tmpDir, 'AGENTS.md'), VOLATILE_AGENTS_MD, 'utf-8');
+
+    const { runContextOptimize } = await import('../src/commands/context.js');
+    await expect(
+      runContextOptimize({ scanPath: tmpDir, write: true, interactive: true, isTTY: false }),
+    ).rejects.toThrow('process.exit(1)');
+
+    const content = await fs.readFile(path.join(tmpDir, 'AGENTS.md'), 'utf-8');
+    expect(content).toBe(VOLATILE_AGENTS_MD);
   });
 });

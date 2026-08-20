@@ -22,7 +22,7 @@ Common commands:
 ```bash
 npx @promptci/cli scan --path /path/to/repo   # scan a specific repo
 npx @promptci/cli init                        # create .promptci/config.json
-npx @promptci/cli explain                     # explain findings (BYO OpenAI/Anthropic key)
+npx @promptci/cli fix                         # apply deterministic fix recipes
 npx @promptci/cli review-diff --base origin/main   # CI: fail on instruction regressions
 ```
 
