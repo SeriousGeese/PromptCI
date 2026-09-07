@@ -126,6 +126,11 @@ LABEL_LOOKUP_FAILED='<label lookup failed>'
 # decision actually used, rather than re-querying and quietly disagreeing with it.
 HOLD_LABEL=""
 
+# Set by review_llm when EVERY tier was skipped for a missing API key, i.e. no
+# call was attempted. Distinct from "all tiers failed": nothing was tried, so
+# there is no reviewer verdict to report and nothing to go red about.
+LLM_NO_CREDENTIALS=false
+
 # Which LLM tier actually produced the review (set by review_llm)
 LLM_USED_TIER="none"
 LLM_USED_MODEL="none"
@@ -468,6 +473,11 @@ sys.exit(0 if c and c.strip() else 1)
 review_llm() {
   local system_prompt="$1" user_content="$2"
   local tier name endpoint model key json_mode json
+  # Did any tier actually get as far as an HTTP call? A tier skipped for a missing
+  # key has NOT reviewed and NOT failed — those are different outcomes and the
+  # caller must be able to tell them apart. See LLM_NO_CREDENTIALS below.
+  local attempted=false
+  LLM_NO_CREDENTIALS=false
 
   # tier format: name|endpoint|model|api_key|json_mode
   local -a tiers=(
@@ -483,6 +493,7 @@ review_llm() {
           log "  Tier '${name}' (${model}): skipped — OPENROUTER_API_KEY not set"
           continue
         fi
+        attempted=true
         ;;
     esac
 
@@ -529,6 +540,14 @@ except Exception:
     pass
 " "$(python_path "$RESPONSE_FILE")" 2>/dev/null | while IFS= read -r line; do log "    | ${line}"; done
   done
+
+  # Every tier was skipped for a missing key — no call was made, so nothing
+  # failed. Report that distinctly; the caller turns it into a clean skip rather
+  # than a red "review failed on every tier".
+  if [ "$attempted" = "false" ]; then
+    LLM_NO_CREDENTIALS=true
+    log "  No LLM credentials available in this context — no tier was attempted."
+  fi
 
   return 1
 }
@@ -1088,6 +1107,22 @@ main() {
   local qg_failure_context=""
   local automerge_eligible=false
 
+  # Dependabot short-circuit. auto-merge.yml (GitHub-hosted, LLM-free) is the merge
+  # authority for Dependabot PRs — the comment above is_automerge_author has said so
+  # since this stack was ported, but the code to act on it was never written, and the
+  # consequence was not cosmetic: a `pull_request` run triggered by Dependabot gets NO
+  # Actions secrets, so OPENROUTER_API_KEY arrives empty, every tier is skipped, and
+  # the run exits 1. Every recent Dependabot PR here failed this way — a red check on
+  # the majority of this repo's PRs, reporting a review that never happened.
+  #
+  # Reviewing them is not wanted anyway: it would burn an OpenRouter call per lockfile
+  # bump and risk two merge authorities racing. Exit clean, before any LLM call.
+  if [ "$PR_AUTHOR" = "dependabot[bot]" ] && ! is_automerge_author; then
+    log "PR #${PR_NUMBER} is a Dependabot PR — auto-merge.yml owns it. Skipping LLM review."
+    echo "result=skipped_dependabot" >> "$GITHUB_OUTPUT" 2>/dev/null || true
+    exit 0
+  fi
+
   if is_automerge_author; then
     automerge_eligible=true
   fi
@@ -1290,6 +1325,14 @@ ${qg_failure_context}"
     fi
 
     if ! review_llm "$SYSTEM_PROMPT" "$user_content"; then
+      # No credentials is not a failed review — nothing was attempted. Going red
+      # here would claim the reviewer ran and found the PR wanting, which is the
+      # opposite of what happened, and it is a state a PR author cannot fix.
+      if [ "${LLM_NO_CREDENTIALS:-false}" = "true" ]; then
+        log "No LLM credentials in this context — skipping the review cleanly."
+        CONVERGE_ATTEMPTS="$(echo "$CONVERGE_ATTEMPTS" | jq '. += [{"check":"llm","result":"no_credentials"}]' 2>/dev/null || true)"
+        finish "ℹ️ No LLM credentials were available to this run, so no review was performed. This is a configuration state, not a finding about this PR — \`OPENROUTER_API_KEY\` is not exposed to every workflow context (a Dependabot-triggered run gets no Actions secrets, for instance). CI still gates this PR normally." "no_llm_credentials" "$iterations"
+      fi
       log "All LLM tiers failed — review cannot complete"
       CONVERGE_ATTEMPTS="$(echo "$CONVERGE_ATTEMPTS" | jq '. += [{"check":"llm","result":"all_tiers_failed"}]' 2>/dev/null || true)"
       review_failed=true
