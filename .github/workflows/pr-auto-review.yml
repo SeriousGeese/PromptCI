@@ -45,7 +45,7 @@ permissions:
 jobs:
   review-and-merge:
     name: 🤖 Auto-Review PR #${{ github.event.pull_request.number || inputs.pr_number }}
-    # Two gates:
+    # Three gates:
     #  - !draft: drafts are reviewed when marked ready (see trigger types).
     #  - same-repo: this is a PUBLIC repo and the job runs on a self-hosted
     #    runner — fork PRs must NEVER execute here. Fork authors aren't in the
@@ -53,7 +53,15 @@ jobs:
     #    inspecting it and, if desired, pushing its commits to an internal
     #    branch. On workflow_dispatch github.event.pull_request is null, so
     #    both checks pass and the Resolve step below re-validates.
-    if: ${{ !github.event.pull_request.draft && (github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    #  - not-Dependabot: auto-merge.yml owns those PRs. pr-review.sh also
+    #    short-circuits on them, so this gate is not what makes the behaviour
+    #    correct — it just stops a self-hosted runner slot being claimed and
+    #    a checkout being made to reach that conclusion. Dependabot is the
+    #    bulk of this repo's PR traffic and there is one runner, so the
+    #    head-of-line blocking is the point. Deliberately NOT applied to
+    #    workflow_dispatch: a human dispatching a re-review on a Dependabot
+    #    PR should reach the script and get its reasoned skip in the log.
+    if: ${{ !github.event.pull_request.draft && (github.event_name == 'workflow_dispatch' || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]')) }}
     runs-on: [self-hosted, pr-review]
     timeout-minutes: 90
     env:
