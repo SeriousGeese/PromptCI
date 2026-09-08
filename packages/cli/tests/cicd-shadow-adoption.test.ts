@@ -234,6 +234,61 @@ describe('the shadow workflow', () => {
     expect(shadowYml).toMatch(/steps\.checkout\.outputs\.skip != 'true'/);
   });
 
+  it('resolves PR context through `gh api`, not `gh pr view --json`', () => {
+    // The field list `gh pr view --json` accepts is baked into the gh BINARY,
+    // and the runner fleet is heterogeneous. The exact command that works on
+    // PromptCI's runner failed on promptci-cloud's with
+    //     Unknown JSON field: "baseRefOid"
+    // because that runner's gh predates the field. The REST payload is
+    // versioned by GitHub rather than by whichever gh a runner happens to have.
+    expect(shadowYml).toMatch(/\$GH_CLI api "repos\/\$\{REPO\}\/pulls\/\$\{PR_NUMBER\}"/);
+    // Matched against COMMAND lines only. An unanchored search also hits the
+    // comment above, which names `gh pr view --json` precisely to say why it is
+    // not used — and a test that forbids explaining a decision is a test that
+    // gets the explanation deleted.
+    const commands = shadowYml
+      .split('\n')
+      .filter((l) => !/^\s*#/.test(l))
+      .join('\n');
+    expect(commands).not.toMatch(/\bpr view\b/);
+    // Same reason as above: the comment quotes the exact error text
+    // (`Unknown JSON field: "baseRefOid"`), which is the most useful thing it
+    // could say. Only the commands are checked.
+    expect(commands).not.toContain('baseRefOid');
+    expect(commands).not.toContain('headRefOid');
+  });
+
+  it('distinguishes MERGED from CLOSED the way the REST payload spells it', () => {
+    // REST `state` is only open/closed; `merged` is a separate boolean. Reading
+    // `state` alone would classify every merged PR as CLOSED and skip exactly
+    // the population this shadow was changed to include.
+    expect(shadowYml).toMatch(/MERGED="\$\(echo "\$PR_JSON" \| jq -r '\.merged'\)"/);
+    expect(shadowYml).toMatch(/if \[ "\$MERGED" = "true" \]; then STATE=MERGED/);
+  });
+
+  it('posts a comment ONLY when the review step itself succeeded', () => {
+    // The guard was `always() && <two skip outputs> != 'true'`. A step that
+    // FAILS sets neither output, so when "Resolve PR context" died the comment
+    // step still ran, found no comment path, and fell back to
+    // /tmp/pr-review-comment-<n>.md — a path the INCUMBENT reviewer writes on
+    // the same runner. The shadow posted the incumbent's comment under a shadow
+    // banner and the two "agreed" perfectly, about a review the shadow never
+    // performed.
+    //
+    // A comparison harness that fabricates agreement is worse than one that
+    // crashes: nothing about it looks wrong. Observed on promptci-cloud run
+    // 34252901734.
+    expect(shadowYml).toMatch(/if: \$\{\{ steps\.review\.conclusion == 'success' \}\}/);
+  });
+
+  it('has no fallback comment path that another workflow also writes', () => {
+    // The second half of the same fix, asserted separately: even with the guard
+    // right, a shared default path is a loaded gun. There is exactly one source
+    // for the comment — the review step's own output.
+    expect(shadowYml).not.toContain('${COMMENT_PATH:-/tmp/pr-review-comment-');
+    expect(shadowYml).toContain('path="${COMMENT_PATH:-}"');
+  });
+
   it('labels its comment as advisory', () => {
     // A reviewer comment that reads as authoritative but decides nothing is
     // worse than no shadow at all.
