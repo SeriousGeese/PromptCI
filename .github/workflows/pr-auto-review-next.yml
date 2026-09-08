@@ -1,0 +1,230 @@
+name: PR Auto-Review (next, shadow)
+# SHADOW RUN of the shared review engine in SeriousGeese/CICD, alongside the
+# incumbent scripts/pr-review.sh in pr-auto-review.yml. Both review every
+# non-Dependabot PR; neither this job nor its comment gates anything.
+#
+# WHY A SHADOW AT ALL. The engine is a merge of three repos' independently
+# evolved copies of one script. `bash -n` and a unit suite cannot tell you
+# whether it reaches the same VERDICT as the script it replaces on this repo's
+# real PRs against the live GitHub API — only running both on the same PR can.
+#
+# WHAT "MATCHES" MEANS, so the comparison is not decided after the fact. These
+# must agree between the two comments:
+#   - the verdict (approve / request changes / block) and its stated reason
+#   - the list of findings, and which of them the reviewer proposed fixes for
+#   - the CI classification (which checks it considered required, and their state)
+#   - the metadata block: model tier, iteration count, files reviewed
+#
+# These are EXPECTED to differ, and are not divergences:
+#   - anything the engine reports as "would push / would merge; not doing it".
+#     CICD_DRY_RUN suppresses every mutating action (merge_pr, push_review_commits
+#     and review_may_apply_fixes each check it independently), so the shadow
+#     cannot converge on a fix the way the incumbent does — it reports the fix it
+#     would have applied instead of applying it.
+#   - LLM prose. The two runs are separate non-deterministic calls to the same
+#     model; differing wording of the same finding is not a config bug. Differing
+#     FINDINGS are.
+#
+# EXIT CRITERIA: ~10 non-Dependabot PRs with no unexplained divergence. Then
+# pr-auto-review.yml is pointed at the same action (with dry-run off and the
+# allowlist restored) and this file is deleted. scripts/pr-review.sh stays on
+# disk and working until two clean weeks have passed after that — rollback is
+# reverting one workflow file, with nothing else in the repo changed.
+#
+# Tracked as pcic-dvs in promptci-cloud's bead tracker (this repo uses GitHub
+# Issues; the CICD consolidation is tracked where the work was planned).
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: PR number to review
+        required: true
+        type: string
+
+# Distinct from the incumbent's `pr-review-<n>` group ON PURPOSE. Sharing it
+# would make each new event cancel the other workflow's in-flight run
+# (cancel-in-progress is per group, not per workflow), so the two would take
+# turns being killed and the comparison would never produce two comments for the
+# same SHA.
+concurrency:
+  group: pr-review-next-${{ github.event.pull_request.number || inputs.pr_number }}
+  cancel-in-progress: true
+
+# Deliberately NARROWER than the incumbent's. A shadow observes; it does not
+# write to the repo, so it gets no `contents: write` and no `actions: write`.
+# The engine's mutating paths are already suppressed by dry-run — this makes the
+# token itself incapable of the writes, which is the guarantee that does not
+# depend on a flag being read correctly.
+permissions:
+  contents: read
+  pull-requests: write
+  checks: read
+  statuses: read
+
+jobs:
+  shadow-review:
+    # The name MUST start with "🤖 Auto-Review". Both review engines exclude
+    # their own check run from CI by exactly that name prefix
+    # (ci-status.jq and scripts/pr-review.sh's inline jq both use
+    # `startswith("🤖 Auto-Review")`), and neither has any other way to tell a
+    # reviewer's check run from a CI one.
+    #
+    # A name outside the prefix DEADLOCKS the pair, which is not obvious and was
+    # observed: this job's queued check run is an ordinary in-progress CI check
+    # to the incumbent, so the incumbent waits for it — while it sits queued
+    # behind the incumbent on the single `pr-review` runner. The incumbent then
+    # burns its full 1800s poll and reports `blocked_infra` on a PR whose CI is
+    # green. The shadow direction is fine, which is what makes it easy to miss:
+    # the incumbent's own check run IS excluded, so only one side hangs.
+    #
+    # Hence the ugly name. The 🕶️ lives in the comment banner, where it can be
+    # distinctive without being load-bearing.
+    name: 🤖 Auto-Review (shadow) PR #${{ github.event.pull_request.number || inputs.pr_number }}
+    # Same three gates as the incumbent, and they must STAY the same: a shadow
+    # that reviews a different set of PRs than the thing it shadows is not a
+    # comparison. See pr-auto-review.yml for what each one is for.
+    if: ${{ !github.event.pull_request.draft && (github.event_name == 'workflow_dispatch' || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]')) }}
+    runs-on: [self-hosted, pr-review]
+    # Half the incumbent's 90. There is one `pr-review` runner and this job now
+    # competes with the real reviewer for it; a shadow must never be the reason a
+    # real review sits in the queue. A shadow that times out is a data point, not
+    # an incident.
+    timeout-minutes: 45
+    env:
+      PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
+      REPO: ${{ github.repository }}
+      # Separate from the incumbent's `_work-<n>`. Sharing it would have one run
+      # rm -rf the other's live checkout in the prune step.
+      WORK_DIR: "${{ github.workspace }}/_work-next-${{ github.event.pull_request.number || inputs.pr_number }}"
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+      # Must be first: every later step shells out to $GH_CLI.
+      - uses: SeriousGeese/CICD/actions/resolve-gh@873eba4d70c4d2af4c3d31eb3c8f6793ae7b1b2c # main @ 2026-09-08
+        with:
+          hint: ${{ vars.GH_CLI_PATH }}
+
+      - name: Resolve PR context
+        id: resolve
+        shell: bash
+        run: |
+          set -euo pipefail
+          PR_JSON="$($GH_CLI pr view "$PR_NUMBER" --repo "$REPO" \
+            --json number,headRefName,baseRefName,title,body,author,url,isDraft,state,headRefOid,baseRefOid,headRepository,headRepositoryOwner)"
+
+          STATE="$(echo "$PR_JSON" | jq -r '.state')"
+          IS_DRAFT="$(echo "$PR_JSON" | jq -r '.isDraft')"
+          HEAD_REPO="$(echo "$PR_JSON" | jq -r '(.headRepositoryOwner.login // "") + "/" + (.headRepository.name // "")')"
+
+          # Re-checked here rather than trusted from the job `if`, which cannot
+          # see draft state or head repo on the workflow_dispatch path. A fork
+          # PR must never be reviewed on a self-hosted runner.
+          if [ "$STATE" != "OPEN" ] || [ "$IS_DRAFT" = "true" ] || [ "$HEAD_REPO" != "$REPO" ]; then
+            echo "PR #$PR_NUMBER state=$STATE draft=$IS_DRAFT head=$HEAD_REPO — nothing to shadow-review"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          {
+            echo "head_ref=$(echo "$PR_JSON" | jq -r '.headRefName')"
+            echo "base_ref=$(echo "$PR_JSON" | jq -r '.baseRefName')"
+            echo "author=$(echo "$PR_JSON" | jq -r '.author.login')"
+            echo "html_url=$(echo "$PR_JSON" | jq -r '.url')"
+            echo "head_sha=$(echo "$PR_JSON" | jq -r '.headRefOid')"
+            echo "base_sha=$(echo "$PR_JSON" | jq -r '.baseRefOid')"
+          } >> "$GITHUB_OUTPUT"
+
+          # Title and body are free-form and may contain any character; the
+          # delimiter form is the only safe one for them.
+          {
+            echo "title<<PR_FIELD_EOF"
+            echo "$PR_JSON" | jq -r '.title // ""'
+            echo "PR_FIELD_EOF"
+            echo "body<<PR_FIELD_EOF"
+            echo "$PR_JSON" | jq -r '.body // ""'
+            echo "PR_FIELD_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Checkout PR branch
+        id: checkout
+        if: ${{ steps.resolve.outputs.skip != 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Only this job's own path — never a blanket _work-* removal, which
+          # would destroy the incumbent's concurrently running checkout.
+          rm -rf "$WORK_DIR" 2>/dev/null || true
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" "$WORK_DIR" --no-checkout 2>&1
+          # A PR must not be able to run its own git hooks inside the reviewer.
+          rm -rf "$WORK_DIR/.git/hooks" 2>/dev/null || true
+          git -c core.hooksPath=/dev/null -C "$WORK_DIR" fetch origin \
+            "+refs/heads/${HEAD_REF}:refs/remotes/origin/${HEAD_REF}" 2>&1
+          git -c core.hooksPath=/dev/null -C "$WORK_DIR" checkout "origin/$HEAD_REF" 2>&1
+          echo "Cloned ${HEAD_REF} at $(git -C "$WORK_DIR" rev-parse HEAD)"
+        env:
+          HEAD_REF: ${{ steps.resolve.outputs.head_ref }}
+
+      - name: Shadow review
+        id: review
+        if: ${{ steps.resolve.outputs.skip != 'true' }}
+        uses: SeriousGeese/CICD/actions/pr-review@873eba4d70c4d2af4c3d31eb3c8f6793ae7b1b2c # main @ 2026-09-08
+        with:
+          pr-number: ${{ env.PR_NUMBER }}
+          pr-head-ref: ${{ steps.resolve.outputs.head_ref }}
+          pr-base-ref: ${{ steps.resolve.outputs.base_ref }}
+          pr-title: ${{ steps.resolve.outputs.title }}
+          pr-body: ${{ steps.resolve.outputs.body }}
+          pr-author: ${{ steps.resolve.outputs.author }}
+          pr-html-url: ${{ steps.resolve.outputs.html_url }}
+          head-sha: ${{ steps.resolve.outputs.head_sha }}
+          base-sha: ${{ steps.resolve.outputs.base_sha }}
+          repo: ${{ github.repository }}
+          work-dir: ${{ env.WORK_DIR }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          openrouter-api-key: ${{ secrets.OPENROUTER_API_KEY }}
+          openrouter-model: ${{ vars.OPENROUTER_MODEL }}
+          openrouter-fallback-model: ${{ vars.OPENROUTER_FALLBACK_MODEL }}
+          # EMPTY MEANS MERGE NOBODY. Not vars.AUTO_REVIEW_AUTOMERGE_AUTHORS —
+          # the shadow must reach the same verdict without being able to act on
+          # it. Restored when this becomes the real reviewer.
+          automerge-authors: ''
+          dry-run: 'true'
+          # Left unset so .cicd/config.env supplies it (false, for this repo's
+          # reasons — see that file). A non-empty value here would win over it.
+          # strict-skipped:
+
+      - name: Post shadow comment
+        if: ${{ always() && steps.resolve.outputs.skip != 'true' }}
+        shell: bash
+        env:
+          COMMENT_PATH: ${{ steps.review.outputs.comment-path }}
+          REVIEW_RESULT: ${{ steps.review.outputs.result }}
+        run: |
+          path="${COMMENT_PATH:-/tmp/pr-review-comment-${PR_NUMBER}.md}"
+          if [ ! -f "$path" ]; then
+            echo "No comment file at ${path} — the shadow produced no review (result=${REVIEW_RESULT:-none})"
+            exit 0
+          fi
+          # The banner is what makes the two comments distinguishable at a
+          # glance, and it says outright that this one decides nothing — a
+          # reviewer comment that looks authoritative but is not would be worse
+          # than no shadow at all.
+          {
+            echo "> 🕶️ **Shadow review — advisory only, decides nothing.**"
+            echo "> Produced by the shared engine in [SeriousGeese/CICD](https://github.com/SeriousGeese/CICD)"
+            echo "> running alongside this repo's \`scripts/pr-review.sh\`, in dry-run: it never pushes a fix"
+            echo "> and never merges. The review that counts is the one from **PR Auto-Review**."
+            echo "> Result: \`${REVIEW_RESULT:-unknown}\`"
+            echo
+            cat "$path"
+          } > /tmp/pr-review-shadow-${PR_NUMBER}.md
+          $GH_CLI pr comment "$PR_NUMBER" --repo "$REPO" --body-file "/tmp/pr-review-shadow-${PR_NUMBER}.md"
+
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: |
+          rm -rf "$WORK_DIR" 2>/dev/null || true
+          rm -f "/tmp/pr-review-shadow-${PR_NUMBER}.md" "/tmp/pr-review-comment-${PR_NUMBER}.md"
