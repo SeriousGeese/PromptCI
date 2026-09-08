@@ -311,3 +311,59 @@ describe('the shadow workflow', () => {
     expect(shadowYml).toContain('Shadow review — advisory only, decides nothing.');
   });
 });
+
+/**
+ * An unrecognised `permissions:` key does not warn — it INVALIDATES the workflow
+ * file. The run then fails with ZERO jobs and no annotation, which reads as a
+ * mysterious red check rather than a typo.
+ *
+ * This is not hypothetical: a first cut of DnD's workflow-push-restriction fix
+ * put `administration: read` in a permissions block — a GitHub App /
+ * fine-grained-PAT scope, not an Actions permission — and killed two runs that
+ * way before anyone worked out why.
+ *
+ * It lives here rather than in CICD because CICD ships composite actions, which
+ * have no permissions block at all. The workflow is the consumer's.
+ */
+describe('workflow permissions blocks name only real Actions keys', () => {
+  // GitHub's fixed set. Anything outside it invalidates the file.
+  const VALID = new Set([
+    'actions',
+    'attestations',
+    'checks',
+    'contents',
+    'deployments',
+    'discussions',
+    'id-token',
+    'issues',
+    'models',
+    'packages',
+    'pages',
+    'pull-requests',
+    'repository-projects',
+    'security-events',
+    'statuses',
+  ]);
+
+  for (const [label, yml] of [
+    ['the shadow workflow', () => shadowYml],
+    ['the incumbent workflow', () => incumbentYml],
+  ] as const) {
+    it(`${label} names no key outside GitHub's fixed set`, () => {
+      const wf = yml();
+      const start = wf.indexOf('\npermissions:');
+      expect(start, 'no permissions block found').toBeGreaterThan(-1);
+      const block = wf.slice(start + 1, wf.indexOf('\njobs:'));
+      const keys = block
+        .split('\n')
+        .slice(1)
+        .map((line) => /^\s{2}([a-z-]+):\s*(read|write|none)\s*$/.exec(line))
+        .filter((m): m is RegExpExecArray => m !== null)
+        .map((m) => m[1]);
+      expect(keys.length, 'no permission keys parsed — the block moved or the regex rotted').toBeGreaterThan(0);
+      expect(keys.filter((k) => !VALID.has(k))).toEqual([]);
+      // `administration` specifically — the one that has already bitten.
+      expect(block).not.toMatch(/^\s*administration:/m);
+    });
+  }
+});
