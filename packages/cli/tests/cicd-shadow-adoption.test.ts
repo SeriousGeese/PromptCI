@@ -162,6 +162,31 @@ describe('the shadow workflow', () => {
     expect(shas.size).toBe(1);
   });
 
+  it("names its job with the prefix both engines exclude from CI", () => {
+    // The single most consequential line in the file, and it reads as
+    // cosmetic. Both engines drop the reviewer's own check run by the name
+    // prefix `🤖 Auto-Review` — ci-status.jq and scripts/pr-review.sh's inline
+    // jq both hard-code it — and neither has another way to tell a reviewer's
+    // check run from a CI one.
+    //
+    // Outside the prefix, the pair DEADLOCKS: this job's queued check run is an
+    // ordinary in-progress CI check to the incumbent, so the incumbent waits for
+    // it while it sits queued behind the incumbent on the one `pr-review`
+    // runner. The incumbent burns its full poll budget and reports
+    // `blocked_infra` on a PR whose CI is green. Observed on this PR's own first
+    // run, under the name `🕶️ Shadow review PR #N`.
+    //
+    // Only the incumbent hangs — the shadow excludes the incumbent's check
+    // correctly — which is exactly what makes it easy to miss.
+    const name = shadowYml.match(/^ {4}name: (.*)$/m)?.[1];
+    expect(name).toBeTruthy();
+    expect(name!.startsWith('🤖 Auto-Review'), `job name ${name} must start with the excluded prefix`).toBe(true);
+
+    for (const jq of [read('scripts', 'pr-review.sh')]) {
+      expect(jq).toContain('startswith("🤖 Auto-Review")');
+    }
+  });
+
   it('labels its comment as advisory', () => {
     // A reviewer comment that reads as authoritative but decides nothing is
     // worse than no shadow at all.

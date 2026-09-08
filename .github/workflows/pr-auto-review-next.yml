@@ -65,7 +65,23 @@ permissions:
 
 jobs:
   shadow-review:
-    name: 🕶️ Shadow review PR #${{ github.event.pull_request.number || inputs.pr_number }}
+    # The name MUST start with "🤖 Auto-Review". Both review engines exclude
+    # their own check run from CI by exactly that name prefix
+    # (ci-status.jq and scripts/pr-review.sh's inline jq both use
+    # `startswith("🤖 Auto-Review")`), and neither has any other way to tell a
+    # reviewer's check run from a CI one.
+    #
+    # A name outside the prefix DEADLOCKS the pair, which is not obvious and was
+    # observed: this job's queued check run is an ordinary in-progress CI check
+    # to the incumbent, so the incumbent waits for it — while it sits queued
+    # behind the incumbent on the single `pr-review` runner. The incumbent then
+    # burns its full 1800s poll and reports `blocked_infra` on a PR whose CI is
+    # green. The shadow direction is fine, which is what makes it easy to miss:
+    # the incumbent's own check run IS excluded, so only one side hangs.
+    #
+    # Hence the ugly name. The 🕶️ lives in the comment banner, where it can be
+    # distinctive without being load-bearing.
+    name: 🤖 Auto-Review (shadow) PR #${{ github.event.pull_request.number || inputs.pr_number }}
     # Same three gates as the incumbent, and they must STAY the same: a shadow
     # that reviews a different set of PRs than the thing it shadows is not a
     # comparison. See pr-auto-review.yml for what each one is for.
