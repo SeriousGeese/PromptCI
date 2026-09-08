@@ -118,13 +118,33 @@ jobs:
           IS_DRAFT="$(echo "$PR_JSON" | jq -r '.isDraft')"
           HEAD_REPO="$(echo "$PR_JSON" | jq -r '(.headRepositoryOwner.login // "") + "/" + (.headRepository.name // "")')"
 
-          # Re-checked here rather than trusted from the job `if`, which cannot
-          # see draft state or head repo on the workflow_dispatch path. A fork
-          # PR must never be reviewed on a self-hosted runner.
-          if [ "$STATE" != "OPEN" ] || [ "$IS_DRAFT" = "true" ] || [ "$HEAD_REPO" != "$REPO" ]; then
+          # MERGED is accepted, and that is the whole point of this block.
+          #
+          # There is one `pr-review` runner. The incumbent and this job compete
+          # for it, and when the incumbent wins it reviews, merges, and is gone
+          # before this job starts — at which point a state==OPEN guard skips
+          # the shadow. Observed on PR #112: the incumbent merged at 16:30:36
+          # and this job reached its first step at 16:30:48.
+          #
+          # That is not merely lost samples, it is a BIASED sample. The PRs the
+          # shadow would systematically miss are exactly the ones the incumbent
+          # MERGED — so the comparison would be drawn almost entirely from PRs
+          # the incumbent declined to merge, i.e. the failure cases, and would
+          # say nothing about the agreement that matters most.
+          #
+          # Reviewing a merged PR is safe here in a way it would not be in
+          # production: dry-run means the shadow cannot act on any verdict, and
+          # the diff, the findings and the CI classification are all just as
+          # comparable after the merge as before. A CLOSED-unmerged PR is still
+          # skipped — nobody needs a verdict on abandoned work.
+          if [ "$IS_DRAFT" = "true" ] || [ "$HEAD_REPO" != "$REPO" ] \
+             || { [ "$STATE" != "OPEN" ] && [ "$STATE" != "MERGED" ]; }; then
             echo "PR #$PR_NUMBER state=$STATE draft=$IS_DRAFT head=$HEAD_REPO — nothing to shadow-review"
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
+          fi
+          if [ "$STATE" = "MERGED" ]; then
+            echo "PR #$PR_NUMBER already MERGED — shadow-reviewing it anyway, so the sample is not biased toward the PRs the incumbent refused"
           fi
 
           {
@@ -159,16 +179,33 @@ jobs:
           git clone "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" "$WORK_DIR" --no-checkout 2>&1
           # A PR must not be able to run its own git hooks inside the reviewer.
           rm -rf "$WORK_DIR/.git/hooks" 2>/dev/null || true
+
+          # refs/pull/<n>/head, not refs/heads/<branch>. GitHub maintains that
+          # ref for the life of the PR and it SURVIVES the branch deletion that
+          # `gh pr merge --delete-branch` performs — which the branch ref does
+          # not. Now that a merged PR is in scope, fetching by branch name would
+          # fail on precisely the PRs this change exists to include.
           git -c core.hooksPath=/dev/null -C "$WORK_DIR" fetch origin \
-            "+refs/heads/${HEAD_REF}:refs/remotes/origin/${HEAD_REF}" 2>&1
-          git -c core.hooksPath=/dev/null -C "$WORK_DIR" checkout "origin/$HEAD_REF" 2>&1
-          echo "Cloned ${HEAD_REF} at $(git -C "$WORK_DIR" rev-parse HEAD)"
+            "+refs/pull/${PR_NUMBER}/head:refs/remotes/origin/pr-${PR_NUMBER}" 2>&1
+          git -c core.hooksPath=/dev/null -C "$WORK_DIR" checkout "origin/pr-${PR_NUMBER}" 2>&1
+
+          # The SHA is asserted, not assumed: refs/pull/<n>/head tracks the PR
+          # head, but if it has moved since the resolve step the shadow would be
+          # reviewing a different commit than the one it reports — and a
+          # comparison against a comment naming another SHA is worse than none.
+          got="$(git -C "$WORK_DIR" rev-parse HEAD)"
+          if [ "$got" != "$HEAD_SHA" ]; then
+            echo "::warning::refs/pull/${PR_NUMBER}/head is ${got}, not the resolved ${HEAD_SHA} — the PR moved mid-run; skipping rather than reviewing a different commit"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "Checked out PR #${PR_NUMBER} head ${got}"
         env:
-          HEAD_REF: ${{ steps.resolve.outputs.head_ref }}
+          HEAD_SHA: ${{ steps.resolve.outputs.head_sha }}
 
       - name: Shadow review
         id: review
-        if: ${{ steps.resolve.outputs.skip != 'true' }}
+        if: ${{ steps.resolve.outputs.skip != 'true' && steps.checkout.outputs.skip != 'true' }}
         uses: SeriousGeese/CICD/actions/pr-review@4f8e9e6903f1743f4d2018b1981c54d726930738 # main @ 2026-09-08
         with:
           pr-number: ${{ env.PR_NUMBER }}
@@ -196,7 +233,7 @@ jobs:
           # strict-skipped:
 
       - name: Post shadow comment
-        if: ${{ always() && steps.resolve.outputs.skip != 'true' }}
+        if: ${{ always() && steps.resolve.outputs.skip != 'true' && steps.checkout.outputs.skip != 'true' }}
         shell: bash
         env:
           COMMENT_PATH: ${{ steps.review.outputs.comment-path }}

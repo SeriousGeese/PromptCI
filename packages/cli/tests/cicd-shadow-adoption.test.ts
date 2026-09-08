@@ -202,6 +202,38 @@ describe('the shadow workflow', () => {
     }
   });
 
+  it('shadow-reviews a MERGED PR, so the sample is not biased toward refusals', () => {
+    // There is one `pr-review` runner and the two jobs compete for it. When the
+    // incumbent wins it reviews, merges, and is gone before this job starts —
+    // observed on PR #112, merged at 16:30:36 with the shadow reaching its first
+    // step at 16:30:48.
+    //
+    // Skipping there does not just lose samples, it BIASES them: the PRs the
+    // shadow would miss are exactly the ones the incumbent MERGED, so the
+    // comparison would be drawn almost entirely from PRs the incumbent refused.
+    // The agreement that matters most would go unmeasured.
+    expect(shadowYml).toMatch(/\[ "\$STATE" != "OPEN" \] && \[ "\$STATE" != "MERGED" \]/);
+  });
+
+  it('checks out refs/pull/<n>/head, which survives the branch deletion a merge performs', () => {
+    // The consequence of the case above. `gh pr merge --delete-branch` removes
+    // refs/heads/<branch>, so fetching by branch name would fail on precisely
+    // the merged PRs that change exists to include. refs/pull/<n>/head is
+    // maintained by GitHub for the life of the PR.
+    expect(shadowYml).toContain('refs/pull/${PR_NUMBER}/head');
+    expect(shadowYml).not.toMatch(/\+refs\/heads\/\$\{HEAD_REF\}/);
+  });
+
+  it('refuses to review a commit other than the one it reports', () => {
+    // refs/pull/<n>/head tracks the head, so it can move between the resolve
+    // step and the checkout. A comment whose metadata names one SHA while the
+    // review looked at another is worse than no comparison at all.
+    expect(shadowYml).toContain('got="$(git -C "$WORK_DIR" rev-parse HEAD)"');
+    expect(shadowYml).toMatch(/if \[ "\$got" != "\$HEAD_SHA" \]/);
+    // And that skip has to reach the steps that follow it.
+    expect(shadowYml).toMatch(/steps\.checkout\.outputs\.skip != 'true'/);
+  });
+
   it('labels its comment as advisory', () => {
     // A reviewer comment that reads as authoritative but decides nothing is
     // worse than no shadow at all.
