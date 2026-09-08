@@ -289,6 +289,22 @@ describe('the shadow workflow', () => {
     expect(shadowYml).toContain('path="${COMMENT_PATH:-}"');
   });
 
+  it('marks a merged-PR run as a degraded sample', () => {
+    // The engine syncs the PR branch with the CURRENT base before reviewing, and
+    // an already-merged PR has a base that moved past it. The first real
+    // dispatch on promptci-cloud (PR #187) came back `blocked`, "merge conflicts
+    // with main", llm_tier none — none of which is a finding about the PR.
+    //
+    // Without the banner those comments read as real defects and get counted as
+    // divergences from the incumbent, which is precisely backwards: the merged-PR
+    // path exists to REDUCE sampling bias, and unlabelled it would introduce a
+    // worse one.
+    expect(shadowYml).toContain('was_merged=$([ "$STATE" = "MERGED" ]');
+    expect(shadowYml).toMatch(/WAS_MERGED: \$\{\{ steps\.resolve\.outputs\.was_merged \}\}/);
+    expect(shadowYml).toContain('Degraded sample:');
+    expect(shadowYml).toContain('not a divergence from the incumbent');
+  });
+
   it('labels its comment as advisory', () => {
     // A reviewer comment that reads as authoritative but decides nothing is
     // worse than no shadow at all.
