@@ -102,7 +102,7 @@ jobs:
 
     steps:
       # Must be first: every later step shells out to $GH_CLI.
-      - uses: SeriousGeese/CICD/actions/resolve-gh@873eba4d70c4d2af4c3d31eb3c8f6793ae7b1b2c # main @ 2026-09-08
+      - uses: SeriousGeese/CICD/actions/resolve-gh@4f8e9e6903f1743f4d2018b1981c54d726930738 # main @ 2026-09-08
         with:
           hint: ${{ vars.GH_CLI_PATH }}
 
@@ -169,7 +169,7 @@ jobs:
       - name: Shadow review
         id: review
         if: ${{ steps.resolve.outputs.skip != 'true' }}
-        uses: SeriousGeese/CICD/actions/pr-review@873eba4d70c4d2af4c3d31eb3c8f6793ae7b1b2c # main @ 2026-09-08
+        uses: SeriousGeese/CICD/actions/pr-review@4f8e9e6903f1743f4d2018b1981c54d726930738 # main @ 2026-09-08
         with:
           pr-number: ${{ env.PR_NUMBER }}
           pr-head-ref: ${{ steps.resolve.outputs.head_ref }}
