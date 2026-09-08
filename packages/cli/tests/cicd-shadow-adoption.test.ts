@@ -71,7 +71,22 @@ describe('.cicd/config.env', () => {
     // The premise the non-strict setting rests on. A job-level `if:` here would
     // publish `ci` as SKIPPED, which GitHub counts as PASSING for branch
     // protection — the required check would stop gating and nothing would say so.
-    const ciJob = ciYml.slice(ciYml.indexOf('\n  ci:'), ciYml.indexOf('\n    steps:'));
+    //
+    // Sliced from the `ci:` key to the NEXT top-level job key, not to the first
+    // `steps:` in the file: `indexOf` searches from position 0, so with any job
+    // declared before `ci` the end index would land BEFORE the start index and
+    // `slice` would return the empty string — which passes this assertion
+    // without examining anything. The bug is invisible today, because `ci` is
+    // the only job; it would arrive silently on the day a second one is added,
+    // which is also the day this assertion starts mattering. (Caught by this
+    // repo's own auto-review bot on PR #110.)
+    const start = ciYml.indexOf('\n  ci:');
+    expect(start, 'ci.yml must declare a `ci` job').toBeGreaterThan(-1);
+    const rest = ciYml.slice(start + 1);
+    const nextJob = rest.slice(1).search(/^ {2}[a-z][a-z0-9-]*:/m);
+    const ciJob = nextJob === -1 ? rest : rest.slice(0, nextJob + 1);
+    expect(ciJob.startsWith('  ci:'), 'slice must begin at the ci job').toBe(true);
+    expect(ciJob).toMatch(/^\s{4}steps:/m);
     expect(ciJob).not.toMatch(/^\s{4}if:/m);
   });
 
