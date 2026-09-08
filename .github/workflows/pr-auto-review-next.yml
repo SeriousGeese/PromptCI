@@ -111,12 +111,28 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          PR_JSON="$($GH_CLI pr view "$PR_NUMBER" --repo "$REPO" \
-            --json number,headRefName,baseRefName,title,body,author,url,isDraft,state,headRefOid,baseRefOid,headRepository,headRepositoryOwner)"
+          # `gh api`, not `gh pr view --json`. The field list `gh pr view`
+          # accepts is baked into the gh BINARY, and this fleet is
+          # heterogeneous: the same command that works on PromptCI's runner
+          # failed here with
+          #     Unknown JSON field: "baseRefOid"
+          # because this runner's gh predates that field. The REST payload is
+          # versioned by GitHub rather than by whatever gh a given runner
+          # happens to have, so reading it with jq removes the coupling
+          # entirely — and this job must behave identically on every runner it
+          # can land on.
+          PR_JSON="$($GH_CLI api "repos/${REPO}/pulls/${PR_NUMBER}")"
 
-          STATE="$(echo "$PR_JSON" | jq -r '.state')"
-          IS_DRAFT="$(echo "$PR_JSON" | jq -r '.isDraft')"
-          HEAD_REPO="$(echo "$PR_JSON" | jq -r '(.headRepositoryOwner.login // "") + "/" + (.headRepository.name // "")')"
+          # REST spells this differently from the GraphQL-backed `gh pr view`:
+          # `state` is only open/closed, and `merged` is a separate boolean.
+          RAW_STATE="$(echo "$PR_JSON" | jq -r '.state')"
+          MERGED="$(echo "$PR_JSON" | jq -r '.merged')"
+          if [ "$MERGED" = "true" ]; then STATE=MERGED
+          elif [ "$RAW_STATE" = "open" ]; then STATE=OPEN
+          else STATE=CLOSED
+          fi
+          IS_DRAFT="$(echo "$PR_JSON" | jq -r '.draft')"
+          HEAD_REPO="$(echo "$PR_JSON" | jq -r '.head.repo.full_name // ""')"
 
           # MERGED is accepted, and that is the whole point of this block.
           #
@@ -148,12 +164,12 @@ jobs:
           fi
 
           {
-            echo "head_ref=$(echo "$PR_JSON" | jq -r '.headRefName')"
-            echo "base_ref=$(echo "$PR_JSON" | jq -r '.baseRefName')"
-            echo "author=$(echo "$PR_JSON" | jq -r '.author.login')"
-            echo "html_url=$(echo "$PR_JSON" | jq -r '.url')"
-            echo "head_sha=$(echo "$PR_JSON" | jq -r '.headRefOid')"
-            echo "base_sha=$(echo "$PR_JSON" | jq -r '.baseRefOid')"
+            echo "head_ref=$(echo "$PR_JSON" | jq -r '.head.ref')"
+            echo "base_ref=$(echo "$PR_JSON" | jq -r '.base.ref')"
+            echo "author=$(echo "$PR_JSON" | jq -r '.user.login')"
+            echo "html_url=$(echo "$PR_JSON" | jq -r '.html_url')"
+            echo "head_sha=$(echo "$PR_JSON" | jq -r '.head.sha')"
+            echo "base_sha=$(echo "$PR_JSON" | jq -r '.base.sha')"
           } >> "$GITHUB_OUTPUT"
 
           # Title and body are free-form and may contain any character; the
@@ -232,16 +248,30 @@ jobs:
           # reasons — see that file). A non-empty value here would win over it.
           # strict-skipped:
 
+      # `steps.review.conclusion == 'success'`, NOT always(). The previous guard
+      # was `always() && <the two skip outputs> != 'true'`, and a step that
+      # FAILS sets neither output — so when "Resolve PR context" died, this step
+      # still ran, found no comment path, and fell back to
+      # /tmp/pr-review-comment-<n>.md.
+      #
+      # That path is shared with the INCUMBENT reviewer on this same runner. The
+      # shadow posted the incumbent's comment file under a shadow banner, and the
+      # two "agreed" perfectly — about a review the shadow never performed. A
+      # comparison harness that fabricates agreement is worse than one that
+      # crashes, because nothing about it looks wrong.
+      #
+      # So: no fallback path, and the step runs only when the review step itself
+      # succeeded.
       - name: Post shadow comment
-        if: ${{ always() && steps.resolve.outputs.skip != 'true' && steps.checkout.outputs.skip != 'true' }}
+        if: ${{ steps.review.conclusion == 'success' }}
         shell: bash
         env:
           COMMENT_PATH: ${{ steps.review.outputs.comment-path }}
           REVIEW_RESULT: ${{ steps.review.outputs.result }}
         run: |
-          path="${COMMENT_PATH:-/tmp/pr-review-comment-${PR_NUMBER}.md}"
-          if [ ! -f "$path" ]; then
-            echo "No comment file at ${path} — the shadow produced no review (result=${REVIEW_RESULT:-none})"
+          path="${COMMENT_PATH:-}"
+          if [ -z "$path" ] || [ ! -f "$path" ]; then
+            echo "The shadow review produced no comment file (result=${REVIEW_RESULT:-none}) — posting nothing."
             exit 0
           fi
           # The banner is what makes the two comments distinguishable at a
