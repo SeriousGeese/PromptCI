@@ -159,6 +159,7 @@ jobs:
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          echo "was_merged=$([ "$STATE" = "MERGED" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
           if [ "$STATE" = "MERGED" ]; then
             echo "PR #$PR_NUMBER already MERGED — shadow-reviewing it anyway, so the sample is not biased toward the PRs the incumbent refused"
           fi
@@ -268,6 +269,8 @@ jobs:
         env:
           COMMENT_PATH: ${{ steps.review.outputs.comment-path }}
           REVIEW_RESULT: ${{ steps.review.outputs.result }}
+          WAS_MERGED: ${{ steps.resolve.outputs.was_merged }}
+          PR_BASE_LABEL: ${{ steps.resolve.outputs.base_ref }}
         run: |
           path="${COMMENT_PATH:-}"
           if [ -z "$path" ] || [ ! -f "$path" ]; then
@@ -284,6 +287,21 @@ jobs:
             echo "> running alongside this repo's \`scripts/pr-review.sh\`, in dry-run: it never pushes a fix"
             echo "> and never merges. The review that counts is the one from **PR Auto-Review**."
             echo "> Result: \`${REVIEW_RESULT:-unknown}\`"
+            # A merged-PR run is a DEGRADED sample and has to say so. The engine
+            # syncs the PR branch with the CURRENT base before reviewing, and for
+            # an already-merged PR the base has moved past it — so a base-sync
+            # conflict, or a review the LLM never reached, is an artifact of WHEN
+            # the shadow ran and not a finding about the PR. Without this line
+            # those comments read as real defects and would be counted as
+            # divergences from the incumbent, which is the opposite of what this
+            # comparison is for.
+            if [ "${WAS_MERGED:-false}" = "true" ]; then
+              echo ">"
+              echo "> ⏱️ **Degraded sample:** this PR was already **merged** when the shadow ran, so"
+              echo "> \`${PR_BASE_LABEL:-the base branch}\` has moved past it. A base-sync conflict, or a"
+              echo "> review no LLM tier reached, is an artifact of that timing — not a finding, and"
+              echo "> not a divergence from the incumbent."
+            fi
             echo
             cat "$path"
           } > /tmp/pr-review-shadow-${PR_NUMBER}.md
