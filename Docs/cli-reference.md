@@ -6,6 +6,10 @@ For repo-specific checks beyond the built-in detectors, see
 [custom-rules.md](custom-rules.md) — the `.promptci/custom-rules.json` rule format.
 
 ```bash
+# Quick score (also what a bare `promptci` runs)
+promptci score                              # print the health score + top 3 findings; writes nothing, no network
+promptci score --path <dir>                 # score a specific directory
+
 # Scanning
 promptci scan                               # scan current directory
 promptci scan --path <dir>                  # scan a specific directory
@@ -63,6 +67,24 @@ promptci init                               # create .promptci/config.json and a
 promptci --version
 promptci --help
 ```
+
+## `score`: the zero-footprint teaser
+
+`promptci score` (and a bare `promptci` / `npx @promptci/cli`) scans the directory and prints one
+overall score plus the three highest-confidence findings, then a single pointer line to the hosted
+dashboard. Sample output is in the [README quickstart](../README.md#quickstart).
+
+- **No network.** It also skips the once-a-day npm version check that other commands run.
+- **No writes.** It does not create `.promptci/` reports or history; it only reads your files and
+  an existing `.promptci/config.json` (same `include`, `exclude`, `projectType`, budgets, and
+  `targetModel` as `scan`, so the two commands report the same score).
+- **No account or upload.** Nothing is sent anywhere and nothing is stored.
+- **Ranking.** Findings are ordered by confidence, then severity, then id (deterministic), and are
+  not de-duplicated by category. `scan`'s "Top fixes" ranks severity first and keeps one per
+  category, so the two lists can differ.
+- **Exit codes.** `0` after printing a score, or "nothing to score" when no instruction files are
+  found, whatever the findings. `1` for a missing or non-directory `--path`, or an unreadable
+  `.promptci/config.json`. To gate CI, use `scan --fail-on <severity>` or `review-diff`.
 
 ## `context optimize` is preview-first
 
