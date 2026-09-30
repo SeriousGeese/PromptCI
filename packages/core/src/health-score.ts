@@ -31,15 +31,22 @@ const CATEGORY_DEDUCTION_CAP: Partial<Record<IssueCategory, number>> = {
 };
 
 /**
- * Deduction caps for groups that cut across a category. Skill supply-chain
- * findings (`skill-supply-chain` tag) are mostly `security` findings, but they
- * describe installed third-party skills, not the repo's own instruction
- * health: uncapped, one noisy skill could zero an otherwise healthy score.
- * Capped at 15, they stay visible (and still sort into top fixes by severity,
- * and `--fail-on high` still gates CI on them) without dominating the score.
- * The rest of the `security` category stays uncapped.
+ * Deduction caps for groups that cut across a category. Each tagged group
+ * gets its own bucket; the rest of the `security` category stays uncapped.
+ *
+ * - `supply-chain` (8): unpinned GitHub Actions are `security` findings, but
+ *   they describe CI configuration, not instruction health: uncapped, one
+ *   finding per unpinned action took ~25 points off an otherwise healthy repo
+ *   that simply uses tag-pinned third-party actions.
+ * - `skill-supply-chain` (15): findings about installed third-party skills,
+ *   not the repo's own instruction health: uncapped, one noisy skill could
+ *   zero an otherwise healthy score.
+ *
+ * Capped, they stay visible (and still sort into top fixes by severity, and
+ * `--fail-on high` still gates CI on them) without dominating the score.
  */
 const TAG_DEDUCTION_CAP: Record<string, number> = {
+  'supply-chain': 8,
   'skill-supply-chain': 15,
 };
 

@@ -2,6 +2,7 @@ import * as crypto from 'node:crypto';
 import * as path from 'node:path';
 import type { InstructionFile, PromptCiIssue } from './types.js';
 import { snippet } from './evidence.js';
+import { fileIdPath } from './finding-id.js';
 
 /**
  * Canonical Owner and Forwarding Detector.
@@ -15,17 +16,46 @@ const AUTHORITY_PHRASES = [
   /master\s+instruction\s+file/i,
 ];
 
+const NAMED_INSTRUCTION_FILE_RE = /\b(AGENTS|CLAUDE)\.md\b/gi;
+
+/**
+ * The text of the first phrase in which `file` claims authority FOR ITSELF,
+ * or undefined. A line like "`AGENTS.md` is the single source of truth for all
+ * agents" inside GEMINI.md or CLAUDE.md is a forwarding pointer — it hands
+ * authority to another file — so it is skipped, and the search continues over
+ * EVERY occurrence of every phrase: a delegation line cannot hide a genuine
+ * self-claim further down. Only the line holding a phrase is checked, so an
+ * unrelated mention elsewhere cannot cancel a real claim.
+ *
+ * Patterns are tried in AUTHORITY_PHRASES order and occurrences in document
+ * order, so a file with no delegation lines yields the same evidence text as
+ * before (baseline fingerprints hash evidence).
+ */
+function authorityClaim(file: InstructionFile): string | undefined {
+  const own = path.basename(file.path).toLowerCase();
+  for (const phrase of AUTHORITY_PHRASES) {
+    for (const m of file.content.matchAll(new RegExp(phrase.source, 'gi'))) {
+      const lineStart = file.content.lastIndexOf('\n', m.index) + 1;
+      const lineEnd = file.content.indexOf('\n', m.index + m[0].length);
+      const line = file.content.slice(lineStart, lineEnd === -1 ? undefined : lineEnd);
+      const named = [...line.matchAll(NAMED_INSTRUCTION_FILE_RE)].map((n) => `${n[1]!.toLowerCase()}.md`);
+      const delegates = named.length > 0 && named.every((n) => n !== own);
+      if (!delegates) return m[0];
+    }
+  }
+  return undefined;
+}
+
 export function detectCanonicalOwner(files: InstructionFile[]): PromptCiIssue[] {
   if (files.length === 0) return [];
 
   const issues: PromptCiIssue[] = [];
-  const filesWithAuthority: InstructionFile[] = [];
-
+  const claims = new Map<InstructionFile, string>();
   for (const file of files) {
-    if (AUTHORITY_PHRASES.some((re) => re.test(file.content))) {
-      filesWithAuthority.push(file);
-    }
+    const claim = authorityClaim(file);
+    if (claim !== undefined) claims.set(file, claim);
   }
+  const filesWithAuthority: InstructionFile[] = [...claims.keys()];
 
   function issueId(name: string): string {
     const hash = crypto.createHash('sha1').update(name).digest('hex').slice(0, 12);
@@ -44,26 +74,13 @@ export function detectCanonicalOwner(files: InstructionFile[]): PromptCiIssue[] 
         `This leads to confusion about which instructions take precedence.`,
       filePaths: filesWithAuthority.map((f) => f.path),
       locations: filesWithAuthority.map((f) => ({ filePath: f.path })),
-      // CO1: extract evidence from the SAME whole-content match the gate
-      // used, instead of re-scanning line-by-line. The gate tests against
-      // `\s`-containing patterns (e.g. "canonical\s+source of truth"), and
-      // `\s` matches newlines — so a phrase wrapped across two lines
-      // ("canonical\nsource of truth") passes the gate but no SINGLE line
-      // contains the whole phrase, so `lines.find(...)` returned `undefined`
-      // and evidence literally rendered the string "undefined".
-      evidence: filesWithAuthority.map((f) => {
-        let matchText: string | undefined;
-        for (const re of AUTHORITY_PHRASES) {
-          const m = re.exec(f.content);
-          if (m) {
-            matchText = m[0];
-            break;
-          }
-        }
-        // Authority phrases are short fixed strings — well under the shared
-        // snippet's default clip — so this only collapses whitespace + trims.
-        return `${path.basename(f.path)}: "${snippet(matchText ?? '')}"`;
-      }),
+      // CO1: evidence is the SAME whole-content match the gate used (not a
+      // line-by-line re-scan: `\s` in the phrases matches newlines, so a
+      // phrase wrapped across two lines has no single line containing it).
+      // It quotes the genuine self-claim, never a skipped delegation line.
+      // Authority phrases are short fixed strings — well under the shared
+      // snippet's default clip — so this only collapses whitespace + trims.
+      evidence: filesWithAuthority.map((f) => `${path.basename(f.path)}: "${snippet(claims.get(f)!)}"`),
       recommendation:
         'Designate ONE file (usually AGENTS.md) as the canonical source. ' +
         'Other files should use forwarding pointers and only contain tool-specific reminders.',
@@ -100,6 +117,8 @@ export function detectCanonicalOwner(files: InstructionFile[]): PromptCiIssue[] 
         file.fileType === 'cursor' ||
         file.fileType === 'windsurf' ||
         file.fileType === 'copilot' ||
+        file.fileType === 'gemini' ||
+        file.fileType === 'cline' ||
         baseName === 'claude.md' ||
         baseName === '.cursorrules' ||
         baseName === '.windsurfrules';
@@ -128,7 +147,7 @@ export function detectCanonicalOwner(files: InstructionFile[]): PromptCiIssue[] 
               // (mirroring the fix on the agent-practices.ts side) so ids
               // stay distinct even for the same file path; the public id
               // PREFIX is unchanged.
-              const hash = crypto.createHash('sha1').update(`canonical-owner:behavior-duplication:${file.path}`).digest('hex').slice(0, 12);
+              const hash = crypto.createHash('sha1').update(`canonical-owner:behavior-duplication:${fileIdPath(file)}`).digest('hex').slice(0, 12);
               const canonicalLabel = path.basename(primaryCanonical.path);
               const duplicateTokens = Math.round(section.text.length / 4);
               issues.push({

@@ -1,3 +1,4 @@
+import { detectActionPinning } from './action-pinning.js';
 import { detectAgentPractices } from './agent-practices.js';
 import { detectCanonicalOwner } from './canonical-owner.js';
 import { detectCiAlignment } from './ci-alignment.js';
@@ -107,6 +108,10 @@ export const DETECTORS: DetectorDefinition[] = [
   {
     id: 'security-pack',
     run: (context) => detectSecurityPack(context),
+  },
+  {
+    id: 'action-pinning',
+    run: (context) => detectActionPinning(context),
   },
   {
     id: 'framework-packs',

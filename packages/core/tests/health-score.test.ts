@@ -22,6 +22,7 @@ function makeIssue(
     evidence: overrides.evidence ?? ['evidence line'],
     recommendation: overrides.recommendation ?? 'Fix it.',
     confidence: overrides.confidence,
+    ...(overrides.tags ? { tags: overrides.tags } : {}),
   };
 }
 
@@ -86,6 +87,17 @@ describe('computeHealthScore', () => {
       makeIssue({ severity: 'warning', confidence: 1.0, category: 'structure' }),
     );
     expect(computeHealthScore(issues)).toBe(70);
+  });
+
+  it('caps supply-chain (action pinning) deductions at 8 pts without capping other security findings', () => {
+    const pins = Array.from({ length: 10 }, () =>
+      makeIssue({ severity: 'warning', confidence: 0.8, category: 'security', tags: ['supply-chain'] }),
+    );
+    // 10 × 4 × 0.8 = 32 raw, capped to 8.
+    expect(computeHealthScore(pins)).toBe(92);
+    // A plain security finding still deducts in full on top of the capped group.
+    const plain = makeIssue({ severity: 'high', confidence: 1.0, category: 'security' });
+    expect(computeHealthScore([...pins, plain])).toBe(82);
   });
 
   it('never returns a value above 100', () => {

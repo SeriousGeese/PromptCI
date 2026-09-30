@@ -15,6 +15,7 @@
 import * as crypto from 'node:crypto';
 import type { InstructionFile, InstructionSection, IssueSeverity, PromptCiIssue } from './types.js';
 import { stripCodeBlocks } from './markdown-fences.js';
+import { sectionIdPath } from './finding-id.js';
 
 const VAGUE_PHRASES = [
   'write clean code',
@@ -189,7 +190,7 @@ function findPhraseMatches(scanText: string, phraseRe: RegExp): string[] {
 }
 
 function issueId(section: InstructionSection): string {
-  const key = `${section.filePath}:${section.startLine}:vague`;
+  const key = `${sectionIdPath(section)}:${section.startLine}:vague`;
   const hash = crypto.createHash('sha1').update(key).digest('hex').slice(0, 12);
   return `vague-${hash}`;
 }

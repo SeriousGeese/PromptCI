@@ -9,11 +9,13 @@ PromptCI runs its own scanner against this repo in CI (see [.github/workflows/ci
 the health badge above reports the score from the committed baseline.
 
 <!-- promptci-ignore-start: structure
-     reason: This intro names CLAUDE.md and AGENTS.md as the file types PromptCI scans.
-     They are product terminology here, not references to files in this repository. -->
+     reason: This intro names CLAUDE.md, AGENTS.md, GEMINI.md, SOUL.md and friends as the
+     file types PromptCI scans. They are product terminology here, not references to files in
+     this repository. -->
 PromptCI scans AI coding instruction files (`CLAUDE.md`, `AGENTS.md`, `.cursorrules`, Copilot
-instructions, README-style context, and more) and produces actionable health reports so you can
-catch instruction rot before it costs you.
+instructions, `GEMINI.md`, Cline's `.clinerules`, agent persona files such as `SOUL.md`,
+README-style context, and more) and produces actionable health reports so you can catch
+instruction rot before it costs you.
 
 The scanner is **deterministic and rule-based** — no LLM calls, identical output for identical
 input. It runs entirely on your machine; your files never leave it. The only network request
@@ -68,6 +70,7 @@ npx @promptci/cli scan --path /path/to/repo    # scan a specific repo
 npx @promptci/cli init                         # create .promptci/config.json
 npx @promptci/cli fix                          # apply deterministic fix recipes
 npx @promptci/cli doctor                       # diagnose setup problems
+npx @promptci/cli badge                        # write a Shields.io JSON for a README score badge
 ```
 
 See [Docs/cli-reference.md](Docs/cli-reference.md) for the full command reference and
@@ -109,6 +112,26 @@ Or run the CLI directly:
 npx @promptci/cli review-diff --base origin/main --fail-on-regression --fail-on high
 ```
 
+## Health badge
+
+Show your instruction-health score in your README, like the badge at the top of this page.
+`promptci badge` scans and writes a Shields.io endpoint JSON (score only — no findings or file
+contents) to `.promptci/health-badge.json`:
+
+```bash
+npx @promptci/cli badge
+```
+
+Commit that file (add `!**/.promptci/health-badge.json` to the PromptCI `.gitignore` stanza) and
+reference its raw URL, URL-encoded, from a Shields.io endpoint badge:
+
+```markdown
+[![instruction health](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2F<owner>%2F<repo>%2F<branch>%2F.promptci%2Fhealth-badge.json)](https://github.com/SeriousGeese/PromptCI)
+```
+
+The score is self-reported by your own scan; regenerate the file in CI to keep it current. See
+[Docs/cli-reference.md](Docs/cli-reference.md#badge-a-readme-health-badge) for the options.
+
 ## What gets detected
 
 - Duplicate instruction sections, within and across files
@@ -121,6 +144,9 @@ npx @promptci/cli review-diff --base origin/main --fail-on-regression --fail-on 
 - Security and privacy gaps in instruction guidance
 - Vague guidance, broken local references, agent-practice gaps
 - Prompt-cache-hostile content that inflates the cost of every agent turn
+- GitHub Actions `uses:` references (in workflows and composite actions) pinned to a tag or
+  branch instead of a full commit SHA — detect-only, never rewritten; these findings cost at
+  most 8 health-score points in total
 <!-- promptci-ignore-start: structure
      reason: `.mcp.json` here names the config file the ai_config detectors audit,
      not a file this repo ships — PromptCI itself intentionally has no MCP config. -->
@@ -133,7 +159,9 @@ npx @promptci/cli review-diff --base origin/main --fail-on-regression --fail-on 
   and hidden text, and unpinned remote dependencies
 
 Findings are heuristic and cautiously worded; every one carries evidence, a recommendation,
-and a confidence value.
+and a confidence value. Finding `id`s are derived from repo-relative paths, so they are the same
+wherever the repo is checked out — upgrading from a release that hashed absolute paths changes
+path-based ids once (baselines match on fingerprints, not ids, and are unaffected).
 
 ## Configuration
 

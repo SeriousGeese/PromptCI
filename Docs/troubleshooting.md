@@ -5,7 +5,17 @@ Common issues and solutions when running or configuring PromptCI.
 ### No files scanned / health score 100 with no issues on a real repo
 
 Default patterns scan:
-`CLAUDE.md`, `AGENTS.md`, `.cursorrules`, `.windsurfrules`, `.cursor/rules/**`, `.github/copilot-instructions.md`, `.github/instructions/**/*.md`, `.claude/**/*.md`, `README.md`, `ai/**/*.md`, `ai-instructions/**/*.md`, `prompts/**/*.md`, `system-prompts/**/*.md`
+`CLAUDE.md`, `AGENTS.md`, `.cursorrules`, `.windsurfrules`, `GEMINI.md`, `.clinerules` (the single file, or `.clinerules/**/*.md` except `.clinerules/workflows/`), `SOUL.md`, `USER.md`, `TOOLS.md`, `.cursor/rules/**`, `.github/copilot-instructions.md`, `.github/instructions/**/*.md`, `.claude/**/*.md`, `README.md`, `ai/**/*.md`, `ai-instructions/**/*.md`, `prompts/**/*.md`, `system-prompts/**/*.md`
+
+Bare file names match at the repository root only. `GEMINI.md` and the persona files
+(`SOUL.md`, `USER.md`, `TOOLS.md`) are deliberately root-only: a nested `docs/USER.md` is far
+more likely a user guide than an agent persona. Add nested copies to `include` if you want them
+scanned (a nested persona-named file is then typed `unknown`, not `persona`).
+
+GitHub Actions workflows (`.github/workflows/*.yml`) and composite actions (`action.yml` at the
+root or under `.github/actions/`) are read separately — for the CI-alignment and action-pinning
+checks — and are never scanned as instruction files. `exclude` patterns (including directory
+patterns such as `.github/workflows`) also remove them from the action-pinning check.
 
 Note: `docs/**/*.md` is intentionally **not** scanned by default — documentation directories tend to contain project docs (QA reports, plans) that generate false positives, not AI instruction files. If your instruction files live in `docs/`, add the specific paths to `include` in `.promptci/config.json`.
 
@@ -41,8 +51,9 @@ The exit code is 1 whenever any issue meets or exceeds the threshold. Use `--fai
 
 ### Does PromptCI phone home?
 
-No. This package is the offline scanner: `scan`, `fix`, `context`, `review-diff`, `doctor`, and
-`init` all run entirely on your machine and make no network requests. The single exception is a
+No. This package is the offline scanner: `scan`, `fix`, `context`, `review-diff`, `doctor`,
+`badge`, and `init` all run entirely on your machine and make no network requests. (`badge` only
+writes a JSON file; shields.io fetches it from your repository when someone views your README.) The single exception is a
 best-effort npm version check that runs at most once a day and never blocks a command; disable it
 by setting `CI`, `NO_UPDATE_NOTIFIER`, or `PROMPTCI_NO_UPDATE_NOTIFIER`.
 

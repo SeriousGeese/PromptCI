@@ -1,8 +1,9 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
-import { discoverAiConfigFiles, resolveWithinRoot as safeResolveWithinRoot } from './ai-config.js';
+import { discoverAiConfigFiles, listFiles, resolveWithinRoot as safeResolveWithinRoot } from './ai-config.js';
 import type { AiConfigFiles } from './ai-config.js';
 import { detectProjectType, detectProjectTypeFromContent } from './project-type.js';
+import micromatch from 'micromatch';
 import { MAX_FILE_SIZE, isBinary, parseSections, scanFiles } from './scanner.js';
 import type { ManifestData } from './manifest-consistency.js';
 import { isOnDemandFileType } from './types.js';
@@ -31,9 +32,24 @@ export type WorkflowCommand = {
   line: number;
 };
 
+/** Raw text of one GitHub Actions workflow file. */
+export type WorkflowSource = {
+  /** Repo-relative, forward slashes (e.g. `.github/workflows/ci.yml`). */
+  filePath: string;
+  content: string;
+};
+
 export type WorkflowFacts = {
   files: string[];
   commands: WorkflowCommand[];
+  /**
+   * Workflow and composite-action (`action.yml`) file contents for detectors
+   * that audit the YAML itself (action pinning). These are CI configuration,
+   * never instruction files: they are NOT in `RepoContext.files`, so no prose
+   * detector ever reads them. Honors the scan's `exclude` patterns. Optional
+   * so hand-built contexts without it keep type-checking.
+   */
+  sources?: WorkflowSource[];
 };
 
 export type RepoContext = {
@@ -225,13 +241,13 @@ function extractWorkflowCommands(filePath: string, content: string): WorkflowCom
   return commands;
 }
 
-async function readWorkflowFacts(repoRoot: string): Promise<WorkflowFacts> {
+async function readWorkflowFacts(repoRoot: string, exclude: string[] = []): Promise<WorkflowFacts> {
   const workflowDir = resolveWithinRoot(repoRoot, path.join('.github', 'workflows'));
   let entries: Array<{ name: string; isFile: () => boolean }>;
   try {
     entries = await fs.readdir(workflowDir, { withFileTypes: true });
   } catch {
-    return { files: [], commands: [] };
+    return { files: [], commands: [], sources: await readCompositeActionSources(repoRoot, exclude) };
   }
 
   const files = entries
@@ -239,16 +255,68 @@ async function readWorkflowFacts(repoRoot: string): Promise<WorkflowFacts> {
     .map((entry) => path.join(workflowDir, entry.name))
     .sort();
   const commands: WorkflowCommand[] = [];
+  const sources: WorkflowSource[] = [];
   for (const file of files) {
     const relative = path.relative(repoRoot, file);
     const content = await fs.readFile(file, 'utf-8');
     commands.push(...extractWorkflowCommands(relative, content));
+
+    // Only the YAML-auditing detectors read `sources`, so only they honor
+    // `exclude` — ci-alignment's `files`/`commands` keep their existing scope.
+    const posix = relative.replace(/\\/g, '/');
+    if (content.length <= MAX_FILE_SIZE && !isExcludedPath(posix, exclude)) {
+      sources.push({ filePath: posix, content });
+    }
   }
+  sources.push(...(await readCompositeActionSources(repoRoot, exclude)));
 
   return {
     files: files.map((file) => path.relative(repoRoot, file)),
     commands,
+    sources,
   };
+}
+
+/** Composite actions: a root `action.yml` and any under `.github/actions/`. */
+const COMPOSITE_ACTION_GLOBS = [
+  'action.yml',
+  'action.yaml',
+  '.github/actions/**/action.yml',
+  '.github/actions/**/action.yaml',
+];
+
+async function readCompositeActionSources(repoRoot: string, exclude: string[]): Promise<WorkflowSource[]> {
+  const sources: WorkflowSource[] = [];
+  for (const rel of listFiles(repoRoot, COMPOSITE_ACTION_GLOBS)) {
+    if (isExcludedPath(rel, exclude)) continue;
+    const abs = safeResolveWithinRoot(repoRoot, rel);
+    if (!abs) continue;
+    try {
+      const stat = await fs.stat(abs);
+      if (!stat.isFile() || stat.size > MAX_FILE_SIZE) continue;
+      sources.push({ filePath: rel, content: await fs.readFile(abs, 'utf-8') });
+    } catch {
+      // unreadable — skip
+    }
+  }
+  return sources;
+}
+
+/**
+ * True when a repo-relative POSIX path is covered by an `exclude` pattern —
+ * matched against the file itself AND each ancestor directory (bare and with a
+ * trailing slash), the way discovery's glob ignore treats a directory pattern:
+ * `exclude: [".github"]` or `[".github/workflows/"]` silences every file under it.
+ */
+export function isExcludedPath(posix: string, exclude: string[]): boolean {
+  if (exclude.length === 0) return false;
+  const candidates = [posix];
+  const parts = posix.split('/');
+  for (let i = 1; i < parts.length; i++) {
+    const dir = parts.slice(0, i).join('/');
+    candidates.push(dir, `${dir}/`);
+  }
+  return candidates.some((c) => micromatch.isMatch(c, exclude, { dot: true }));
 }
 
 /**
@@ -338,7 +406,7 @@ export async function buildRepoContext(input: ScanInput): Promise<RepoContext> {
     readRootFile(repoRoot, 'pyproject.toml'),
     readRootFile(repoRoot, 'requirements.txt'),
     existingRootFiles(repoRoot, LOCKFILES),
-    readWorkflowFacts(repoRoot),
+    readWorkflowFacts(repoRoot, input.exclude),
     // Throws a clear CustomRulesError on malformed config, surfaced at scan time.
     loadCustomRules(repoRoot),
   ]);

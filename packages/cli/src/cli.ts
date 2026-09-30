@@ -6,6 +6,7 @@ import { runFix } from './commands/fix.js';
 import { runReviewDiff } from './commands/review-diff.js';
 import { runContextAnalyze, runContextOptimize } from './commands/context.js';
 import { runDoctor } from './commands/doctor.js';
+import { runBadge } from './commands/badge.js';
 import { getNewVersionNotice } from './commands/version-notice.js';
 
 // Single source of truth for the version: esbuild resolves this require at
@@ -125,6 +126,25 @@ program
       failOnRegression: opts.failOnRegression || false,
       failOn: opts.failOn as import('@promptci/core').IssueSeverity | undefined,
       workingTree: opts.workingTree || false,
+    });
+  });
+
+program
+  .command('badge')
+  .description('Write a Shields.io endpoint JSON with the health score, for a README badge')
+  .option('--path <dir>', 'target directory to scan (default: current directory)')
+  .option(
+    '--report <file>',
+    'read the score from an existing report.json instead of scanning (relative to --path)',
+  )
+  .option('--output <file>', 'badge JSON path, relative to --path (default: .promptci/health-badge.json)')
+  .option('--label <text>', 'badge label (default: "instruction health")')
+  .action(async (opts: { path?: string; report?: string; output?: string; label?: string }) => {
+    await runBadge({
+      scanPath: opts.path,
+      report: opts.report,
+      output: opts.output,
+      label: opts.label,
     });
   });
 

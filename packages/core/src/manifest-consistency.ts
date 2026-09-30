@@ -24,6 +24,7 @@ import * as path from 'node:path';
 import type { InstructionFile, PromptCiIssue } from './types.js';
 import type { RepoContext } from './repo-context.js';
 import { buildCodeMask } from './markdown-fences.js';
+import { fileIdPath } from './finding-id.js';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -149,7 +150,7 @@ function checkPythonVersionMismatch(
       reported.add(dedupeKey);
 
       issues.push({
-        id: issueId(`python-version:${file.path}:${instrVersion}`),
+        id: issueId(`python-version:${fileIdPath(file)}:${instrVersion}`),
         severity: 'high',
         category: 'stale_instruction',
         title: `Python version mismatch: instruction says ${instrVersion}, pyproject.toml requires ≥${manifestVersion}`,
@@ -295,7 +296,7 @@ function checkLibraryVersionMismatch(
         reported.add(dedupeKey);
 
         issues.push({
-          id: issueId(`library-version:${file.path}:${library}:${instructionVersion}`),
+          id: issueId(`library-version:${fileIdPath(file)}:${library}:${instructionVersion}`),
           severity: 'high',
           category: 'stale_instruction',
           title:
@@ -411,7 +412,7 @@ function checkJsLibraryVersionMismatch(
         reported.add(dedupeKey);
 
         issues.push({
-          id: issueId(`js-library-version:${file.path}:${library}:${instructionVersion}`),
+          id: issueId(`js-library-version:${fileIdPath(file)}:${library}:${instructionVersion}`),
           severity: 'high',
           category: 'stale_instruction',
           title:
@@ -600,7 +601,7 @@ function checkMissingScripts(context: RepoContext): PromptCiIssue[] {
         reported.add(dedupeKey);
 
         issues.push({
-          id: `manifest-missing-script:${file.path}:${scriptName}`,
+          id: `manifest-missing-script:${fileIdPath(file)}:${scriptName}`,
           severity: 'warning',
           category: 'stale_instruction',
           title: `Reference to missing script: "${scriptName}"`,
@@ -655,7 +656,7 @@ function checkNodeVersionMismatch(context: RepoContext): PromptCiIssue[] {
         reported.add(dedupeKey);
 
         issues.push({
-          id: `manifest-node-version-mismatch:${file.path}:${instrVersion}`,
+          id: `manifest-node-version-mismatch:${fileIdPath(file)}:${instrVersion}`,
           severity: 'warning',
           category: 'stale_instruction',
           title: `Node.js version mismatch: instruction says ${instrVersion}, project requires ≥${minNodeVersion}`,

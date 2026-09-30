@@ -18,6 +18,7 @@ import * as crypto from 'node:crypto';
 import * as path from 'node:path';
 import type { InstructionFile, InstructionSection, PromptCiIssue } from './types.js';
 import { stripCodeBlocks } from './markdown-fences.js';
+import { sectionIdPath } from './finding-id.js';
 
 /**
  * C2: previously a 50-char floor dropped every section shorter than that —
@@ -616,9 +617,9 @@ export function detectConflicts(files: InstructionFile[]): PromptCiIssue[] {
       if (confidence < 0.4) continue;
 
       const id = conflictId(
-        pos.section.filePath,
+        sectionIdPath(pos.section),
         pos.section.startLine,
-        neg.section.filePath,
+        sectionIdPath(neg.section),
         neg.section.startLine,
         a.pairIndex,
         pos.subject,
@@ -707,9 +708,9 @@ export function detectConflicts(files: InstructionFile[]): PromptCiIssue[] {
 
         // Use -1 as pairIndex sentinel to distinguish cross-pair IDs from within-pair IDs
         const id = conflictId(
-          pos.section.filePath,
+          sectionIdPath(pos.section),
           pos.section.startLine,
-          neg.section.filePath,
+          sectionIdPath(neg.section),
           neg.section.startLine,
           -1,
           subject,

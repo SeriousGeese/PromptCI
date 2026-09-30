@@ -4,18 +4,48 @@
 // (`.claude/skills/**`, `.claude/agents/**`). They are audited structurally by
 // the ai_config detectors, so they are deliberately excluded from the always-
 // loaded prose/bloat detectors — see isOnDemandFileType and buildRepoContext.
+//
+// 'gemini' (Gemini CLI's GEMINI.md), 'cline' (Cline's `.clinerules` file or
+// `.clinerules/` rule directory) and 'persona' (repo-root SOUL.md, USER.md,
+// TOOLS.md) are always-loaded instruction prose, handled like 'claude'.
 export type FileType =
   | 'claude'
   | 'agents'
   | 'cursor'
   | 'windsurf'
   | 'copilot'
+  | 'gemini'
+  | 'cline'
+  | 'persona'
   | 'readme'
   | 'docs'
   | 'prompt'
   | 'skill'
   | 'agent'
   | 'unknown';
+
+/**
+ * Persistent, always-loaded agent instruction file types: the allowlist the
+ * prose detectors (negative-instruction overload, buried-critical, within-
+ * section dedup, prompt-cache friendliness) target. `context optimize` uses it
+ * minus 'persona', which it never rewrites.
+ *
+ * One shared definition on purpose (BUG-19): each detector used to carry its
+ * own copy, so a newly discovered file type was scanned and counted toward
+ * context cost but silently skipped by every copy nobody remembered to update.
+ * README/docs are human-facing and deliberately excluded.
+ */
+export const INSTRUCTION_FILE_TYPES: ReadonlySet<FileType> = new Set<FileType>([
+  'claude',
+  'agents',
+  'cursor',
+  'windsurf',
+  'copilot',
+  'gemini',
+  'cline',
+  'persona',
+  'prompt',
+]);
 
 /**
  * On-demand file types are loaded by an agent only when a skill/subagent is
