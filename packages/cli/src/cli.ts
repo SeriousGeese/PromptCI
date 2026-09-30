@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { Command } from 'commander';
 import { runScan } from './commands/scan.js';
+import { runScore } from './commands/score.js';
 import { runInit } from './commands/init.js';
 import { runFix } from './commands/fix.js';
 import { runReviewDiff } from './commands/review-diff.js';
@@ -23,6 +24,16 @@ program
   .name('promptci')
   .description('Instruction health for AI coding workflows')
   .version(VERSION, '-v, --version', 'print version');
+
+program
+  .command('score')
+  .description(
+    'Print a quick health score and the top 3 findings (writes no files, makes no network calls; also runs when you pass no command)',
+  )
+  .option('--path <dir>', 'target directory to score (default: current directory)')
+  .action(async (opts: { path?: string }) => {
+    await runScore({ scanPath: opts.path });
+  });
 
 program
   .command('scan')
@@ -190,14 +201,24 @@ contextCommand
     await runContextOptimize({ scanPath: opts.path, dryRun: opts.dryRun, write: opts.write });
   });
 
+// Commands that must stay fully offline and write nothing. The update probe is
+// the CLI's only network touch (and writes ~/.promptci/update-check.json), so
+// it never runs for these.
+const OFFLINE_COMMANDS = new Set(['score']);
+
 async function main(): Promise<void> {
-  // Start the best-effort update check now so its once-a-day registry probe
-  // overlaps the command's own work, but print any notice only after the
-  // command has produced its output. Commands that call process.exit (and
-  // Commander's own --version/--help) skip the notice entirely — it is
-  // best-effort by design.
-  const notice = getNewVersionNotice(VERSION);
-  await program.parseAsync(process.argv);
+  // Start the best-effort update check once the command is known, so its
+  // once-a-day registry probe overlaps the command's own work, but print any
+  // notice only after the command has produced its output. Commands that call
+  // process.exit (and Commander's own --version/--help) skip the notice
+  // entirely — it is best-effort by design.
+  let notice: Promise<string | null> = Promise.resolve(null);
+  program.hook('preAction', (_thisCommand, actionCommand) => {
+    if (!OFFLINE_COMMANDS.has(actionCommand.name())) notice = getNewVersionNotice(VERSION);
+  });
+  // A bare `promptci` / `npx @promptci/cli` runs the zero-config score teaser.
+  const argv = process.argv.length <= 2 ? [...process.argv, 'score'] : process.argv;
+  await program.parseAsync(argv);
   const message = await notice;
   if (message) process.stderr.write(message);
 }

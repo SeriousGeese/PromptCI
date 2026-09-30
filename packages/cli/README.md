@@ -12,8 +12,12 @@ output for identical input.
 ## Usage
 
 ```bash
-npx @promptci/cli scan
+npx @promptci/cli          # quick score + top 3 findings: no account, no network, writes nothing
+npx @promptci/cli scan     # full scan and reports
 ```
+
+The no-argument form is `promptci score`; see the
+[main README](https://github.com/SeriousGeese/PromptCI#quickstart) for sample output.
 
 Writes `.promptci/latest.md` (human-readable) and `.promptci/report.json` (machine-readable),
 and prints a summary with a health score and top fixes.

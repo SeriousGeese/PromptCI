@@ -38,6 +38,32 @@ PromptCI treats instruction files like maintainable engineering artifacts.
 
 Requires Node.js 22+.
 
+For a 10-second read on your repo, run the CLI with no arguments (same as `promptci score`).
+It needs no account, makes no network calls, and writes no files:
+
+```bash
+npx @promptci/cli
+```
+
+```text
+PromptCI instruction health: 80/100 (Fair)
+
+Top 3 findings (of 9):
+  1. [warning] Vague guidance detected (AGENTS.md:11)
+     Fix: Replace vague guidance with concrete constraints — specific commands, forbidden patterns, or measurable criteria. For example, replace "write clean code" with…
+  2. [warning] No "read before edit" instruction (AGENTS.md)
+     Fix: Add a rule such as: "Always read a file fully before editing it."
+  3. [warning] No "ask when unsure" instruction (AGENTS.md)
+     Fix: Add a rule such as: "If you are uncertain about the correct approach, say so and ask before proceeding rather than guessing."
+
+Full report, score history, and PR reviews: https://promptci.dev (hosted dashboard; optional)
+```
+
+It always exits 0 after printing a score (it is a glance, not a gate); a bad `--path` or
+unreadable `.promptci/config.json` exits 1. It uses the same config and score as `scan`, and
+skips even the once-a-day version check. To get the full Markdown/JSON report, history, or a CI
+gate, use `scan`:
+
 ```bash
 npx @promptci/cli scan
 ```
@@ -66,6 +92,7 @@ pattern containing a slash is otherwise anchored to the repo root and would miss
 Common commands:
 
 ```bash
+npx @promptci/cli score --path /path/to/repo   # quick score + top 3 findings, writes nothing
 npx @promptci/cli scan --path /path/to/repo    # scan a specific repo
 npx @promptci/cli init                         # create .promptci/config.json
 npx @promptci/cli fix                          # apply deterministic fix recipes
@@ -206,11 +233,13 @@ Docs/     — reference documentation
 A hosted dashboard (scan history, improvement metrics, LLM-assisted fixes, GitHub PR
 integration) is developed separately and is not part of this repository. This package is the
 offline scanner only — it contains no LLM, auth, or upload code and makes no network requests
-beyond the once-a-day npm version check described below.
+beyond the once-a-day npm version check described below. The hosted dashboard is optional:
+`promptci score` only prints a one-line pointer to it, and nothing in the CLI logs in or uploads.
 
 The one network touch in this package is a best-effort check against the npm registry, at most
 once per day, for a newer `@promptci/cli` release. It never blocks a command and is skipped
-entirely when `CI`, `NO_UPDATE_NOTIFIER`, or `PROMPTCI_NO_UPDATE_NOTIFIER` is set.
+entirely when `CI`, `NO_UPDATE_NOTIFIER`, or `PROMPTCI_NO_UPDATE_NOTIFIER` is set, and it never
+runs for `promptci score`.
 
 ## Environment variables
 
