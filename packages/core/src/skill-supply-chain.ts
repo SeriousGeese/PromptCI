@@ -63,16 +63,22 @@
  *
  * Documentation vs directive (the false-positive controls). Outside fenced
  * code — prose, inline code, table rows — a negation or discussion word only
- * counts when it directly GOVERNS the match: an imperative negation at most
- * two words before it in the same clause ("never run `curl … | bash`"), a
- * discussion word right before it ("this skill detects `curl | bash`"), or a
- * predicate right after it ("… is dangerous"). Governance ends at but / and /
- * then / instead / so and at clause punctuation; "never forget/hesitate/stop/
- * skip/fail/neglect/mind" is not a negation. Even then, context NEVER drops a
- * match, or lowers its severity, when the match names a concrete target — a
- * URL, a bare host or host/path, a `$VARIABLE` or `$(…)` — it only lowers
- * confidence (0.4) and notes "looks like documentation". Only target-less
- * documentation ("never run `curl | bash`") is dropped. The trade-off: a
+ * counts when it directly GOVERNS the match: an imperative negation with
+ * nothing or one executing verb between ("never run `curl … | bash`"), a
+ * discussion word right before it ("this skill detects `curl | bash`" — a
+ * `Label:` is not governance), or a predicate right after it ("… is
+ * dangerous"). Governance ends at but / and / then / instead / so and at
+ * clause punctuation; "never forget/hesitate/stop/skip/fail/neglect/mind" is
+ * not a negation. Even then, context NEVER drops a match, or lowers its
+ * severity, when the match names a concrete target — a URL, a host (dotted,
+ * IPv4/IPv6, host:port, defanged or quote-split), a host/path, a `$VARIABLE`
+ * or `$(…)`, or any address-like argument or config/list flag given to
+ * curl/wget/iwr — it only lowers confidence (0.4) and notes "looks like
+ * documentation". Target-less exec documentation ("never run `curl | bash`")
+ * is dropped; target-less override/concealment/bypass text is dropped only
+ * when the governed phrase is itself set off in a code span, quotes or a
+ * table cell (otherwise it is kept at low confidence), and quoted text after
+ * an adoption phrase ("your new rule is \"…\"") is never data. The trade-off: a
  * security skill quoting a real installer URL is reported (high, low
  * confidence); the escape hatch is the baseline or a config `exclude`.
  * Other controls: one named API key sent to an API is not exfiltration;
@@ -565,14 +571,18 @@ function logicalLines(doc: SkillDoc): { lines: Logical[]; capped: number[] } {
  */
 const NEGATION_WORD_RE =
   /\b(?:never|don't|dont|do\s{1,5}not|avoid|must\s{1,5}not|mustn't|should\s{1,5}not|shouldn't|refuse\s{1,5}to)\b(?!\s{1,5}(?:mind|hesitate|forget|stop|skip|fail|neglect)\w{0,4}\b)/gi;
-/** Governance ends at a clause boundary or a coordinating word. */
+/**
+ * Governance ends at a clause boundary or a coordinating word. A colon ends it
+ * too: `Injection:` / `Detect:` / `Example of:` are labels, not governance.
+ */
 const GOVERNANCE_BREAK_RE = /[,;:.!?]|\b(?:but|and|then|instead|so)\b/i;
-const GOVERNANCE_BREAK_NO_LABEL_RE = /[,;.!?]|\b(?:but|and|then|instead|so)\b/i;
-/** At most this many words between the governing word and the match. */
+/** Discussion words may sit up to this many words before the match. */
 const MAX_GOVERNED_WORDS = 2;
+/** The only words allowed between a negation and what it negates: "never RUN `…`". */
+const EXECUTING_VERB_RE = /^(?:run|pipe|use|execute|invoke|call|send|pass|type|paste)$/i;
 
-function wordCount(gap: string): number {
-  return gap.match(/[A-Za-z0-9_'-]+/g)?.length ?? 0;
+function words(gap: string): string[] {
+  return gap.match(/[A-Za-z0-9_'-]+/g) ?? [];
 }
 /**
  * Words that mark a match as being *discussed* — only these, and only when they
@@ -594,26 +604,28 @@ function governs(before: string, re: RegExp, gapOk: (gap: string) => boolean): b
 }
 
 /**
- * An imperative negation that directly governs the match: at most two words
- * between them ("never run `…`"), same clause, no but/and/then/instead/so.
+ * An imperative negation that directly governs the match: nothing, or one
+ * executing verb, between them ("never `…`", "never run `…`"), same clause.
  */
 function governedNegation(text: string, index: number): boolean {
-  return governs(text.slice(Math.max(0, index - 80), index), NEGATION_WORD_RE,
-    (gap) => gap.length <= 30 && !GOVERNANCE_BREAK_RE.test(gap) && wordCount(gap) <= MAX_GOVERNED_WORDS);
+  return governs(text.slice(Math.max(0, index - 80), index), NEGATION_WORD_RE, (gap) => {
+    if (gap.length > 30 || GOVERNANCE_BREAK_RE.test(gap)) return false;
+    const w = words(gap);
+    return w.length === 0 || (w.length === 1 && EXECUTING_VERB_RE.test(w[0]!));
+  });
 }
 
-/** A discussion word directly before the match (a `label:` is allowed), or a predicate right after it. */
+/** A discussion word directly before the match (not a `Label:`), or a predicate right after it. */
 function governedDiscussion(text: string, index: number, length: number): boolean {
   if (DISCUSSION_AFTER_RE.test(text.slice(index + length, index + length + 60))) return true;
   return governs(text.slice(Math.max(0, index - 80), index), DISCUSSION_WORD_RE,
-    (gap) => gap.length <= 30 && !GOVERNANCE_BREAK_NO_LABEL_RE.test(gap) && wordCount(gap) <= MAX_GOVERNED_WORDS);
+    (gap) => gap.length <= 30 && !GOVERNANCE_BREAK_RE.test(gap) && words(gap).length <= MAX_GOVERNED_WORDS);
 }
 
 /**
- * A concrete target: a URL, a bare host or host/path (`evil.com/x.sh`,
- * `get.evil.com`), or a variable/command substitution (`$INSTALLER`, `$(…)`).
- * Documentation context never drops (or lowers the severity of) a match that
- * names one — it only lowers confidence.
+ * A concrete target: a URL, a host (dotted, IPv4, IPv6, host:port such as
+ * `localhost:8000`, or obfuscated — `evil[.]com`, `evil .com`, `"evil"".com"`,
+ * `'evil'.com`), a host/path, or a variable/command substitution.
  */
 const TARGET_RE = new RegExp(
   [
@@ -621,14 +633,41 @@ const TARGET_RE = new RegExp(
     String.raw`\b(?:[a-z0-9-]{1,63}\.){1,5}[a-z]{2,24}(?::\d{1,5})?\/\S`,
     String.raw`\b(?:[a-z0-9-]{1,63}\.){2,5}[a-z]{2,24}\b`,
     String.raw`\b[a-z0-9-]{1,63}\.(?:com|net|org|io|dev|app|xyz|ru|cn|info|biz|co|me|tk|top|site|online|cloud|run|link|ly|gg|ai|so|to)\b`,
+    String.raw`\b\d{1,3}(?:\.\d{1,3}){3}\b`, // IPv4
+    String.raw`\[[0-9a-f:]{2,45}\]|\b(?:[0-9a-f]{1,4}:){2,7}[0-9a-f]{0,4}\b`, // IPv6
+    String.raw`\b[a-z][a-z0-9-]{0,62}(?:\.[a-z0-9-]{1,63}){0,5}:\d{2,5}\b`, // host:port
+    String.raw`\[\.\]|\(\.\)|\{\.\}|\[dot\]|\(dot\)`, // defanged hosts
+    String.raw`\w\s{1,3}\.(?:com|net|org|io|dev|app|xyz|ru|cn|info|biz|co|me|tk|top|site|sh)\b`, // "evil .com"
+    String.raw`\w["']{1,2}\.[a-z]{2,24}\b`, // 'evil'.com, "evil"".com"
     String.raw`\$\{?[A-Za-z_][A-Za-z0-9_]{0,60}\}?`,
     String.raw`\$\(`,
   ].join('|'),
   'i',
 );
+const FETCHER_RE = /\b(?:curl|wget|iwr|irm|invoke-webrequest|invoke-restmethod)\b/gi;
+const FETCH_CONFIG_FLAG_RE = /^(?:-K|--config|-i|--input-file|-T|--upload-file|--url|--url-query)(?:=|$)|^-K\S/;
+
+/**
+ * A fetcher given a non-flag argument that looks like an address
+ * (`curl intranet/x.sh`, `wget host:8080`, `curl $U`) or a config/list/url flag
+ * (`curl -K cfg`, `wget -i list`, `--url x`) has a target, whatever its
+ * spelling. Bare `curl | bash` does not — and neither does prose such as
+ * "pipe curl into bash", whose "arguments" are plain words.
+ */
+function fetcherHasArgument(span: string): boolean {
+  for (const m of span.matchAll(FETCHER_RE)) {
+    const rest = span.slice((m.index ?? 0) + m[0].length, (m.index ?? 0) + m[0].length + 300);
+    const args = rest.split(/[|;&)`\n]/, 1)[0]!.trim().split(/\s+/)
+      .map((a) => a.replace(/[.,:;!?'")\]]+$/, ''))
+      .filter(Boolean);
+    if (args.some((a) => FETCH_CONFIG_FLAG_RE.test(a) || (!a.startsWith('-') && /[/.:@=$~\d[]/.test(a)))) return true;
+  }
+  return false;
+}
 
 function hasTarget(span: string): boolean {
-  return TARGET_RE.test(span.slice(0, 600));
+  const s = span.slice(0, 600);
+  return TARGET_RE.test(s) || fetcherHasArgument(s);
 }
 
 /** skip: pure documentation, dropped. lowconf: documentation that names a target — kept at full severity, low confidence. */
@@ -638,13 +677,37 @@ type DocVerdict = 'skip' | 'lowconf' | 'none';
  * Is this match documentation rather than a directive? Only outside fenced
  * code, and only when a negation/discussion word directly governs it. A match
  * with a concrete target is never dropped and never loses severity — it only
- * gets low confidence and a "looks like documentation" note. (The escape
- * hatch for a real false positive is the baseline or a config `exclude`.)
+ * gets low confidence and a "looks like documentation" note. For rules whose
+ * matches never carry a target (override, strong concealment, permission
+ * bypass), governance drops a match only when the phrase is itself set off as
+ * a quotation — in a code span, quotes or a table cell; otherwise it too is
+ * kept at low confidence. (The escape hatch for a real false positive is the
+ * baseline or a config `exclude`.)
  */
-function documentationVerdict(doc: SkillDoc, lineIndex: number, text: string, index: number, length: number): DocVerdict {
+function documentationVerdict(
+  doc: SkillDoc, lineIndex: number, text: string, index: number, length: number, targetless = false,
+): DocVerdict {
   if (doc.kind !== 'instructions' || doc.fenced[lineIndex]) return 'none';
   if (!governedNegation(text, index) && !governedDiscussion(text, index, length)) return 'none';
-  return hasTarget(text.slice(index, index + Math.max(length, 1) + 80)) ? 'lowconf' : 'skip';
+  if (hasTarget(text.slice(index, index + Math.max(length, 1) + 80))) return 'lowconf';
+  if (!targetless) return 'skip';
+  return isQuoted(text, index, index + length) || isTableRow(text) ? 'skip' : 'lowconf';
+}
+
+function isTableRow(line: string): boolean {
+  return line.trimStart().startsWith('|');
+}
+
+/** Quoted text preceded by an adoption phrase is an instruction being installed, not quoted data. */
+const ADOPTION_RE =
+  /\b(?:(?:rule|instructions?|prompt|policy|directive|task|goal|job)\s{1,5}(?:is|are|now)|you\s{1,5}are|you\s{1,5}will|from\s{1,5}now\s{1,5}on|always|remember\s{1,5}(?:that|to)|act\s{1,5}as|your\s{1,5}new)\b[^.!?]{0,40}$/i;
+
+/** Quoted data: inside quotes/backticks and NOT preceded by an adoption phrase ("your new rule is \"…\""). */
+function isQuotedData(line: string, start: number, end: number): boolean {
+  if (!isQuoted(line, start, end)) return false;
+  const before = line.slice(Math.max(0, start - 200), start);
+  const open = Math.max(before.lastIndexOf('"'), before.lastIndexOf('`'), before.lastIndexOf('\u{201C}'));
+  return !ADOPTION_RE.test(before.slice(0, Math.max(0, open)));
 }
 
 /** The match sits inside a double-quoted, curly-quoted or backticked span. */
@@ -852,90 +915,141 @@ function producedFile(seg: string, kind: 'remote' | 'encoded'): string | undefin
   return redirect ? fileKey(redirect[1]!) : undefined;
 }
 
-/**
- * `curl -o x URL && chmod +x x && ./x` / `base64 -d > f; sh f` /
- * `X=$(curl …); eval "$X"`: content produced by a download (or a decode) and
- * executed later in the same logical command.
- *
- * A download is cleared only by a REAL verification command, placed between
- * the fetch and the run, chained to both with `&&` (a failed check must stop
- * the run — `;` and `||` do not), that names the executed file exactly —
- * `sha256sum -c x.sum` (a checksum manifest), `echo "h  x.sh" | sha256sum -c -`
- * (the piped line names the file), `gpg --verify x.sh.asc x.sh`.
- */
-function producedThenRun(text: string, quoteAware: boolean): { rule: 'remote-exec' | 'encoded-exec'; found: Found } | undefined {
-  if (!/&&|;|\|\||&/.test(text)) return undefined;
-  let segs = splitCommands(text, quoteAware).slice(0, 500);
-  // A comment ends the command line: nothing after `#` runs (or verifies).
-  const commentAt = segs.findIndex((s) => /(?:^|\s)#/.test(s.text));
-  if (commentAt >= 0) {
-    const s = segs[commentAt]!;
-    segs = [...segs.slice(0, commentAt), { ...s, text: s.text.slice(0, s.text.search(/(?:^|\s)#/)), sep: '' }];
-  }
-  const isVerify = segs.map((s) => VERIFY_CMD_RE.test(s.text));
-  /** Every separator from segment `from` up to `to` is `&&` (or the pipe feeding a verify command). */
-  const chainedAnd = (from: number, to: number): boolean => {
-    for (let m = from; m < to; m++) {
-      const sep = segs[m]!.sep;
-      if (sep === '&&') continue;
-      if (sep === '|' && isVerify[m + 1]) continue;
-      return false;
-    }
-    return true;
-  };
-  const produced = new Map<string, { kind: 'remote' | 'encoded'; index: number; seg: number }>();
-  const verifiedAt = new Map<string, number[]>();
-  const fetchedVars = new Map<string, { index: number; seg: number }>();
+/** A local hash command writing a checksum file: `sha256sum x.sh > x.sum` — a self-certified manifest. */
+const HASH_TO_FILE_RE =
+  /^\s{0,5}(?:sudo\s{1,5})?(?:(?:sha(?:1|224|256|384|512)|md5|b2)sum|shasum|openssl\s{1,5}dgst)\b(?![^|;&]{0,300}\s(?:-c|--check)\b)[^|;&]{0,300}>{1,2}\s{0,3}(\S{1,300})/i;
+/** Any local hash command (feeding a `-c -` check from it is self-certification too). */
+const HASH_CMD_RE = /^\s{0,5}(?:sudo\s{1,5})?(?:(?:sha(?:1|224|256|384|512)|md5|b2)sum|shasum|openssl\s{1,5}dgst)\b/i;
+/** Candidates worth a chain scan when nothing is being tracked yet. */
+const CHAIN_HINT_RE = /curl|wget|iwr|irm|invoke-web|base64|xxd|openssl|uudecode|sum\b|gpg|cosign|minisign|slsa/i;
 
-  for (let k = 0; k < segs.length; k++) {
-    const seg = segs[k]!;
-    const t = seg.text;
-    const assign = FETCH_ASSIGN_RE.exec(t);
-    if (assign) {
-      fetchedVars.set(assign[1]!, { index: seg.start + Math.max(0, t.search(/\S/)), seg: k });
-      continue;
+/** Whether a checksum manifest exists in the repo (a pre-existing, reviewable file). */
+type ManifestExists = (name: string) => boolean;
+
+type ChainHit = { rule: 'remote-exec' | 'encoded-exec'; found: Found; fromLine: number };
+
+/**
+ * Tracks content produced by a download (or a decode) and reports when it is
+ * executed later: `curl -o x URL && chmod +x x && ./x`, `base64 -d > f; sh f`,
+ * `X=$(curl …); eval "$X"`. Lines of one script, or one fenced block, are fed
+ * in order and behave like `;`-separated commands, so a download on one line
+ * and its execution on another are still caught.
+ *
+ * A download is cleared only by a REAL verification command, chained with
+ * `&&` to both the fetch and the run on the same logical line (a failed check
+ * must stop the run — `;`, `||` and a new line do not), that names the
+ * executed file exactly: a `-c` manifest that was itself fetched in the chain
+ * or already exists in the repo — never one generated locally (`sha256sum x >
+ * x.sum`), a here-string or process substitution, or a check run with
+ * `--ignore-missing` — a piped checksum line (`echo "h  x.sh" | sha256sum -c -`,
+ * not piped from a local hash command), or `gpg --verify sig x.sh`.
+ */
+class ChainScanner {
+  private readonly produced = new Map<string, { kind: 'remote' | 'encoded'; line: number; feed: number; seg: number; index: number }>();
+  private readonly fetchedVars = new Map<string, { line: number; feed: number; index: number }>();
+  private readonly generated = new Set<string>();
+  private feeds = 0;
+
+  constructor(private readonly manifestExists: ManifestExists = () => false) {}
+
+  feed(text: string, line: number, quoteAware: boolean): ChainHit | undefined {
+    const feedId = ++this.feeds;
+    if (this.produced.size === 0 && this.fetchedVars.size === 0 && !CHAIN_HINT_RE.test(text)) return undefined;
+    let segs = splitCommands(text, quoteAware).slice(0, 500);
+    // A comment ends the command line: nothing after `#` runs (or verifies).
+    const commentAt = segs.findIndex((s) => /(?:^|\s)#/.test(s.text));
+    if (commentAt >= 0) {
+      const s = segs[commentAt]!;
+      segs = [...segs.slice(0, commentAt), { ...s, text: s.text.slice(0, s.text.search(/(?:^|\s)#/)), sep: '' }];
     }
-    const isFetch = FETCH_STAGE_RE.test(t) && /https?:\/\//i.test(t);
-    const isDecode = DECODE_STAGE_RE.test(t);
-    if (isFetch || isDecode) {
-      const kind = isFetch ? 'remote' : 'encoded';
-      const file = producedFile(t, kind);
-      if (file) produced.set(file, { kind, index: seg.start + Math.max(0, t.search(/\S/)), seg: k });
-      continue;
-    }
-    if (isVerify[k]) {
-      const manifest = CHECKSUM_MANIFEST_RE.exec(t)?.[1];
-      let names: Set<string>;
-      if (manifest && manifest !== '-') names = new Set(produced.keys()); // a checksum manifest covers what it lists
-      else if (manifest === '-' && k > 0 && segs[k - 1]!.sep === '|') names = tokenKeys(segs[k - 1]!.text);
-      else names = tokenKeys(t);
-      for (const file of produced.keys()) {
-        if (names.has(file)) verifiedAt.set(file, [...(verifiedAt.get(file) ?? []), k]);
+    const isVerify = segs.map((s) => VERIFY_CMD_RE.test(s.text));
+    /** Every separator from segment `from` up to `to` (same line) is `&&`, or the pipe feeding a verify command. */
+    const chainedAnd = (from: number, to: number): boolean => {
+      for (let m = from; m < to; m++) {
+        const sep = segs[m]!.sep;
+        if (sep === '&&') continue;
+        if (sep === '|' && isVerify[m + 1]) continue;
+        return false;
       }
-      continue;
-    }
-    const runVar = RUN_VAR_RE.exec(t);
-    if (runVar && fetchedVars.has(runVar[1]!)) {
-      const src = fetchedVars.get(runVar[1]!)!;
-      return { rule: 'remote-exec', found: { index: src.index, match: fakeMatch(text, src.index, Math.min(text.length, seg.start + t.length)) } };
-    }
-    // `chmod +x f` and `cat f` are not executions.
-    if (/^\s{0,5}(?:chmod|cat|ls|rm|mv|cp|echo|printf|test|\[)\b/i.test(t)) continue;
-    const run = RUN_FILE_RE.exec(t);
-    if (!run) continue;
-    const file = fileKey(run[1]!);
-    const source = produced.get(file);
-    if (!source) continue;
-    const verified = source.kind === 'remote' &&
-      (verifiedAt.get(file) ?? []).some((v) => v > source.seg && chainedAnd(source.seg, k));
-    if (verified) continue;
-    const end = Math.min(text.length, seg.start + t.length);
-    return {
-      rule: source.kind === 'remote' ? 'remote-exec' : 'encoded-exec',
-      found: { index: source.index, match: fakeMatch(text, source.index, end) },
+      return true;
     };
+    const verifiedAt = new Map<string, number[]>();
+
+    for (let k = 0; k < segs.length; k++) {
+      const seg = segs[k]!;
+      const t = seg.text;
+      const at = seg.start + Math.max(0, t.search(/\S/));
+      const assign = FETCH_ASSIGN_RE.exec(t);
+      if (assign) {
+        this.fetchedVars.set(assign[1]!, { line, feed: feedId, index: at });
+        continue;
+      }
+      const isFetch = FETCH_STAGE_RE.test(t) && /https?:\/\//i.test(t);
+      const isDecode = DECODE_STAGE_RE.test(t);
+      if (isFetch || isDecode) {
+        const kind = isFetch ? 'remote' : 'encoded';
+        const file = producedFile(t, kind);
+        if (file) this.produced.set(file, { kind, line, feed: feedId, seg: k, index: at });
+        continue;
+      }
+      const generated = HASH_TO_FILE_RE.exec(t);
+      if (generated) {
+        this.generated.add(fileKey(generated[1]!));
+        continue;
+      }
+      if (isVerify[k]) {
+        for (const file of this.verifiedFiles(t, k > 0 && segs[k - 1]!.sep === '|' ? segs[k - 1]!.text : undefined)) {
+          verifiedAt.set(file, [...(verifiedAt.get(file) ?? []), k]);
+        }
+        continue;
+      }
+      const runVar = RUN_VAR_RE.exec(t);
+      if (runVar && this.fetchedVars.has(runVar[1]!)) {
+        const src = this.fetchedVars.get(runVar[1]!)!;
+        return this.hit('remote-exec', text, src.feed === feedId ? src.index : at, seg.start + t.length, src.line);
+      }
+      // `chmod +x f` and `cat f` are not executions.
+      if (/^\s{0,5}(?:chmod|cat|ls|rm|mv|cp|echo|printf|test|\[)\b/i.test(t)) continue;
+      const run = RUN_FILE_RE.exec(t);
+      if (!run) continue;
+      const file = fileKey(run[1]!);
+      const source = this.produced.get(file);
+      if (!source) continue;
+      const verified = source.kind === 'remote' && source.feed === feedId &&
+        (verifiedAt.get(file) ?? []).some((v) => v > source.seg && chainedAnd(source.seg, k));
+      if (verified) continue;
+      return this.hit(source.kind === 'remote' ? 'remote-exec' : 'encoded-exec', text,
+        source.feed === feedId ? source.index : at, seg.start + t.length, source.line);
+    }
+    return undefined;
   }
-  return undefined;
+
+  /** Files a verification segment really checks. */
+  private verifiedFiles(t: string, pipedFrom: string | undefined): string[] {
+    const produced = [...this.produced.keys()];
+    // Self-certification: nothing checked against a locally generated or inline manifest counts.
+    if (/--ignore-missing\b|<<<|<\(/.test(t)) return [];
+    const manifest = CHECKSUM_MANIFEST_RE.exec(t)?.[1];
+    if (manifest !== undefined) {
+      if (manifest === '-' || manifest === '/dev/stdin') {
+        if (pipedFrom === undefined || HASH_CMD_RE.test(pipedFrom) || /<\(|\$\(/.test(pipedFrom)) return [];
+        const names = tokenKeys(pipedFrom);
+        return produced.filter((f) => names.has(f));
+      }
+      const key = fileKey(manifest);
+      if (manifest.startsWith('<') || this.generated.has(key)) return [];
+      const fetched = this.produced.get(key)?.kind === 'remote';
+      if (!fetched && !this.manifestExists(manifest.replace(/^['"]+|['"]+$/g, ''))) return [];
+      return produced; // a real manifest covers what it lists
+    }
+    const names = tokenKeys(t);
+    return produced.filter((f) => names.has(f));
+  }
+
+  private hit(rule: ChainHit['rule'], text: string, index: number, end: number, fromLine: number): ChainHit {
+    const i = Math.min(index, text.length);
+    return { rule, found: { index: i, match: fakeMatch(text, i, Math.max(i, Math.min(text.length, end))) }, fromLine };
+  }
 }
 
 /**
@@ -1371,8 +1485,6 @@ function execMatches(text: string, quoteAware: boolean): Array<{ rule: SkillSupp
   if (pipe) hits.push({ rule: 'remote-exec', found: pipe });
   const decodedPipe = pipeInto(text, DECODE_STAGE_RE, quoteAware);
   if (decodedPipe) hits.push({ rule: 'encoded-exec', found: decodedPipe });
-  const chain = producedThenRun(text, quoteAware);
-  if (chain) hits.push(chain);
   if (!hits.some((h) => h.rule === 'remote-exec')) {
     for (const g of REMOTE_EXEC_PATTERNS) {
       const f = findFirst(g.pattern, text, g.requires);
@@ -1388,16 +1500,47 @@ function execMatches(text: string, quoteAware: boolean): Array<{ rule: SkillSupp
   return hits;
 }
 
-function checkExec(doc: SkillDoc, logical: Logical[], commands: Logical[], add: Add): Set<number> {
+/**
+ * Block ids for chain tracking: a whole script/config file is one block; in
+ * markdown each fenced block is one block and every prose line its own.
+ */
+function chainBlocks(doc: SkillDoc): (lineIndex: number) => number {
+  if (doc.kind !== 'instructions') return () => 0;
+  const ids = new Int32Array(doc.lines.length);
+  let id = 0;
+  for (let i = 0; i < doc.lines.length; i++) {
+    if (doc.fenced[i] && !(i > 0 && doc.fenced[i - 1])) id++;
+    ids[i] = doc.fenced[i] ? id : -(i + 1);
+  }
+  return (i) => ids[i]!;
+}
+
+function checkExec(doc: SkillDoc, logical: Logical[], commands: Logical[], add: Add, manifestExists?: ManifestExists): Set<number> {
   const consumed = new Set<number>();
+  const blockOf = chainBlocks(doc);
+  let chain = new ChainScanner(manifestExists);
+  let block = Number.NaN;
   for (const { text, line } of logical) {
     const i = line - 1;
     const quoteAware = doc.kind !== 'instructions' || doc.fenced[i] === 1;
-    const hits = execMatches(text, quoteAware);
-    for (const { rule, found } of hits) {
+    const b = blockOf(i);
+    if (b !== block) {
+      chain = new ChainScanner(manifestExists);
+      block = b;
+    }
+    const hits: Array<{ rule: SkillSupplyChainRule; found: Found; note?: string }> = execMatches(text, quoteAware);
+    const chained = chain.feed(text, line, quoteAware);
+    if (chained) {
+      hits.push({
+        rule: chained.rule,
+        found: chained.found,
+        note: chained.fromLine !== line ? `(fetched/decoded at line ${chained.fromLine}) ` : undefined,
+      });
+    }
+    for (const { rule, found, note } of hits) {
       const len = found.match[0].length;
       const verdict = documentationVerdict(doc, i, text, found.index, len);
-      addJudged(add, verdict, rule, line, () => excerpt(text, found.index, len), 'high', 0.85);
+      addJudged(add, verdict, rule, line, () => `${note ?? ''}${excerpt(text, found.index, len)}`, 'high', 0.85);
       if (verdict !== 'skip') consumed.add(line);
     }
   }
@@ -1479,20 +1622,20 @@ function directive(
   lineIndex: number,
   text: string,
   patterns: RegExp[],
-  opts: { skipQuoted?: boolean; negatable?: boolean } = {},
+  opts: { skipQuoted?: boolean; negatable?: boolean; targetless?: boolean } = {},
 ): { found: Found; verdict: DocVerdict } | undefined {
   for (const re of patterns) {
     const m = findFirst(re, text);
     if (!m) continue;
     const len = m.match[0].length;
-    if (opts.skipQuoted && isQuoted(text, m.index, m.index + len)) continue;
+    if (opts.skipQuoted && isQuotedData(text, m.index, m.index + len)) continue;
     let verdict: DocVerdict;
     if (opts.negatable === false) {
       verdict = !doc.fenced[lineIndex] && governedDiscussion(text, m.index, len)
         ? (hasTarget(text.slice(m.index, m.index + len + 80)) ? 'lowconf' : 'skip')
         : 'none';
     } else {
-      verdict = documentationVerdict(doc, lineIndex, text, m.index, len);
+      verdict = documentationVerdict(doc, lineIndex, text, m.index, len, opts.targetless);
     }
     if (verdict === 'skip') continue;
     return { found: m, verdict };
@@ -1553,19 +1696,19 @@ function checkProse(doc: SkillDoc, add: Add): void {
     const line = i + 1;
 
     if (OVERRIDE_HINT_RE.test(text)) {
-      const r = directive(doc, i, text, OVERRIDE_PATTERNS, { skipQuoted: true });
+      const r = directive(doc, i, text, OVERRIDE_PATTERNS, { skipQuoted: true, targetless: true });
       if (r) record('instruction-override', line, text, r, 'high', 0.8);
     }
 
     if (CONCEAL_HINT_RE.test(text)) {
-      const strong = directive(doc, i, text, CONCEAL_STRONG);
+      const strong = directive(doc, i, text, CONCEAL_STRONG, { targetless: true });
       const soft = strong ? undefined : directive(doc, i, text, CONCEAL_SOFT, { negatable: false });
       if (strong) record('conceal-from-user', line, text, strong, 'high', 0.75);
       else if (soft) record('conceal-from-user', line, text, soft, 'warning', 0.6);
     }
 
     if (BYPASS_HINT_RE.test(text)) {
-      const r = directive(doc, i, text, BYPASS_PROSE);
+      const r = directive(doc, i, text, BYPASS_PROSE, { targetless: true });
       if (r) record('permission-bypass', line, text, r, 'warning', 0.6);
     }
 
@@ -1592,7 +1735,7 @@ function checkBypassFlags(doc: SkillDoc, add: Add): void {
     if (!m) continue;
     if (doc.kind === 'instructions' && !doc.fenced[i] && isFlagDocRow(text)) continue;
     const len = m.match[0].length;
-    addJudged(add, documentationVerdict(doc, i, text, m.index, len), 'permission-bypass', i + 1,
+    addJudged(add, documentationVerdict(doc, i, text, m.index, len, true), 'permission-bypass', i + 1,
       () => excerpt(text, m.index, len), 'warning', 0.7);
   }
 }
@@ -1876,7 +2019,8 @@ function checkPackageScripts(doc: SkillDoc, parsed: Record<string, unknown>, add
   if (typeof scripts === 'object' && scripts !== null) {
     for (const [name, cmd] of Object.entries(scripts as Record<string, unknown>).slice(0, 100)) {
       if (typeof cmd !== 'string') continue;
-      for (const { rule, found } of execMatches(cmd, true)) {
+      const chained = new ChainScanner().feed(cmd, 1, true);
+      for (const { rule, found } of [...execMatches(cmd, true), ...(chained ? [chained] : [])]) {
         add(rule, lineOf(doc.content, `"${name}"`), `scripts.${visible(name)}: ${excerpt(cmd, found.index, found.match[0].length)}`, 'high', 0.85);
       }
     }
@@ -2174,7 +2318,13 @@ function scanDoc(
     });
   }
   const commands = commandTexts(doc, logical);
-  const consumed = checkExec(doc, logical, commands, add);
+  // A checksum manifest counts only if it is a real, reviewable file in the repo (or fetched in the chain).
+  const manifestExists: ManifestExists = (name) => {
+    const rel = name.replace(/^\.\//, '');
+    if (!rel || rel.startsWith('/') || /^[a-z]:/i.test(rel)) return false;
+    return [`${path.posix.dirname(doc.path)}/${rel}`, `${skillDir}/${rel}`, rel].some((p) => isFileWithinRoot(repoRoot, p));
+  };
+  const consumed = checkExec(doc, logical, commands, add, manifestExists);
   checkUnpinned(doc, commands, consumed, add);
   if (doc.kind === 'instructions') {
     checkProse(doc, add);
@@ -2188,15 +2338,42 @@ function scanDoc(
 
 /** Dependency/VCS directory names a skill might reference by path. */
 const DEPENDENCY_DIR_NAMES = ['node_modules', '.git', 'worktrees', '.worktrees'];
+/**
+ * A path reference into a dependency/VCS directory: the name as a path segment
+ * (`node node_modules/evil/index.js`, `./.git/hooks/x`), not a substring of
+ * something else (`repo.git/`).
+ */
+const DEPENDENCY_REF_RE: Record<string, RegExp> = {
+  node_modules: /(?:^|[\s'"`(=:/])node_modules\//m,
+  '.git': /(?:^|[\s'"`(=:])(?:\.\/)?\.git\//m,
+  worktrees: /(?:^|[\s'"`(=:])(?:\.\/)?worktrees\//m,
+  '.worktrees': /(?:^|[\s'"`(=:])(?:\.\/)?\.worktrees\//m,
+};
 
-function skipReason(skip: SkillBundleSkip, referenced: ReadonlySet<string>): Unscanned {
+/** Non-sample hook files under a skill's `.git/hooks`. */
+function hasGitHooks(repoRoot: string, gitDir: string): boolean {
+  const abs = resolveWithinRoot(repoRoot, `${gitDir}/hooks`);
+  if (!abs) return false;
+  try {
+    return fs.readdirSync(abs).some((f) => !f.endsWith('.sample'));
+  } catch {
+    return false;
+  }
+}
+
+function skipReason(skip: SkillBundleSkip, referenced: ReadonlySet<string>, repoRoot: string): Unscanned {
   switch (skip.kind) {
     case 'dependency-dir': {
       const name = path.posix.basename(skip.path);
       const read = name === 'node_modules' ? ' (only package manifests and their bin targets were read)' : '';
-      return referenced.has(name)
-        ? { path: skip.path, reason: `dependency/VCS directory referenced by the skill — not walked${read}`, severity: 'warning' }
-        : { path: skip.path, reason: `dependency/VCS directory — not walked${read}`, severity: 'info' };
+      // Code the skill runs from an unscanned directory is unreviewed executable content: fail closed.
+      if (referenced.has(name)) {
+        return { path: skip.path, reason: `dependency/VCS directory the skill runs or references by path — not walked${read}`, severity: 'high' };
+      }
+      if (name === '.git' && hasGitHooks(repoRoot, skip.path)) {
+        return { path: skip.path, reason: 'git directory with hooks — hooks run on git operations and were not scanned', severity: 'warning' };
+      }
+      return { path: skip.path, reason: `dependency/VCS directory — not walked${read}`, severity: 'info' };
     }
     case 'include':
       return { path: skip.path, reason: `${skip.count ?? 0} file(s) outside the configured include patterns — not scanned`, severity: 'info' };
@@ -2278,7 +2455,7 @@ export function detectSkillSupplyChain(context: RepoContext, limits: SkillScanLi
   };
   const noteReferences = (state: SkillState, doc: SkillDoc) => {
     if (doc.kind !== 'instructions' && doc.kind !== 'script' && !(doc.kind === 'text' && doc.lang === 'sh')) return;
-    for (const name of DEPENDENCY_DIR_NAMES) if (doc.content.includes(`${name}/`)) state.referenced.add(name);
+    for (const name of DEPENDENCY_DIR_NAMES) if (DEPENDENCY_REF_RE[name]!.test(doc.content)) state.referenced.add(name);
   };
   const visited = new Set<string>();
   const scanFile = (state: SkillState, file: string, isSkillMd: boolean, priority: boolean): ReturnType<typeof loadDocs> => {
@@ -2313,7 +2490,7 @@ export function detectSkillSupplyChain(context: RepoContext, limits: SkillScanLi
   for (const state of states) {
     if (!state.loaded) continue; // unreadable SKILL.md
     for (const skip of ai.skillBundleSkips ?? []) {
-      if (owner(skip.path) === states.indexOf(state)) state.unscanned.push(skipReason(skip, state.referenced));
+      if (owner(skip.path) === states.indexOf(state)) state.unscanned.push(skipReason(skip, state.referenced, context.repoRoot));
     }
     // Name what could not be scanned — never drop it silently.
     for (const u of state.unscanned) {
