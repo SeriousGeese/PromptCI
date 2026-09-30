@@ -20,6 +20,7 @@
 import type { RepoContext } from './repo-context.js';
 import type { PromptCiIssue } from './types.js';
 import { shortHash } from './ai-config.js';
+import { fileIdPath } from './finding-id.js';
 
 /**
  * Language / framework signals that, when they appear as SECTION HEADINGS in an
@@ -70,7 +71,7 @@ export function detectWindsurfRules(context: RepoContext): PromptCiIssue[] {
     if (topics.size >= MIN_DISTINCT_TOPICS) {
       const found = [...topics].sort();
       issues.push({
-        id: `ai-config-windsurf-scope-${shortHash(file.path)}`,
+        id: `ai-config-windsurf-scope-${shortHash(fileIdPath(file))}`,
         severity: 'info',
         category: 'ai_config',
         title: '.windsurfrules mixes language-specific rules in a workspace-wide file',

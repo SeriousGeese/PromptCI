@@ -2,6 +2,7 @@ import * as path from 'node:path';
 import { existsSync } from 'node:fs';
 import { parseSections } from './scanner.js';
 import type { InstructionFile, InstructionSection } from './types.js';
+import { INSTRUCTION_FILE_TYPES } from './types.js';
 import type { FileChange } from './fix-engine.js';
 
 const DATE_PATTERNS = [
@@ -122,7 +123,7 @@ export async function optimizeContext(
   // context cost, and restructuring someone's README is never what they asked
   // for when they ran `promptci context optimize`.
   const targetFiles = files.filter((f) =>
-    ['claude', 'agents', 'cursor', 'windsurf', 'copilot', 'prompt'].includes(f.fileType)
+    INSTRUCTION_FILE_TYPES.has(f.fileType)
   );
 
   for (const file of targetFiles) {

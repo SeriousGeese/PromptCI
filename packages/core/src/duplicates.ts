@@ -13,6 +13,7 @@
 import * as crypto from 'node:crypto';
 import type { InstructionFile, InstructionSection, PromptCiIssue } from './types.js';
 import { snippet } from './evidence.js';
+import { fileIdPath, sectionIdPath } from './finding-id.js';
 
 /**
  * Cross-file: sections shorter than this (normalised chars) are too noisy to flag.
@@ -197,8 +198,8 @@ export function detectDuplicates(files: InstructionFile[]): PromptCiIssue[] {
 
       if (a.filePath === b.filePath && a.startLine === b.startLine) continue;
 
-      const keyA = `${a.filePath}:${a.startLine}`;
-      const keyB = `${b.filePath}:${b.startLine}`;
+      const keyA = `${sectionIdPath(a)}:${a.startLine}`;
+      const keyB = `${sectionIdPath(b)}:${b.startLine}`;
 
       const normA = a.normalizedText;
       const normB = b.normalizedText;
@@ -399,7 +400,7 @@ export function detectDuplicateHeadings(files: InstructionFile[]): PromptCiIssue
       }));
       if (levels.size > 1) continue;
 
-      const keys = sections.map((s) => `${file.path}:${s.startLine}`);
+      const keys = sections.map((s) => `${fileIdPath(file)}:${s.startLine}`);
       const id = clusterIssueId(keys);
 
       const headingLabel = sections[0]!.heading ?? '(untitled)';
@@ -457,7 +458,7 @@ export function detectDuplicateHeadings(files: InstructionFile[]): PromptCiIssue
         const secA = headingMap.get(keyA)!;
         const secB = headingMap.get(keyB)!;
         const allSections = [...secA, ...secB].sort((a, b) => a.startLine - b.startLine);
-        const allKeys = allSections.map((s) => `${file.path}:${s.startLine}`);
+        const allKeys = allSections.map((s) => `${fileIdPath(file)}:${s.startLine}`);
 
         issues.push({
           id: clusterIssueId(allKeys),

@@ -16,17 +16,12 @@
 import * as crypto from 'node:crypto';
 import * as path from 'node:path';
 import type { InstructionFile, PromptCiIssue } from './types.js';
+import { INSTRUCTION_FILE_TYPES } from './types.js';
 import { snippet } from './evidence.js';
+import { fileIdPath } from './finding-id.js';
 
 /** Persistent, always-loaded instruction files this detector applies to. */
-const TARGET_FILE_TYPES: ReadonlySet<InstructionFile['fileType']> = new Set([
-  'claude',
-  'agents',
-  'cursor',
-  'windsurf',
-  'copilot',
-  'prompt',
-]);
+const TARGET_FILE_TYPES = INSTRUCTION_FILE_TYPES;
 
 /**
  * High-severity keywords. Word-boundary matched, case-insensitive, so "MUST
@@ -97,7 +92,7 @@ export function detectBuriedCriticalInstructions(files: InstructionFile[]): Prom
     const sampleLine = lines[(bottomLineNumbers[0] ?? keywordLines[0]!) - 1] ?? '';
 
     issues.push({
-      id: issueId(file.path),
+      id: issueId(fileIdPath(file)),
       severity: 'info',
       category: 'structure',
       title: 'Critical instructions near the bottom of a long file',

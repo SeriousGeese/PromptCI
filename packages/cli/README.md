@@ -1,7 +1,8 @@
 # @promptci/cli
 
 Instruction health for AI coding workflows. Scans AI coding instruction files
-(`CLAUDE.md`, `AGENTS.md`, `.cursorrules`, Copilot instructions, and more) and produces
+(`CLAUDE.md`, `AGENTS.md`, `.cursorrules`, Copilot instructions, `GEMINI.md`, Cline rules, and
+more) and produces
 actionable health reports: duplicates, conflicting directives, stale guidance, context bloat,
 broken references, and vague instructions.
 
@@ -24,6 +25,7 @@ npx @promptci/cli scan --path /path/to/repo   # scan a specific repo
 npx @promptci/cli init                        # create .promptci/config.json
 npx @promptci/cli fix                         # apply deterministic fix recipes
 npx @promptci/cli review-diff --base origin/main   # CI: fail on instruction regressions
+npx @promptci/cli badge                       # write a Shields.io JSON for a README score badge
 ```
 
 Full documentation: https://github.com/SeriousGeese/PromptCI

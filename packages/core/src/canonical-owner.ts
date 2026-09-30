@@ -2,6 +2,7 @@ import * as crypto from 'node:crypto';
 import * as path from 'node:path';
 import type { InstructionFile, PromptCiIssue } from './types.js';
 import { snippet } from './evidence.js';
+import { fileIdPath } from './finding-id.js';
 
 /**
  * Canonical Owner and Forwarding Detector.
@@ -15,17 +16,35 @@ const AUTHORITY_PHRASES = [
   /master\s+instruction\s+file/i,
 ];
 
+const NAMED_INSTRUCTION_FILE_RE = /\b(AGENTS|CLAUDE)\.md\b/gi;
+
+/**
+ * True when `file` claims authority FOR ITSELF. A line like "`AGENTS.md` is the
+ * single source of truth for all agents" inside GEMINI.md or CLAUDE.md is a
+ * forwarding pointer — it hands authority to another file — so it must not
+ * count as a second, competing claim. Only the line holding the phrase is
+ * checked, so an unrelated mention elsewhere cannot cancel a real claim.
+ */
+function claimsAuthority(file: InstructionFile): boolean {
+  const own = path.basename(file.path).toLowerCase();
+  for (const re of AUTHORITY_PHRASES) {
+    const m = re.exec(file.content);
+    if (!m) continue;
+    const lineStart = file.content.lastIndexOf('\n', m.index) + 1;
+    const lineEnd = file.content.indexOf('\n', m.index + m[0].length);
+    const line = file.content.slice(lineStart, lineEnd === -1 ? undefined : lineEnd);
+    const named = [...line.matchAll(NAMED_INSTRUCTION_FILE_RE)].map((n) => `${n[1]!.toLowerCase()}.md`);
+    const delegates = named.length > 0 && named.every((n) => n !== own);
+    if (!delegates) return true;
+  }
+  return false;
+}
+
 export function detectCanonicalOwner(files: InstructionFile[]): PromptCiIssue[] {
   if (files.length === 0) return [];
 
   const issues: PromptCiIssue[] = [];
-  const filesWithAuthority: InstructionFile[] = [];
-
-  for (const file of files) {
-    if (AUTHORITY_PHRASES.some((re) => re.test(file.content))) {
-      filesWithAuthority.push(file);
-    }
-  }
+  const filesWithAuthority: InstructionFile[] = files.filter(claimsAuthority);
 
   function issueId(name: string): string {
     const hash = crypto.createHash('sha1').update(name).digest('hex').slice(0, 12);
@@ -100,6 +119,8 @@ export function detectCanonicalOwner(files: InstructionFile[]): PromptCiIssue[] 
         file.fileType === 'cursor' ||
         file.fileType === 'windsurf' ||
         file.fileType === 'copilot' ||
+        file.fileType === 'gemini' ||
+        file.fileType === 'cline' ||
         baseName === 'claude.md' ||
         baseName === '.cursorrules' ||
         baseName === '.windsurfrules';
@@ -128,7 +149,7 @@ export function detectCanonicalOwner(files: InstructionFile[]): PromptCiIssue[] 
               // (mirroring the fix on the agent-practices.ts side) so ids
               // stay distinct even for the same file path; the public id
               // PREFIX is unchanged.
-              const hash = crypto.createHash('sha1').update(`canonical-owner:behavior-duplication:${file.path}`).digest('hex').slice(0, 12);
+              const hash = crypto.createHash('sha1').update(`canonical-owner:behavior-duplication:${fileIdPath(file)}`).digest('hex').slice(0, 12);
               const canonicalLabel = path.basename(primaryCanonical.path);
               const duplicateTokens = Math.round(section.text.length / 4);
               issues.push({

@@ -4,6 +4,7 @@ import * as crypto from 'node:crypto';
 import type { RepoContext } from './repo-context.js';
 import type { PromptCiIssue } from './types.js';
 import { fencedBlocks, scanFencedLines } from './markdown-fences.js';
+import { fileIdPath } from './finding-id.js';
 
 /**
  * Command Validity Detector
@@ -546,7 +547,7 @@ export function detectCommandValidity(context: RepoContext): PromptCiIssue[] {
       reported.add(dedupeKey);
 
       issues.push({
-        id: issueId(file.path, cmd.text),
+        id: issueId(fileIdPath(file), cmd.text),
         severity: 'warning',
         category: 'command_validity',
         title: `Possible reference to missing command or file: \`${cmd.text.split(/\s+/).slice(0, 3).join(' ')}\``,

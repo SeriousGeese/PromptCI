@@ -31,6 +31,29 @@ const CATEGORY_DEDUCTION_CAP: Partial<Record<IssueCategory, number>> = {
 };
 
 /**
+ * Deduction caps for groups that cut across a category. Supply-chain findings
+ * (unpinned GitHub Actions) are `security` findings, but they describe CI
+ * configuration, not instruction health: uncapped, one finding per unpinned
+ * action took ~25 points off an otherwise healthy repo that simply uses
+ * tag-pinned third-party actions. Capped, they stay visible (and still sort
+ * into top fixes by severity) without dominating the score. The rest of the
+ * `security` category stays uncapped.
+ */
+const TAG_DEDUCTION_CAP: Record<string, number> = {
+  'supply-chain': 8,
+};
+
+/** The cap bucket an issue's deduction counts against, if any. */
+function deductionBucket(issue: PromptCiIssue): { key: string; cap: number } | undefined {
+  for (const tag of issue.tags ?? []) {
+    const cap = TAG_DEDUCTION_CAP[tag];
+    if (cap !== undefined) return { key: `tag:${tag}`, cap };
+  }
+  const cap = CATEGORY_DEDUCTION_CAP[issue.category];
+  return cap !== undefined ? { key: issue.category, cap } : undefined;
+}
+
+/**
  * Compute a health score from 0–100 based on issue severity and confidence.
  *
  * Starts at 100. Each issue subtracts (severityWeight × confidence), subject to
@@ -45,13 +68,13 @@ export function computeHealthScore(issues: PromptCiIssue[]): number {
 
   for (const issue of issues) {
     const deduction = (SEVERITY_WEIGHT[issue.severity] ?? 0) * issue.confidence;
-    const cap = CATEGORY_DEDUCTION_CAP[issue.category];
+    const bucket = deductionBucket(issue);
 
-    if (cap !== undefined) {
-      const soFar = categoryDeductions.get(issue.category) ?? 0;
-      const allowed = Math.max(0, cap - soFar);
+    if (bucket !== undefined) {
+      const soFar = categoryDeductions.get(bucket.key) ?? 0;
+      const allowed = Math.max(0, bucket.cap - soFar);
       const actual = Math.min(deduction, allowed);
-      categoryDeductions.set(issue.category, soFar + actual);
+      categoryDeductions.set(bucket.key, soFar + actual);
       score -= actual;
     } else {
       score -= deduction;

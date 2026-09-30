@@ -3,7 +3,8 @@ import * as path from 'node:path';
 import { discoverAiConfigFiles, resolveWithinRoot as safeResolveWithinRoot } from './ai-config.js';
 import type { AiConfigFiles } from './ai-config.js';
 import { detectProjectType, detectProjectTypeFromContent } from './project-type.js';
-import { scanFiles } from './scanner.js';
+import micromatch from 'micromatch';
+import { MAX_FILE_SIZE, scanFiles } from './scanner.js';
 import type { ManifestData } from './manifest-consistency.js';
 import { isOnDemandFileType } from './types.js';
 import type { InstructionFile, ProjectType, ScanInput, ScanMetrics } from './types.js';
@@ -31,9 +32,24 @@ export type WorkflowCommand = {
   line: number;
 };
 
+/** Raw text of one GitHub Actions workflow file. */
+export type WorkflowSource = {
+  /** Repo-relative, forward slashes (e.g. `.github/workflows/ci.yml`). */
+  filePath: string;
+  content: string;
+};
+
 export type WorkflowFacts = {
   files: string[];
   commands: WorkflowCommand[];
+  /**
+   * Workflow file contents for detectors that audit the YAML itself (action
+   * pinning). Workflows are CI configuration, never instruction files: they
+   * are NOT in `RepoContext.files`, so no prose detector ever reads them.
+   * Honors the scan's `exclude` patterns. Optional so hand-built contexts
+   * without it keep type-checking.
+   */
+  sources?: WorkflowSource[];
 };
 
 export type RepoContext = {
@@ -225,13 +241,13 @@ function extractWorkflowCommands(filePath: string, content: string): WorkflowCom
   return commands;
 }
 
-async function readWorkflowFacts(repoRoot: string): Promise<WorkflowFacts> {
+async function readWorkflowFacts(repoRoot: string, exclude: string[] = []): Promise<WorkflowFacts> {
   const workflowDir = resolveWithinRoot(repoRoot, path.join('.github', 'workflows'));
   let entries: Array<{ name: string; isFile: () => boolean }>;
   try {
     entries = await fs.readdir(workflowDir, { withFileTypes: true });
   } catch {
-    return { files: [], commands: [] };
+    return { files: [], commands: [], sources: [] };
   }
 
   const files = entries
@@ -239,15 +255,25 @@ async function readWorkflowFacts(repoRoot: string): Promise<WorkflowFacts> {
     .map((entry) => path.join(workflowDir, entry.name))
     .sort();
   const commands: WorkflowCommand[] = [];
+  const sources: WorkflowSource[] = [];
   for (const file of files) {
     const relative = path.relative(repoRoot, file);
     const content = await fs.readFile(file, 'utf-8');
     commands.push(...extractWorkflowCommands(relative, content));
+
+    // Only the new YAML-auditing detectors read `sources`, so only they honor
+    // `exclude` — ci-alignment's `files`/`commands` keep their existing scope.
+    const posix = relative.replace(/\\/g, '/');
+    const excluded = exclude.length > 0 && micromatch.isMatch(posix, exclude, { dot: true });
+    if (content.length <= MAX_FILE_SIZE && !excluded) {
+      sources.push({ filePath: posix, content });
+    }
   }
 
   return {
     files: files.map((file) => path.relative(repoRoot, file)),
     commands,
+    sources,
   };
 }
 
@@ -294,7 +320,7 @@ export async function buildRepoContext(input: ScanInput): Promise<RepoContext> {
     readRootFile(repoRoot, 'pyproject.toml'),
     readRootFile(repoRoot, 'requirements.txt'),
     existingRootFiles(repoRoot, LOCKFILES),
-    readWorkflowFacts(repoRoot),
+    readWorkflowFacts(repoRoot, input.exclude),
     // Throws a clear CustomRulesError on malformed config, surfaced at scan time.
     loadCustomRules(repoRoot),
   ]);

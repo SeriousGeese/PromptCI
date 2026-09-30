@@ -1,6 +1,7 @@
 import * as crypto from 'node:crypto';
 import type { RepoContext, WorkflowCommand } from './repo-context.js';
 import type { InstructionFile, PromptCiIssue } from './types.js';
+import { fileIdPath } from './finding-id.js';
 
 /**
  * CI and Workflow Alignment Detector
@@ -250,7 +251,7 @@ function checkCiPackageManagerMismatch(context: RepoContext): PromptCiIssue[] {
       if (!positiveHit) continue;
 
       issues.push({
-        id: issueId(`pm-mismatch-ci:${file.path}:${pm}`),
+        id: issueId(`pm-mismatch-ci:${fileIdPath(file)}:${pm}`),
         severity: 'warning',
         category: 'conflict',
         title: `Possible package manager mismatch: instructions use \`${pm}\` but CI uses \`${preferredPm}\``,
@@ -330,7 +331,7 @@ function checkOrphanedInstructionScripts(context: RepoContext): PromptCiIssue[] 
         reported.add(dedupeKey);
 
         issues.push({
-          id: issueId(`orphan-script:${file.path}:${scriptName}`),
+          id: issueId(`orphan-script:${fileIdPath(file)}:${scriptName}`),
           severity: 'warning',
           category: 'stale_instruction',
           title: `Possible reference to missing script: \`${scriptName}\` (not in CI or package.json)`,
