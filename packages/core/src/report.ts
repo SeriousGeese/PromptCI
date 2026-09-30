@@ -6,7 +6,7 @@ import * as fs from 'node:fs/promises';
 import * as nodePath from 'node:path';
 import type { IssueSeverity, PromptCiIssue, ScanReport, ScanReportJson, ScanTrend } from './types.js';
 import { computeFingerprint } from './baseline.js';
-import { snippet } from './evidence.js';
+import { snippet, visibleText } from './evidence.js';
 
 export type WriteReportOptions = {
   /** Override path for the markdown report (default: <repoPath>/.promptci/latest.md) */
@@ -222,14 +222,12 @@ function sortedIssues(issues: PromptCiIssue[]): PromptCiIssue[] {
 
 /**
  * Render `text` as a markdown inline code span that cannot be broken out of: the
- * fence is one backtick longer than the longest backtick run inside, and line
- * breaks / control characters are shown as `<U+XXXX>`. Plain paths render
- * exactly as a single-backtick span.
+ * fence is one backtick longer than the longest backtick run inside, and every
+ * invisible/control/format character is shown as `<U+XXXX>` (visibleText).
+ * Plain paths render exactly as a single-backtick span.
  */
 export function inlineCode(text: string): string {
-  // eslint-disable-next-line no-control-regex
-  const safe = text.replace(/[\u{0}-\u{8}\u{A}-\u{1F}\u{7F}-\u{9F}\u{2028}\u{2029}]/gu, (c) =>
-    `<U+${c.codePointAt(0)!.toString(16).toUpperCase().padStart(4, '0')}>`);
+  const safe = visibleText(text);
   const longestRun = Math.max(0, ...(safe.match(/`+/g) ?? []).map((run) => run.length));
   const fence = '`'.repeat(longestRun + 1);
   const pad = safe.startsWith('`') || safe.endsWith('`') ? ' ' : '';
