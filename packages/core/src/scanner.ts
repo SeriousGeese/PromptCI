@@ -265,9 +265,11 @@ export async function scanFiles(input: ScanInput): Promise<InstructionFile[]> {
     const absPath = path.resolve(repoRoot, relPath);
 
     // Path traversal guard: skip anything a glob result resolves outside the
-    // root — lexically, or through a symlink. `followSymbolicLinks: false` only
-    // stops fast-glob descending into linked DIRECTORIES; a symlinked FILE
-    // (`CLAUDE.md -> /etc/passwd`) is still listed and `stat`/`readFile` follow it.
+    // root — lexically, or through a symlink. With `followSymbolicLinks: false`
+    // fast-glob lists no symlinked file and never descends into a linked
+    // directory, but it does START its walk at a pattern's base directory even
+    // when that directory is a link (`.cursor/rules -> /elsewhere`), and every
+    // file below it would then be read through.
     if (!isWithinRoot(repoRoot, absPath) || !realPathWithinRoot(repoRoot, absPath)) {
       continue;
     }

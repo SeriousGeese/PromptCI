@@ -165,6 +165,33 @@ describe('make target validation', () => {
     expect(summaries).toEqual([]);
   });
 
+  it('ignores `make sure` in a code span and skips the value of -E/--eval', async () => {
+    const summaries = await commandFindings({
+      Makefile: MAKEFILE,
+      'AGENTS.md': [
+        '# Agents',
+        '',
+        'Always `make sure` the build is green.',
+        '',
+        '```bash',
+        'make -E extra build',
+        'make --eval=extra test',
+        '```',
+        '',
+      ].join('\n'),
+    });
+    expect(summaries).toEqual([]);
+  });
+
+  it('validates a nested instruction file against the Makefile beside it', async () => {
+    const summaries = await commandFindings({
+      Makefile: MAKEFILE,
+      'prompts/Makefile': 'run:\n\t@echo run\n',
+      'prompts/tooling.md': '# Tooling\n\n```bash\nmake run\nmake build\n```\n',
+    });
+    expect(summaries).toEqual(['make target "build" does not appear in prompts/Makefile']);
+  });
+
   it('reads GNUmakefile / makefile too', async () => {
     const summaries = await commandFindings({
       makefile: 'all:\n\t@echo all\n',

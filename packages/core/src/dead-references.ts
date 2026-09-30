@@ -24,7 +24,7 @@ import * as path from 'node:path';
 import * as crypto from 'node:crypto';
 import fg from 'fast-glob';
 import type { InstructionFile, PromptCiIssue } from './types.js';
-import { fencedBlocks } from './markdown-fences.js';
+import { fencedBlocks, scanFencedLines } from './markdown-fences.js';
 import { createGitIgnoreChecker } from './gitignore.js';
 import { isWithinRoot } from './path-containment.js';
 
@@ -69,6 +69,24 @@ const BACKTICK_PATH_RE =
  * `docs/` or `./scripts` names no location specific enough to call stale.
  */
 const BACKTICK_DIR_RE = /`((?:\.\/)?[\w@.()[\]-]+(?:\/[\w@.()[\]-]+)+\/?)`/g;
+
+/**
+ * A line talking about git branches, HTTP routes or URLs: its slash-shaped
+ * code spans (`docs/update-readme`, `api/v1/users`) are names, not paths.
+ */
+const NON_PATH_CONTEXT_RE =
+  /\b(?:branch(?:es)?|checkout|rebase|merge|cherry-pick|route[sd]?|routing|endpoints?|urls?|uris?|http\s+(?:get|post|put|patch|delete))\b/i;
+
+/**
+ * Conventional git branch prefixes. A span starting with one of these that has
+ * no trailing slash (`docs/update-readme`, `test/flaky-fix`) is more likely a
+ * branch than a directory, so only the explicit directory form (`docs/guides/`)
+ * is checked.
+ */
+const BRANCH_PREFIXES: ReadonlySet<string> = new Set([
+  'feat', 'feature', 'features', 'fix', 'bugfix', 'hotfix', 'chore', 'docs', 'doc', 'refactor',
+  'test', 'tests', 'ci', 'perf', 'build', 'release', 'releases', 'style', 'wip', 'dependabot',
+]);
 
 /**
  * Generated output and dependency directories: never committed, so a path
@@ -328,6 +346,9 @@ function isExtensionlessPathRef(ref: string): boolean {
   if (!ref || /^[a-z][a-z0-9+.-]*:/i.test(ref) || ref.startsWith('/')) return false;
   if (/[\s*?$%<>{}|"'`~\\]/.test(ref)) return false;
   if (!/[A-Za-z]/.test(ref)) return false; // `./`, `../`, `..`
+  // Path-shaped only: a separator or a leading dot (`./x`, `.github`). A bare
+  // word (`[WARNING]: Never …`, `[x](payload)`) is too ambiguous to judge.
+  if (!ref.includes('/') && !ref.startsWith('.')) return false;
   const last = ref.replace(/\/+$/, '').split('/').pop() ?? '';
   return ref.endsWith('/') || path.extname(last) === '';
 }
@@ -545,13 +566,23 @@ function collectRefs(
   opts: { skipSourceBackticks?: boolean } = {},
 ): CollectedRef[] {
   const found: CollectedRef[] = [];
+  const lineOffsets = buildLineOffsets(content);
+  const fenceLines = scanFencedLines(content);
+  // `handlers[type](payload)` in a code fence or `a[i](b)` in a code span has
+  // the shape of a link without being one. Checkable-extension targets keep
+  // their historical behavior; the extension-less check only reads real prose.
+  const inCode = (index: number): boolean => {
+    const line = lineForOffset(lineOffsets, index);
+    if (fenceLines[line - 1]?.inFence) return true;
+    const before = content.slice(lineOffsets[line - 1] ?? 0, index);
+    return (before.match(/`/g)?.length ?? 0) % 2 === 1;
+  };
   const pushLink = (ref: string, evidence: string, index: number): void => {
     if (!ref || isExternalRef(ref)) return;
     const line = lineForOffset(lineOffsets, index);
     if (hasCheckableExtension(ref)) found.push({ ref, evidence, line, kind: 'file' });
-    else if (isExtensionlessPathRef(ref)) found.push({ ref, evidence, line, kind: 'linkPath' });
+    else if (isExtensionlessPathRef(ref) && !inCode(index)) found.push({ ref, evidence, line, kind: 'linkPath' });
   };
-  const lineOffsets = buildLineOffsets(content);
 
   // Markdown links: [label](target) or [label](target "Title")
   let m: RegExpExecArray | null;
@@ -574,6 +605,8 @@ function collectRefs(
   const linkDefRe = new RegExp(LINK_REF_DEF_RE.source, LINK_REF_DEF_RE.flags);
   while ((m = linkDefRe.exec(content)) !== null) {
     const raw = m[1] ?? '';
+    // `[^1]: Footnote text` is a footnote, not a link definition.
+    if (/^[ \t]*\[\^/.test(m[0])) continue;
     pushLink(stripFragment(raw), m[0].trim(), m.index);
   }
 
@@ -616,6 +649,10 @@ function collectRefs(
     const ref = m[1] ?? '';
     const last = ref.replace(/\/+$/, '').split('/').pop() ?? '';
     if (!ref.endsWith('/') && path.extname(last) !== '') continue; // a file: BACKTICK_PATH_RE's job
+    // Slash-shaped names that are not paths: git branches, HTTP routes, URLs.
+    const lineNo = lineForOffset(lineOffsets, m.index);
+    const lineText = content.slice(lineOffsets[lineNo - 1] ?? 0, lineOffsets[lineNo] ?? content.length);
+    if (NON_PATH_CONTEXT_RE.test(lineText)) continue;
     found.push({ ref, evidence: `\`${ref}\``, line: lineForOffset(lineOffsets, m.index), kind: 'rootedPath' });
   }
 
@@ -687,7 +724,10 @@ function stemSiblingExists(abs: string): boolean {
 
 /** Trees never searched for an abbreviated path (dependencies, VCS, worktrees, engine caches). */
 const SUFFIX_SEARCH_IGNORE = [
-  ...[...OUTPUT_DIRS, '.git', 'worktrees', '.worktrees', 'Library', 'Temp', 'Logs', 'vendor'].map((d) => `**/${d}/**`),
+  ...[
+    ...OUTPUT_DIRS, '.git', 'worktrees', '.worktrees', 'Library', 'Temp', 'Logs', 'vendor',
+    '.venv', 'venv', '__pycache__', 'Pods', '.gradle', '.cache', '.idea',
+  ].map((d) => `**/${d}/**`),
 ];
 
 /**
@@ -737,9 +777,12 @@ function judgeReference(
   isIgnored: (repoRelativePath: string) => boolean,
   suffixCache: Map<string, boolean>,
 ): number | null {
-  // Generated output / dependency trees are never committed (pcic-2b6.8), and
   // `.git/…` is a directory in one checkout and a file in a worktree.
-  if (underOutputDir(ref) || segmentsOf(ref)[0] === '.git') return null;
+  if (segmentsOf(ref)[0] === '.git') return null;
+  // pcic-2b6.8 kinds: generated output / dependency trees are never committed.
+  // (File references keep their historical behavior: a committed `bin/setup.sh`
+  // or `scripts/build/x.sh` is still checked.)
+  if (kind !== 'file' && underOutputDir(ref)) return null;
 
   const pathLike = kind === 'rootedPath' || kind === 'linkPath';
   const target = pathLike ? stripFragment(ref) : ref;
@@ -776,10 +819,25 @@ function judgeReference(
   // `origin/main`, `@scope/pkg` and another project's `internal/x/y.go` stay silent.
   const segments = segmentsOf(ref);
   if (segments.length < 2 || segments[0] === '..') return null;
-  const anchored = [fileDir, repoRoot].some((base) => fileExists(path.join(base, segments[0]!)));
-  if (!anchored) return null;
+  // The first segment must be a DIRECTORY here (`package.json/scripts` is not a path).
+  const anchorBases = [fileDir, repoRoot].filter((base) => dirExists(path.join(base, segments[0]!)));
+  if (anchorBases.length === 0) return null;
+  if (kind === 'rootedPath') {
+    // `docs/update-readme`, `test/flaky-fix`: a branch name unless written as a directory.
+    if (BRANCH_PREFIXES.has(segments[0]!.toLowerCase()) && !target.endsWith('/')) return null;
+    // `client/server`, `public/private`: alternatives when both halves exist side by side.
+    if (segments.length === 2 && anchorBases.some((base) => fileExists(path.join(base, segments[1]!)))) return null;
+  }
   if (existsAsSuffix(repoRoot, segments, moduleStyle, suffixCache)) return null;
   return 0.6;
+}
+
+function dirExists(p: string): boolean {
+  try {
+    return fs.statSync(p).isDirectory();
+  } catch {
+    return false;
+  }
 }
 
 // ── Detector ─────────────────────────────────────────────────────────────────

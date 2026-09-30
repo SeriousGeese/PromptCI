@@ -636,7 +636,14 @@ function validatePackageManagerScript(
 // ── make targets ──────────────────────────────────────────────────────────────
 
 /** make options whose value is the NEXT token (unless attached: `-Cdir`, `-j4`). */
-const MAKE_FLAGS_WITH_VALUE = new Set(['-C', '-f', '-o', '-W', '-I', '--directory', '--file', '--makefile', '--old-file', '--what-if', '--include-dir', '--new-file', '--assume-old', '--assume-new']);
+const MAKE_FLAGS_WITH_VALUE = new Set([
+  '-C', '-f', '-o', '-W', '-I', '-E', '--directory', '--file', '--makefile', '--old-file', '--what-if',
+  '--include-dir', '--new-file', '--assume-old', '--assume-new', '--eval',
+]);
+/** Words that follow "make" in English prose (`make sure`), never checked as targets in a code span. */
+const MAKE_PROSE_WORDS: ReadonlySet<string> = new Set([
+  'sure', 'it', 'this', 'that', 'them', 'these', 'those', 'certain', 'sense', 'changes', 'room', 'use', 'way',
+]);
 /** make options with an OPTIONAL numeric value (`-j`, `-j 4`, `-l 2.5`). */
 const MAKE_FLAGS_WITH_OPTIONAL_NUMBER = new Set(['-j', '-l', '--jobs', '--load-average', '--max-load']);
 
@@ -716,7 +723,12 @@ function validateSegment(
   context: RepoContext,
   cwd: string | null = '.',
   onScript?: (name: string) => void,
-  opts: { fenced?: boolean; makefileFor?: (dir: string) => MakefileFacts | undefined } = {},
+  opts: {
+    fenced?: boolean;
+    makefileFor?: (dir: string) => MakefileFacts | undefined;
+    /** Repo-relative POSIX directory of the instruction file ('.' = root). */
+    fileDir?: string;
+  } = {},
 ): string | null {
   if (PLACEHOLDER_RE.test(seg)) return null;
 
@@ -749,7 +761,13 @@ function validateSegment(
 
   // ── make <target> ──────────────────────────────────────────────────────────
   if (tool === 'make' && cwd !== null && opts.makefileFor) {
-    return validateMakeTargets(parts, context, cwd, opts.makefileFor);
+    // An instruction file that sits next to its own Makefile (`tools/AGENTS.md`
+    // beside `tools/Makefile`) documents that one, not the root's.
+    const fileDir = opts.fileDir ?? '.';
+    const makeCwd = cwd === '.' && fileDir !== '.' && opts.makefileFor(fileDir) ? fileDir : cwd;
+    // A code span like `make sure` is English, not a make invocation.
+    if (!opts.fenced && parts.length === 2 && MAKE_PROSE_WORDS.has(parts[1]!.toLowerCase())) return null;
+    return validateMakeTargets(parts, context, makeCwd, opts.makefileFor);
   }
 
   // ── Direct script invocations: ./scripts/foo.sh ───────────────────────────
@@ -852,6 +870,7 @@ function computeCommandAnalysis(context: RepoContext): CommandAnalysis {
   for (const file of context.files) {
     const commands = extractCommands(file.content);
     const evaluated = new Set<string>();
+    const fileDir = path.relative(context.repoRoot, path.dirname(file.path)).replace(/\\/g, '/') || '.';
     evaluatedScripts.set(file.path, evaluated);
 
     for (const cmd of commands) {
@@ -864,6 +883,7 @@ function computeCommandAnalysis(context: RepoContext): CommandAnalysis {
       const error = validateSegment(cmd.text, context, cwd, (name) => evaluated.add(`${cmd.line}:${name}`), {
         fenced: cmd.fenced === true,
         makefileFor,
+        fileDir: fileDir.startsWith('..') ? '.' : fileDir,
       });
       if (!error) continue;
 

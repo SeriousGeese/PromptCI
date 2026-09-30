@@ -31,6 +31,7 @@ beforeAll(() => {
   writeFile(repo, 'Assets/Scripts/Interfaces/IDamageable.cs', '');
   writeFile(repo, 'Scripts/tool.sh', '');
   writeFile(repo, 'docs/guide.md', '# Guide');
+  writeFile(repo, 'package.json', '{}');
   writeFile(repo, '.gitignore', 'generated/\n/data/\n');
 });
 
@@ -95,8 +96,21 @@ describe('directory references in code spans', () => {
     ['a gitignored directory', '`src/generated/client/`'],
     ['a .git path', '`.git/hooks/`'],
     ['a site route', '`/api/users/`'],
+    ['a file as the first segment', '`package.json/scripts`'],
+    ['a branch-prefixed name', '`docs/update-readme` and `test/flaky-fix`'],
+    ['slash-joined alternatives', '`src/apps`'],
   ])('does not flag %s', (_label, span) => {
     expect(detect(`Reference: ${span}.`)).toEqual([]);
+  });
+
+  it('checks a branch-prefixed span written as a directory', () => {
+    expect(detect('Guides live in `docs/guides/`.').map((i) => i.title)).toEqual([
+      'Broken directory reference: guides/',
+    ]);
+  });
+
+  it('does not flag slash-shaped names on a line about branches, routes or URLs', () => {
+    expect(detect('Push to the `src/payments-v2` branch; the `apps/api-v1` route serves it.')).toEqual([]);
   });
 });
 
@@ -107,8 +121,31 @@ describe('directory references in markdown links', () => {
     expect(issues[0]!.confidence).toBe(0.8);
   });
 
-  it('flags a link to a missing extension-less file', () => {
-    expect(detect('Read the [license](LICENSE).').map((i) => i.title)).toEqual(['Broken path reference: LICENSE']);
+  it('flags a link to a missing extension-less file with a path shape', () => {
+    expect(detect('Run [the hook](./scripts/pre-push).').map((i) => i.title)).toEqual([
+      'Broken path reference: pre-push',
+    ]);
+  });
+
+  it('does not judge bare-word link targets', () => {
+    expect(detect('Read the [license](LICENSE) and [notes](NOTES).')).toEqual([]);
+  });
+
+  it('ignores link-shaped code in fences and code spans', () => {
+    const content = [
+      '```js',
+      'handlers[type](payload);',
+      'routes[name](./handlers/missing/);',
+      '```',
+      '',
+      'Call `a[i](./gone/)` from the loop.',
+    ].join('\n');
+    expect(detect(content)).toEqual([]);
+  });
+
+  it('ignores footnotes and label-style definitions', () => {
+    const content = ['[^1]: ./footnote/text', '[WARNING]: Never commit secrets.', '[TODO]: rewrite'].join('\n');
+    expect(detect(content)).toEqual([]);
   });
 
   it('does not flag links to existing directories, site routes, or paths outside the repo', () => {
