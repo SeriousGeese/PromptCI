@@ -25,6 +25,8 @@ import type { InstructionFile, PromptCiIssue } from './types.js';
 import type { RepoContext } from './repo-context.js';
 import { buildCodeMask } from './markdown-fences.js';
 import { fileIdPath } from './finding-id.js';
+import { BUN_BUILTINS, analyzeCommands } from './command-validity.js';
+import { anyWorkspaceHasScript, isKnownBinary } from './workspace-manifests.js';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -541,7 +543,10 @@ function checkMissingScripts(context: RepoContext): PromptCiIssue[] {
   // MF4: `run` is captured rather than skipped, so an explicit `npm run <name>`
   // can be told apart from a bare `pnpm <token>` — the latter needs code
   // context before it counts as an invocation.
-  const SCRIPT_RUN_RE = /\b(?:npm|yarn|pnpm|bun)\s+(run\s+)?([a-z0-9][a-z0-9:_-]*)\b/gi;
+  const SCRIPT_RUN_RE = /\b(npm|yarn|pnpm|bun)\s+(run(?:-script)?\s+)?([a-z0-9][a-z0-9:_-]*)\b/gi;
+  // A `cd <dir>`, `--filter`, `--cwd`, `-C`, `--prefix`, `-w`/`--workspace(s)` or `-r` earlier on the
+  // line means the script is resolved somewhere other than the root manifest.
+  const SCOPED_INVOCATION_RE = /\bcd\s+\S|--filter\b|\s-F\s|--cwd\b|\s-C\s|--prefix\b|\s-w\s|--workspaces?\b|\s-ws\b|\s-r\s|--recursive\b/;
 
   const reported = new Set<string>();
 
@@ -566,13 +571,21 @@ function checkMissingScripts(context: RepoContext): PromptCiIssue[] {
     'these', 'those', 'my', 'our', 'your', 'their', 'its',
   ]);
 
+  // One command -> at most one finding. command-validity resolves `cd`/`--filter`/
+  // workspace scoping for every command it extracts; whatever it evaluated is
+  // its to report, so this check only speaks for mentions it never parsed
+  // (plain prose such as "then run npm run build").
+  const commandAnalysis = analyzeCommands(context);
+
   for (const file of files) {
     const codeMask = buildCodeMask(file.content);
+    const evaluatedByCommandValidity = commandAnalysis.evaluatedScripts.get(file.path);
     let match: RegExpExecArray | null;
     const re = new RegExp(SCRIPT_RUN_RE.source, SCRIPT_RUN_RE.flags);
     while ((match = re.exec(file.content)) !== null) {
-      const explicitRun = match[1] !== undefined;
-      const scriptName = match[2]!;
+      const packageManager = match[1]!.toLowerCase();
+      const explicitRun = match[2] !== undefined;
+      const scriptName = match[3]!;
       if (scriptName.startsWith('-')) {
         continue;
       }
@@ -595,7 +608,22 @@ function checkMissingScripts(context: RepoContext): PromptCiIssue[] {
         continue;
       }
 
+      if (packageManager === 'bun' && !explicitRun && BUN_BUILTINS.has(scriptName)) {
+        continue;
+      }
+
       if (!availableScripts.has(scriptName)) {
+        if (evaluatedByCommandValidity?.has(scriptName)) continue;
+        // A script defined by a workspace package (monorepo) is runnable via
+        // `--filter`/`-r`/`cd`; the root manifest is not the only place to look.
+        if (anyWorkspaceHasScript(context, scriptName)) continue;
+        // `pnpm vitest run` / `yarn tsc`: not a script, an installed binary.
+        // (`npm run` and `pnpm run` accept scripts only.)
+        const scriptsOnly = explicitRun && (packageManager === 'npm' || packageManager === 'pnpm');
+        if (!scriptsOnly && isKnownBinary(context, scriptName)) continue;
+        const lineStart = file.content.lastIndexOf('\n', match.index - 1) + 1;
+        if (SCOPED_INVOCATION_RE.test(file.content.slice(lineStart, match.index + match[0].length))) continue;
+
         const dedupeKey = `${file.path}:${scriptName}`;
         if (reported.has(dedupeKey)) continue;
         reported.add(dedupeKey);

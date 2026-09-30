@@ -4,6 +4,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { detectManifestConsistency, type ManifestData } from '../src/manifest-consistency.js';
+import { detectCommandValidity } from '../src/command-validity.js';
 import type { InstructionFile } from '../src/types.js';
 import { parsePackageJsonFacts, type RepoContext } from '../src/repo-context.js';
 
@@ -375,7 +376,8 @@ describe('detectManifestConsistency — JS/TS specific detectors', () => {
   });
 
   it('flags missing scripts', () => {
-    const file = makeFile('Run `npm run build:prod` to build.');
+    // Plain prose: command-validity never parses this mention, so this check owns it.
+    const file = makeFile('Afterwards, npm run build:prod to build.');
     const packageJson = JSON.stringify({
       scripts: {
         build: 'vite build',
@@ -387,6 +389,15 @@ describe('detectManifestConsistency — JS/TS specific detectors', () => {
     const issue = issues.find(i => i.id.startsWith('manifest-missing-script') && i.title.includes('build:prod'));
     expect(issue).toBeDefined();
     expect(issue!.severity).toBe('warning');
+  });
+
+  it('defers to command-validity for an inline-code command it already evaluates (one finding, not two)', () => {
+    const file = makeFile('Run `npm run build:prod` to build.');
+    const packageJson = JSON.stringify({ scripts: { build: 'vite build' } });
+    const context = makeContext([file], { packageJson });
+
+    expect(detectManifestConsistency(context).filter(i => i.id.startsWith('manifest-missing-script'))).toHaveLength(0);
+    expect(detectCommandValidity(context).some(i => i.evidence.some(e => e.includes('npm run build:prod')))).toBe(true);
   });
 
   it('does NOT flag missing scripts when package.json has no scripts key', () => {
@@ -474,7 +485,7 @@ describe('detectManifestConsistency — JS/TS specific detectors', () => {
   // ── MF2: underscore in script names ─────────────────────────────────────────
 
   it('MF2: flags a missing script containing an underscore ("build_all")', () => {
-    const file = makeFile('Run `pnpm build_all` before releasing.');
+    const file = makeFile('Afterwards, pnpm run build_all before releasing.');
     const packageJson = JSON.stringify({ scripts: { build: 'vite build' } });
     const context = makeContext([file], { packageJson });
 
@@ -565,7 +576,7 @@ describe('detectManifestConsistency — JS/TS specific detectors', () => {
     expect(issues.filter(i => i.id.startsWith('manifest-missing-script'))).toHaveLength(0);
   });
 
-  it('MF4: still flags a bare invocation inside a fenced code block', () => {
+  it('MF4: a bare invocation inside a fenced code block is reported once, by command-validity', () => {
     const file = makeFile([
       'Build the app:',
       '',
@@ -577,11 +588,12 @@ describe('detectManifestConsistency — JS/TS specific detectors', () => {
     const context = makeContext([file], { packageJson });
 
     const issues = detectManifestConsistency(context);
-    expect(issues.some(i => i.id.startsWith('manifest-missing-script') && i.title.includes('build:prod'))).toBe(true);
+    expect(issues.filter(i => i.id.startsWith('manifest-missing-script'))).toHaveLength(0);
+    expect(detectCommandValidity(context).some(i => i.evidence.some(e => e.includes('pnpm build:prod')))).toBe(true);
   });
 
   it('MF4: still flags an explicit "npm run <name>" written in prose', () => {
-    const file = makeFile('Before pushing, run npm run typecheck to verify the build.');
+    const file = makeFile('Before pushing, npm run typecheck to verify the build.');
     const packageJson = JSON.stringify({ scripts: { build: 'tsc' } });
     const context = makeContext([file], { packageJson });
 
