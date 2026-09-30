@@ -27,7 +27,8 @@ export type FileType =
 /**
  * Persistent, always-loaded agent instruction file types: the allowlist the
  * prose detectors (negative-instruction overload, buried-critical, within-
- * section dedup, prompt-cache friendliness) and `context optimize` target.
+ * section dedup, prompt-cache friendliness) target. `context optimize` uses it
+ * minus 'persona', which it never rewrites.
  *
  * One shared definition on purpose (BUG-19): each detector used to carry its
  * own copy, so a newly discovered file type was scanned and counted toward

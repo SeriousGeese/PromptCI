@@ -144,8 +144,9 @@ The score is self-reported by your own scan; regenerate the file in CI to keep i
 - Security and privacy gaps in instruction guidance
 - Vague guidance, broken local references, agent-practice gaps
 - Prompt-cache-hostile content that inflates the cost of every agent turn
-- GitHub Actions `uses:` references pinned to a tag or branch instead of a full commit SHA
-  (detect-only: PromptCI reports it and never rewrites your workflows)
+- GitHub Actions `uses:` references (in workflows and composite actions) pinned to a tag or
+  branch instead of a full commit SHA — detect-only, never rewritten; these findings cost at
+  most 8 health-score points in total
 <!-- promptci-ignore-start: structure
      reason: `.mcp.json` here names the config file the ai_config detectors audit,
      not a file this repo ships — PromptCI itself intentionally has no MCP config. -->
@@ -154,7 +155,9 @@ The score is self-reported by your own scan; regenerate the file in CI to keep i
 <!-- promptci-ignore-end -->
 
 Findings are heuristic and cautiously worded; every one carries evidence, a recommendation,
-and a confidence value.
+and a confidence value. Finding `id`s are derived from repo-relative paths, so they are the same
+wherever the repo is checked out — upgrading from a release that hashed absolute paths changes
+path-based ids once (baselines match on fingerprints, not ids, and are unaffected).
 
 ## Configuration
 

@@ -16,12 +16,20 @@
 
 import type { InstructionFile, InstructionSection } from './types.js';
 
+/**
+ * Forward slashes only, no leading `./`: the same file must hash the same on
+ * Windows and POSIX, whoever computed the relative path.
+ */
+function normalizeIdPath(p: string): string {
+  return p.replace(/\\/g, '/').replace(/^(?:\.\/)+/, '');
+}
+
 /** Path to embed in an id key for a scanned file. */
 export function fileIdPath(file: Pick<InstructionFile, 'path' | 'relativePath'>): string {
-  return file.relativePath ?? file.path;
+  return normalizeIdPath(file.relativePath ?? file.path);
 }
 
 /** Path to embed in an id key for a section of a scanned file. */
 export function sectionIdPath(section: Pick<InstructionSection, 'filePath' | 'relativePath'>): string {
-  return section.relativePath ?? section.filePath;
+  return normalizeIdPath(section.relativePath ?? section.filePath);
 }

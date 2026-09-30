@@ -121,9 +121,11 @@ export async function optimizeContext(
   // Focus only on agent instruction files. 'readme' is deliberately absent:
   // README.md is a human-facing document that happens to be scanned for
   // context cost, and restructuring someone's README is never what they asked
-  // for when they ran `promptci context optimize`.
+  // for when they ran `promptci context optimize`. Persona files (SOUL.md,
+  // USER.md, TOOLS.md) are excluded for the same reason: they are identity
+  // prose a user writes by hand, and `optimize --write` must not restructure them.
   const targetFiles = files.filter((f) =>
-    INSTRUCTION_FILE_TYPES.has(f.fileType)
+    INSTRUCTION_FILE_TYPES.has(f.fileType) && f.fileType !== 'persona'
   );
 
   for (const file of targetFiles) {

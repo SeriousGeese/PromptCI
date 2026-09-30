@@ -64,6 +64,20 @@ describe('promptci badge', () => {
     expect(stdout).not.toContain('!**/');
   });
 
+  it('points the README URL at the repo-root-relative path when --path is a nested package', async () => {
+    await fs.mkdir(path.join(tmpDir, '.git'), { recursive: true });
+    const pkg = path.join(tmpDir, 'packages', 'app');
+    await fs.mkdir(pkg, { recursive: true });
+    await fs.writeFile(path.join(pkg, 'report.json'), JSON.stringify({ healthScore: 91 }));
+
+    await runBadge({ scanPath: pkg, report: 'report.json', label: 'x]y' });
+
+    expect(stdout).toContain('Wrote .promptci/health-badge.json');
+    expect(stdout).toContain('%2Fpackages%2Fapp%2F.promptci%2Fhealth-badge.json');
+    expect(stdout).toContain('[![x\\]y]');
+    expect(stdout).toContain('!**/.promptci/health-badge.json');
+  });
+
   it('writes a trailing newline and stable two-space JSON', async () => {
     await fs.writeFile(path.join(tmpDir, 'report.json'), JSON.stringify({ healthScore: 100 }));
     await runBadge({ scanPath: tmpDir, report: 'report.json' });

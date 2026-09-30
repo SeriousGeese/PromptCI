@@ -99,6 +99,14 @@ describe('default discovery — single-file .clinerules and root-only anchoring'
     expect(Object.keys(types).length).toBeGreaterThanOrEqual(4);
   });
 
+  it('an explicit .clinerules/** include with a .clinerules FILE does not empty the scan', async () => {
+    const types = typesByPath(
+      root,
+      await scanFiles({ repoPath: root, include: ['.clinerules/**', 'prompts/**/*.md'] }),
+    );
+    expect(types['prompts/USER.md']).toBe('prompt');
+  });
+
   it('leaves previously discovered files with their previous type', async () => {
     const types = typesByPath(root, await scanFiles({ repoPath: root }));
     expect(types['.claude/skills/release/GEMINI.md']).toBe('skill');
@@ -228,6 +236,20 @@ describe('per-file behavioral guidance for GEMINI.md / .clinerules', () => {
     // A real second claim still fires.
     const rival = mk('GEMINI.md', 'gemini', '# Gemini\n\nThis file is the canonical source of truth for all agents.\n');
     expect(ambiguous([agents, rival])).toBe(true);
+  });
+
+  it('a delegation line does not hide a genuine self-claim later in the file', () => {
+    const agents = mk('AGENTS.md', 'agents', `${AGENTS}\nThis file is the canonical source of truth for all agents.\n`);
+    const both = mk(
+      'GEMINI.md',
+      'gemini',
+      '# Gemini\n\n`AGENTS.md` is the canonical source of truth for shared rules.\n\n' +
+        '## Gemini\n\nFor Gemini sessions this file is the canonical guidance.\n',
+    );
+    const issue = detectCanonicalOwner([agents, both]).find((i) => i.title.startsWith('Ambiguous authority'));
+    expect(issue).toBeDefined();
+    // Evidence quotes the real claim, not the skipped delegation line.
+    expect(issue!.evidence).toContain('GEMINI.md: "canonical guidance"');
   });
 
   it('a file naming ITSELF canonical is not forwarding anywhere', () => {

@@ -12,9 +12,10 @@ Bare file names match at the repository root only. `GEMINI.md` and the persona f
 more likely a user guide than an agent persona. Add nested copies to `include` if you want them
 scanned (a nested persona-named file is then typed `unknown`, not `persona`).
 
-GitHub Actions workflows (`.github/workflows/*.yml`) are read separately — for the CI-alignment
-and action-pinning checks — and are never scanned as instruction files. `exclude` patterns also
-remove a workflow from the action-pinning check.
+GitHub Actions workflows (`.github/workflows/*.yml`) and composite actions (`action.yml` at the
+root or under `.github/actions/`) are read separately — for the CI-alignment and action-pinning
+checks — and are never scanned as instruction files. `exclude` patterns (including directory
+patterns such as `.github/workflows`) also remove them from the action-pinning check.
 
 Note: `docs/**/*.md` is intentionally **not** scanned by default — documentation directories tend to contain project docs (QA reports, plans) that generate false positives, not AI instruction files. If your instruction files live in `docs/`, add the specific paths to `include` in `.promptci/config.json`.
 

@@ -4,6 +4,10 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { scan } from '../src/scan.js';
+import { parseSections } from '../src/scanner.js';
+import { detectVagueGuidance } from '../src/vague-guidance.js';
+import { fileIdPath, sectionIdPath } from '../src/finding-id.js';
+import type { InstructionFile } from '../src/types.js';
 
 /**
  * pcic-whm: finding ids must not depend on where the repo is checked out.
@@ -30,6 +34,33 @@ async function ids(repoPath: string): Promise<string[]> {
   const report = await scan({ repoPath });
   return [...report.issues, ...(report.suppressedIssues ?? [])].map((i) => i.id).sort();
 }
+
+describe('id path normalization', () => {
+  function file(relativePath: string, abs: string): InstructionFile {
+    const content = '# Style\n\nWrite clean code and follow best practices.\n';
+    const sections = parseSections(content, abs, relativePath);
+    return {
+      path: abs,
+      relativePath,
+      fileType: 'claude',
+      content,
+      sections,
+      lineCount: 3,
+      charCount: content.length,
+      estimatedTokens: Math.round(content.length / 4),
+    };
+  }
+
+  it('hashes backslash and forward-slash relative paths identically', () => {
+    expect(fileIdPath({ path: 'C:\\repo\\docs\\CLAUDE.md', relativePath: 'docs\\CLAUDE.md' })).toBe('docs/CLAUDE.md');
+    expect(sectionIdPath({ filePath: '/repo/docs/CLAUDE.md', relativePath: './docs/CLAUDE.md' })).toBe('docs/CLAUDE.md');
+
+    const windows = detectVagueGuidance([file('docs\\CLAUDE.md', 'C:\\a\\docs\\CLAUDE.md')]);
+    const posix = detectVagueGuidance([file('docs/CLAUDE.md', '/b/docs/CLAUDE.md')]);
+    expect(windows.length).toBeGreaterThan(0);
+    expect(windows.map((i) => i.id)).toEqual(posix.map((i) => i.id));
+  });
+});
 
 describe('finding ids are independent of the checkout location', () => {
   let tmp: string;

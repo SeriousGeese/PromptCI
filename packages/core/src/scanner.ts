@@ -217,8 +217,9 @@ const CLINE_DIR_PATTERNS: ReadonlySet<string> = new Set([
  * DEFAULT_PATTERNS, minus the `.clinerules/` directory globs unless
  * `.clinerules` really is a directory. fast-glob scandirs `.clinerules` to
  * expand them, and a FILE of that name (Cline's single-file form) makes it
- * throw ENOTDIR — which scanFiles' catch turns into an empty scan of the
- * WHOLE repo, not just a missed Cline rule.
+ * throw ENOTDIR — which scanFiles' catch turned into an empty scan of the
+ * WHOLE repo. `suppressErrors` now contains that too; dropping the globs
+ * keeps the default scan from relying on it.
  */
 async function defaultPatterns(repoRoot: string): Promise<string[]> {
   let clineIsDir = false;
@@ -248,6 +249,11 @@ export async function scanFiles(input: ScanInput): Promise<InstructionFile[]> {
       dot: true,
       absolute: false,
       followSymbolicLinks: false,
+      // Skip unreadable entries instead of failing the whole glob: an explicit
+      // `include: [".clinerules/**"]` with a `.clinerules` FILE (ENOTDIR), or
+      // one permission-denied directory, used to empty the entire scan via the
+      // catch below.
+      suppressErrors: true,
     });
   } catch {
     return [];

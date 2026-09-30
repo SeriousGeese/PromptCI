@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { scoreLabel, buildBadge as coreBuildBadge } from '@promptci/core';
+import { scoreLabel } from '@promptci/core';
+import { buildBadge as cliBuildBadge } from '../src/badge.js';
 // The badge script duplicates core's score bands (it must stay dependency-free
 // so `pnpm selfscan:update` works without importing core's build output). This
 // test is the lock between the two: if report.ts rebands scoreLabel, or the
@@ -26,12 +27,12 @@ describe('health-badge script', () => {
     }
   });
 
-  // `promptci badge` (core buildBadge) and this repo's own dependency-free
-  // script must produce byte-identical badges, or the self-hosted README badge
-  // and what users get from the CLI would drift apart.
-  it('matches core buildBadge (the `promptci badge` command) for every score', () => {
+  // `promptci badge` and this repo's own dependency-free script must produce
+  // identical badges, or the self-hosted README badge and what users get from
+  // the CLI would drift apart.
+  it('matches the `promptci badge` command for every score', () => {
     for (let score = 0; score <= 100; score++) {
-      expect(buildBadge(score), `score ${score}`).toEqual(coreBuildBadge(score));
+      expect(buildBadge(score), `score ${score}`).toEqual(cliBuildBadge(score));
     }
   });
 
