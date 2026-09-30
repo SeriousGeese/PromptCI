@@ -18,6 +18,8 @@ export type { RepoContext, PackageJsonFacts, WorkflowFacts, WorkflowCommand } fr
 export { runDetectors } from './detectors.js';
 export type { DetectorDefinition } from './detectors.js';
 export { detectSkills } from './skills-detector.js';
+export { detectSkillSupplyChain } from './skill-supply-chain.js';
+export type { SkillSupplyChainRule } from './skill-supply-chain.js';
 export { detectSubagents } from './subagents-detector.js';
 export { detectHooksSettings } from './hooks-settings-detector.js';
 export { detectMcpConfig } from './mcp-config-detector.js';

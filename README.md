@@ -127,6 +127,10 @@ npx @promptci/cli review-diff --base origin/main --fail-on-regression --fail-on 
 - AI-setup config rot beyond markdown: Agent Skills, subagents, hooks/settings,
   `.mcp.json` servers, and Cursor `.mdc` rules checked against filesystem reality
 <!-- promptci-ignore-end -->
+- Agent Skill supply-chain risk: SKILL.md files and their bundled scripts (under `.claude/`,
+  `.agents/skills/`, and plugin `skills/` directories) read as text — never executed — for
+  fetch-and-execute installers, remote code loading, credential exfiltration, prompt-injection
+  and hidden text, and unpinned remote dependencies
 
 Findings are heuristic and cautiously worded; every one carries evidence, a recommendation,
 and a confidence value.

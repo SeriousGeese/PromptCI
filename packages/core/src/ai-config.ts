@@ -93,6 +93,17 @@ export function listFiles(repoRoot: string, patterns: string[], ignore: string[]
 /** Repo-relative globs for each config surface the ai_config detectors audit. */
 const AI_CONFIG_GLOBS = {
   skills: ['.claude/**/SKILL.md'],
+  // Every location an Agent Skill is installed from: the `.claude/` skills
+  // above, the cross-tool `.agents/skills/` layout, and a Claude Code plugin's
+  // (or plugin marketplace's) root-level `skills/<name>/SKILL.md`. The
+  // root-level globs are anchored on purpose: a `**/skills/**` glob would also
+  // sweep up vendored copies and test fixtures.
+  allSkills: [
+    '.claude/**/SKILL.md',
+    '.agents/skills/**/SKILL.md',
+    'skills/*/SKILL.md',
+    'plugins/*/skills/*/SKILL.md',
+  ],
   agents: ['.claude/agents/**/*.md'],
   settings: ['.claude/settings.json', '.claude/settings.local.json'],
   mcp: ['.mcp.json'],
@@ -105,8 +116,22 @@ const AI_CONFIG_GLOBS = {
 
 /** Pre-discovered config files per surface, as sorted repo-relative POSIX paths. */
 export type AiConfigFiles = {
-  /** Agent Skills: `.claude/**\/SKILL.md`. */
+  /** Agent Skills audited structurally by the skills detector: `.claude/**\/SKILL.md`. */
   skills: string[];
+  /**
+   * Every SKILL.md in any supported skill location — a superset of `skills`
+   * that adds `.agents/skills/**`, plugin `skills/*` and marketplace
+   * `plugins/*\/skills/*`. Read by the skill supply-chain scan. (The structural
+   * skills detector deliberately still audits only `skills`, so widening this
+   * list does not move existing structural scores.)
+   */
+  allSkills: string[];
+  /**
+   * Files bundled alongside a skill in `allSkills` (scripts, references,
+   * manifests): every scannable file under the skill's directory except
+   * SKILL.md files. Read as text by the supply-chain scan — never executed.
+   */
+  skillFiles: string[];
   /** Subagent definitions: `.claude/agents/**\/*.md`. */
   agents: string[];
   /** Claude Code settings: `.claude/settings.json` and `.claude/settings.local.json`. */
@@ -121,7 +146,46 @@ export type AiConfigFiles = {
 
 /** An AiConfigFiles with every surface empty — for contexts built without discovery. */
 export function emptyAiConfigFiles(): AiConfigFiles {
-  return { skills: [], agents: [], settings: [], mcp: [], cursorRules: [], copilotInstructions: [] };
+  return { skills: [], allSkills: [], skillFiles: [], agents: [], settings: [], mcp: [], cursorRules: [], copilotInstructions: [] };
+}
+
+/**
+ * A SKILL.md sitting directly in one of these directories is not a skill
+ * directory of its own — enumerating "its" bundle would sweep in every sibling
+ * skill (or the whole `.claude/` tree), so bundled-file discovery skips it.
+ */
+const SKILL_CONTAINER_DIRS: ReadonlySet<string> = new Set(['.', '.claude', '.agents', 'skills', 'plugins']);
+
+/** Upper bound on bundled files read per skill, so one huge skill cannot stall a scan. */
+export const MAX_BUNDLED_FILES_PER_SKILL = 200;
+
+/**
+ * Enumerate the files bundled with each skill: everything under the SKILL.md's
+ * directory, minus SKILL.md files and anything owned by a nested skill (a file
+ * belongs to its nearest enclosing skill directory). `discover` applies the
+ * scan's include/exclude and size/binary policy. Sorted, capped per skill.
+ */
+function discoverSkillFiles(skills: string[], discover: (patterns: readonly string[]) => string[]): string[] {
+  const skillDirs = [...new Set(
+    skills
+      .map((s) => path.posix.dirname(s))
+      .filter((dir) => dir !== '.' && !SKILL_CONTAINER_DIRS.has(path.posix.basename(dir))),
+  )].sort();
+  const ownerOf = (file: string): string | undefined => {
+    let best: string | undefined;
+    for (const dir of skillDirs) {
+      if (file.startsWith(`${dir}/`) && (!best || dir.length > best.length)) best = dir;
+    }
+    return best;
+  };
+  const out = new Set<string>();
+  for (const dir of skillDirs) {
+    const owned = discover([`${fg.posix.escapePath(dir)}/**/*`])
+      .filter((file) => path.posix.basename(file) !== 'SKILL.md' && ownerOf(file) === dir)
+      .slice(0, MAX_BUNDLED_FILES_PER_SKILL);
+    for (const file of owned) out.add(file);
+  }
+  return [...out].sort();
 }
 
 /**
@@ -171,8 +235,11 @@ export function discoverAiConfigFiles(
     if (include) files = micromatch(files, include, { dot: true }).sort();
     return files.filter((file) => passesScanGuards(repoRoot, file));
   };
+  const allSkills = discover(AI_CONFIG_GLOBS.allSkills);
   return {
     skills: discover(AI_CONFIG_GLOBS.skills),
+    allSkills,
+    skillFiles: discoverSkillFiles(allSkills, discover),
     agents: discover(AI_CONFIG_GLOBS.agents),
     settings: discover(AI_CONFIG_GLOBS.settings),
     mcp: discover(AI_CONFIG_GLOBS.mcp),

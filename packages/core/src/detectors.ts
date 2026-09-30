@@ -14,6 +14,7 @@ import { detectSecurityPack } from './security-pack.js';
 import { runFrameworkPacks } from './framework-packs.js';
 import { detectPromptCacheFriendliness } from './prompt-cache.js';
 import { detectSkills } from './skills-detector.js';
+import { detectSkillSupplyChain } from './skill-supply-chain.js';
 import { detectSubagents } from './subagents-detector.js';
 import { detectHooksSettings } from './hooks-settings-detector.js';
 import { detectMcpConfig } from './mcp-config-detector.js';
@@ -118,6 +119,10 @@ export const DETECTORS: DetectorDefinition[] = [
   {
     id: 'ai-config-skills',
     run: (context) => detectSkills(context),
+  },
+  {
+    id: 'skill-supply-chain',
+    run: (context) => detectSkillSupplyChain(context),
   },
   {
     id: 'ai-config-subagents',
