@@ -112,7 +112,11 @@ function splitLines(content: string): string[] {
  * ``` runs desynchronised it) — and that copy decided which sections get moved
  * out of a user's instruction files.
  */
-export function parseSections(content: string, filePath: string): InstructionSection[] {
+export function parseSections(
+  content: string,
+  filePath: string,
+  relativePath?: string,
+): InstructionSection[] {
   const lines = splitLines(content);
   const sections: InstructionSection[] = [];
 
@@ -126,6 +130,7 @@ export function parseSections(content: string, filePath: string): InstructionSec
     sections.push({
       id,
       filePath,
+      ...(relativePath !== undefined ? { relativePath } : {}),
       heading: currentHeading,
       startLine: currentStartLine,
       endLine,

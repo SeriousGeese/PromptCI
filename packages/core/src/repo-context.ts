@@ -3,7 +3,7 @@ import * as path from 'node:path';
 import { discoverAiConfigFiles, resolveWithinRoot as safeResolveWithinRoot } from './ai-config.js';
 import type { AiConfigFiles } from './ai-config.js';
 import { detectProjectType, detectProjectTypeFromContent } from './project-type.js';
-import { parseSections, scanFiles } from './scanner.js';
+import { MAX_FILE_SIZE, isBinary, parseSections, scanFiles } from './scanner.js';
 import type { ManifestData } from './manifest-consistency.js';
 import { isOnDemandFileType } from './types.js';
 import type { InstructionFile, ProjectType, ScanInput, ScanMetrics } from './types.js';
@@ -251,17 +251,30 @@ async function readWorkflowFacts(repoRoot: string): Promise<WorkflowFacts> {
   };
 }
 
-/** Read a discovered SKILL.md into the same InstructionFile shape scanFiles produces. */
+/**
+ * Read a discovered SKILL.md into the same InstructionFile shape scanFiles
+ * produces, under the same size/binary guards (the supply-chain detector reads
+ * and reports oversized or binary skills on its own).
+ */
 async function readSkillFile(repoRoot: string, relativePath: string, absPath: string): Promise<InstructionFile | undefined> {
-  const content = await readRootFile(repoRoot, relativePath);
-  if (content === undefined) return undefined;
+  let buffer: Buffer;
+  try {
+    const stat = await fs.stat(resolveWithinRoot(repoRoot, relativePath));
+    if (!stat.isFile() || stat.size > MAX_FILE_SIZE) return undefined;
+    buffer = await fs.readFile(resolveWithinRoot(repoRoot, relativePath));
+  } catch {
+    return undefined;
+  }
+  if (isBinary(buffer)) return undefined;
+  const content = buffer.toString('utf-8');
   const lines = content.split('\n');
   if (content.endsWith('\n')) lines.pop();
   return {
     path: absPath,
+    relativePath,
     fileType: 'skill',
     content,
-    sections: parseSections(content, absPath),
+    sections: parseSections(content, absPath, relativePath),
     lineCount: lines.length,
     charCount: content.length,
     estimatedTokens: Math.round(content.length / 4),
@@ -298,12 +311,12 @@ export async function buildRepoContext(input: ScanInput): Promise<RepoContext> {
   }
 
   // Skills discovered outside the scanner's patterns (`.agents/skills/`, plugin
-  // `skills/<name>/`) still need to be in the report inventory and parsed for
-  // inline `promptci-ignore` annotations — otherwise a false positive in one of
-  // them could not be suppressed. Load-on-demand, so never in `files`.
+  // `skills/<name>/`) still belong in the report inventory. Load-on-demand, so
+  // never in `files`. (Inline annotations inside a skill directory do NOT
+  // suppress skill-supply-chain findings — see scan.ts.)
   const aiConfig = discoverAiConfigFiles(repoRoot, input);
   const scannedPaths = new Set(scanned.map((file) => file.path));
-  for (const rel of aiConfig.allSkills) {
+  for (const rel of aiConfig.allSkills ?? []) {
     const abs = path.resolve(repoRoot, rel);
     if (scannedPaths.has(abs)) continue;
     const skillFile = await readSkillFile(repoRoot, rel, abs);

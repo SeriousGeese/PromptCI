@@ -123,15 +123,21 @@ export type AiConfigFiles = {
    * that adds `.agents/skills/**`, plugin `skills/*` and marketplace
    * `plugins/*\/skills/*`. Read by the skill supply-chain scan. (The structural
    * skills detector deliberately still audits only `skills`, so widening this
-   * list does not move existing structural scores.)
+   * list does not move existing structural scores.) Honors include/exclude but
+   * NOT the size/binary guards: the supply-chain scan must see — and report —
+   * an oversized or NUL-bearing SKILL.md rather than silently lose the skill.
+   * Optional so hand-built contexts from older releases keep working.
    */
-  allSkills: string[];
+  allSkills?: string[];
   /**
    * Files bundled alongside a skill in `allSkills` (scripts, references,
-   * manifests): every scannable file under the skill's directory except
-   * SKILL.md files. Read as text by the supply-chain scan — never executed.
+   * manifests): every file under the skill's directory except SKILL.md files,
+   * include/exclude applied, capped per skill BEFORE any file I/O. Read as text
+   * by the supply-chain scan — never executed. Optional (see `allSkills`).
    */
-  skillFiles: string[];
+  skillFiles?: string[];
+  /** Bundled files dropped by the per-skill cap — reported, never silently lost. */
+  skillFilesOverCap?: string[];
   /** Subagent definitions: `.claude/agents/**\/*.md`. */
   agents: string[];
   /** Claude Code settings: `.claude/settings.json` and `.claude/settings.local.json`. */
@@ -146,15 +152,27 @@ export type AiConfigFiles = {
 
 /** An AiConfigFiles with every surface empty — for contexts built without discovery. */
 export function emptyAiConfigFiles(): AiConfigFiles {
-  return { skills: [], allSkills: [], skillFiles: [], agents: [], settings: [], mcp: [], cursorRules: [], copilotInstructions: [] };
+  return {
+    skills: [], allSkills: [], skillFiles: [], skillFilesOverCap: [],
+    agents: [], settings: [], mcp: [], cursorRules: [], copilotInstructions: [],
+  };
 }
 
 /**
- * A SKILL.md sitting directly in one of these directories is not a skill
- * directory of its own — enumerating "its" bundle would sweep in every sibling
- * skill (or the whole `.claude/` tree), so bundled-file discovery skips it.
+ * Exact repo-relative directories that hold skills rather than being one. A
+ * SKILL.md sitting directly in one of them is not a skill directory of its own
+ * — enumerating "its" bundle would sweep in the whole `.claude/` tree — so
+ * bundled-file discovery skips it. Compared as exact paths, never basenames: a
+ * skill that is itself NAMED `skills` (`.claude/skills/skills/`) is a real skill
+ * whose scripts must be scanned.
  */
-const SKILL_CONTAINER_DIRS: ReadonlySet<string> = new Set(['.', '.claude', '.agents', 'skills', 'plugins']);
+const SKILL_CONTAINER_DIRS: ReadonlySet<string> = new Set([
+  '.', '.claude', '.agents', '.claude/skills', '.agents/skills', '.claude/plugins', 'skills', 'plugins',
+]);
+
+export function isSkillContainerDir(dir: string): boolean {
+  return SKILL_CONTAINER_DIRS.has(dir);
+}
 
 /** Upper bound on bundled files read per skill, so one huge skill cannot stall a scan. */
 export const MAX_BUNDLED_FILES_PER_SKILL = 200;
@@ -162,14 +180,17 @@ export const MAX_BUNDLED_FILES_PER_SKILL = 200;
 /**
  * Enumerate the files bundled with each skill: everything under the SKILL.md's
  * directory, minus SKILL.md files and anything owned by a nested skill (a file
- * belongs to its nearest enclosing skill directory). `discover` applies the
- * scan's include/exclude and size/binary policy. Sorted, capped per skill.
+ * belongs to its nearest enclosing skill directory). `list` applies the scan's
+ * include/exclude only; the per-skill cap is applied here, before any file is
+ * opened, and whatever it drops is returned in `overCap` so the detector can
+ * report it (a pile of decoy files must not silently push a script out).
  */
-function discoverSkillFiles(skills: string[], discover: (patterns: readonly string[]) => string[]): string[] {
+function discoverSkillFiles(
+  skills: string[],
+  list: (patterns: readonly string[]) => string[],
+): { files: string[]; overCap: string[] } {
   const skillDirs = [...new Set(
-    skills
-      .map((s) => path.posix.dirname(s))
-      .filter((dir) => dir !== '.' && !SKILL_CONTAINER_DIRS.has(path.posix.basename(dir))),
+    skills.map((s) => path.posix.dirname(s)).filter((dir) => !isSkillContainerDir(dir)),
   )].sort();
   const ownerOf = (file: string): string | undefined => {
     let best: string | undefined;
@@ -178,14 +199,15 @@ function discoverSkillFiles(skills: string[], discover: (patterns: readonly stri
     }
     return best;
   };
-  const out = new Set<string>();
+  const files = new Set<string>();
+  const overCap = new Set<string>();
   for (const dir of skillDirs) {
-    const owned = discover([`${fg.posix.escapePath(dir)}/**/*`])
-      .filter((file) => path.posix.basename(file) !== 'SKILL.md' && ownerOf(file) === dir)
-      .slice(0, MAX_BUNDLED_FILES_PER_SKILL);
-    for (const file of owned) out.add(file);
+    const owned = list([`${fg.posix.escapePath(dir)}/**/*`])
+      .filter((file) => path.posix.basename(file) !== 'SKILL.md' && ownerOf(file) === dir);
+    owned.slice(0, MAX_BUNDLED_FILES_PER_SKILL).forEach((file) => files.add(file));
+    owned.slice(MAX_BUNDLED_FILES_PER_SKILL).forEach((file) => overCap.add(file));
   }
-  return [...out].sort();
+  return { files: [...files].sort(), overCap: [...overCap].sort() };
 }
 
 /**
@@ -230,16 +252,20 @@ export function discoverAiConfigFiles(
 ): AiConfigFiles {
   const ignore = [...DISCOVERY_IGNORE, ...(policy.exclude ?? [])];
   const include = policy.include && policy.include.length > 0 ? policy.include : undefined;
-  const discover = (patterns: readonly string[]): string[] => {
-    let files = listFiles(repoRoot, [...patterns], ignore);
-    if (include) files = micromatch(files, include, { dot: true }).sort();
-    return files.filter((file) => passesScanGuards(repoRoot, file));
+  /** include/exclude only — no file I/O. */
+  const list = (patterns: readonly string[]): string[] => {
+    const files = listFiles(repoRoot, [...patterns], ignore);
+    return include ? micromatch(files, include, { dot: true }).sort() : files;
   };
-  const allSkills = discover(AI_CONFIG_GLOBS.allSkills);
+  const discover = (patterns: readonly string[]): string[] =>
+    list(patterns).filter((file) => passesScanGuards(repoRoot, file));
+  const allSkills = list(AI_CONFIG_GLOBS.allSkills);
+  const bundled = discoverSkillFiles(allSkills, list);
   return {
     skills: discover(AI_CONFIG_GLOBS.skills),
     allSkills,
-    skillFiles: discoverSkillFiles(allSkills, discover),
+    skillFiles: bundled.files,
+    skillFilesOverCap: bundled.overCap,
     agents: discover(AI_CONFIG_GLOBS.agents),
     settings: discover(AI_CONFIG_GLOBS.settings),
     mcp: discover(AI_CONFIG_GLOBS.mcp),

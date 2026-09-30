@@ -49,6 +49,12 @@ export type IssueCategory =
 export type InstructionSection = {
   id: string;
   filePath: string;
+  /**
+   * `filePath` relative to the scan root, forward slashes. Set by the scanner;
+   * finding ids hash this instead of the absolute path so one repo scanned from
+   * two checkout locations yields identical ids (see finding-id.ts).
+   */
+  relativePath?: string;
   heading?: string;
   startLine: number;
   endLine: number;
@@ -58,6 +64,12 @@ export type InstructionSection = {
 
 export type InstructionFile = {
   path: string;
+  /**
+   * `path` relative to the scan root, forward slashes. Set by the scanner;
+   * finding ids hash this instead of the absolute path (see finding-id.ts).
+   * Optional so hand-built test fixtures keep type-checking.
+   */
+  relativePath?: string;
   fileType: FileType;
   content: string;
   sections: InstructionSection[];

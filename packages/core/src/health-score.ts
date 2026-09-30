@@ -31,6 +31,29 @@ const CATEGORY_DEDUCTION_CAP: Partial<Record<IssueCategory, number>> = {
 };
 
 /**
+ * Deduction caps for groups that cut across a category. Skill supply-chain
+ * findings (`skill-supply-chain` tag) are mostly `security` findings, but they
+ * describe installed third-party skills, not the repo's own instruction
+ * health: uncapped, one noisy skill could zero an otherwise healthy score.
+ * Capped at 15, they stay visible (and still sort into top fixes by severity,
+ * and `--fail-on high` still gates CI on them) without dominating the score.
+ * The rest of the `security` category stays uncapped.
+ */
+const TAG_DEDUCTION_CAP: Record<string, number> = {
+  'skill-supply-chain': 15,
+};
+
+/** The cap bucket an issue's deduction counts against, if any. */
+function deductionBucket(issue: PromptCiIssue): { key: string; cap: number } | undefined {
+  for (const tag of issue.tags ?? []) {
+    const cap = TAG_DEDUCTION_CAP[tag];
+    if (cap !== undefined) return { key: `tag:${tag}`, cap };
+  }
+  const cap = CATEGORY_DEDUCTION_CAP[issue.category];
+  return cap !== undefined ? { key: issue.category, cap } : undefined;
+}
+
+/**
  * Compute a health score from 0–100 based on issue severity and confidence.
  *
  * Starts at 100. Each issue subtracts (severityWeight × confidence), subject to
@@ -45,13 +68,13 @@ export function computeHealthScore(issues: PromptCiIssue[]): number {
 
   for (const issue of issues) {
     const deduction = (SEVERITY_WEIGHT[issue.severity] ?? 0) * issue.confidence;
-    const cap = CATEGORY_DEDUCTION_CAP[issue.category];
+    const bucket = deductionBucket(issue);
 
-    if (cap !== undefined) {
-      const soFar = categoryDeductions.get(issue.category) ?? 0;
-      const allowed = Math.max(0, cap - soFar);
+    if (bucket !== undefined) {
+      const soFar = categoryDeductions.get(bucket.key) ?? 0;
+      const allowed = Math.max(0, bucket.cap - soFar);
       const actual = Math.min(deduction, allowed);
-      categoryDeductions.set(issue.category, soFar + actual);
+      categoryDeductions.set(bucket.key, soFar + actual);
       score -= actual;
     } else {
       score -= deduction;

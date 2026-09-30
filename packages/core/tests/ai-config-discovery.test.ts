@@ -44,6 +44,7 @@ describe('discoverAiConfigFiles', () => {
       skills: ['.claude/skills/pdf/SKILL.md'],
       allSkills: ['.claude/skills/pdf/SKILL.md'],
       skillFiles: [],
+      skillFilesOverCap: [],
       agents: ['.claude/agents/reviewer.md'],
       settings: ['.claude/settings.json'],
       mcp: ['.mcp.json'],

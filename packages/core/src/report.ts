@@ -220,6 +220,22 @@ function sortedIssues(issues: PromptCiIssue[]): PromptCiIssue[] {
   });
 }
 
+/**
+ * Render `text` as a markdown inline code span that cannot be broken out of: the
+ * fence is one backtick longer than the longest backtick run inside, and line
+ * breaks / control characters are shown as `<U+XXXX>`. Plain paths render
+ * exactly as a single-backtick span.
+ */
+export function inlineCode(text: string): string {
+  // eslint-disable-next-line no-control-regex
+  const safe = text.replace(/[\u{0}-\u{8}\u{A}-\u{1F}\u{7F}-\u{9F}\u{2028}\u{2029}]/gu, (c) =>
+    `<U+${c.codePointAt(0)!.toString(16).toUpperCase().padStart(4, '0')}>`);
+  const longestRun = Math.max(0, ...(safe.match(/`+/g) ?? []).map((run) => run.length));
+  const fence = '`'.repeat(longestRun + 1);
+  const pad = safe.startsWith('`') || safe.endsWith('`') ? ' ' : '';
+  return `${fence}${pad}${safe}${pad}${fence}`;
+}
+
 function renderIssue(issue: PromptCiIssue, idx: number, rel: (p: string) => string): string {
   const emoji = SEVERITY_EMOJI[issue.severity];
   const label = SEVERITY_LABEL[issue.severity];
@@ -237,7 +253,7 @@ function renderIssue(issue: PromptCiIssue, idx: number, rel: (p: string) => stri
   // Always show affected files (canonical list)
   if (issue.filePaths.length > 0) {
     for (const fp of issue.filePaths) {
-      lines.push(`**File:** \`${rel(fp)}\``);
+      lines.push(`**File:** ${inlineCode(rel(fp))}`);
     }
     lines.push('');
   }
@@ -248,16 +264,19 @@ function renderIssue(issue: PromptCiIssue, idx: number, rel: (p: string) => stri
     for (const loc of withLines) {
       const range =
         loc.endLine !== undefined ? `L${loc.startLine}–L${loc.endLine}` : `L${loc.startLine}`;
-      lines.push(`**Location:** \`${rel(loc.filePath)}\` ${range}`);
+      lines.push(`**Location:** ${inlineCode(rel(loc.filePath))} ${range}`);
     }
     lines.push('');
   }
 
   if (issue.evidence.length > 0) {
     lines.push('**Evidence:**');
+    // Skill supply-chain evidence quotes third-party content verbatim; render
+    // it as inert inline code so its markdown/HTML never renders in the report.
+    const untrusted = issue.tags?.[0] === 'skill-supply-chain';
     for (const ev of issue.evidence) {
       // Evidence items are often normalised section blobs — 100 chars is enough.
-      lines.push(`- ${snippet(ev, 100)}`);
+      lines.push(`- ${untrusted ? inlineCode(snippet(ev, 160)) : snippet(ev, 100)}`);
     }
     lines.push('');
   }
