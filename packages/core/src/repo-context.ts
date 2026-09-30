@@ -4,7 +4,7 @@ import { discoverAiConfigFiles, listFiles, resolveWithinRoot as safeResolveWithi
 import type { AiConfigFiles } from './ai-config.js';
 import { detectProjectType, detectProjectTypeFromContent } from './project-type.js';
 import micromatch from 'micromatch';
-import { MAX_FILE_SIZE, scanFiles } from './scanner.js';
+import { MAX_FILE_SIZE, isBinary, parseSections, scanFiles } from './scanner.js';
 import type { ManifestData } from './manifest-consistency.js';
 import { isOnDemandFileType } from './types.js';
 import type { InstructionFile, ProjectType, ScanInput, ScanMetrics } from './types.js';
@@ -319,6 +319,36 @@ export function isExcludedPath(posix: string, exclude: string[]): boolean {
   return candidates.some((c) => micromatch.isMatch(c, exclude, { dot: true }));
 }
 
+/**
+ * Read a discovered SKILL.md into the same InstructionFile shape scanFiles
+ * produces, under the same size/binary guards (the supply-chain detector reads
+ * and reports oversized or binary skills on its own).
+ */
+async function readSkillFile(repoRoot: string, relativePath: string, absPath: string): Promise<InstructionFile | undefined> {
+  let buffer: Buffer;
+  try {
+    const stat = await fs.stat(resolveWithinRoot(repoRoot, relativePath));
+    if (!stat.isFile() || stat.size > MAX_FILE_SIZE) return undefined;
+    buffer = await fs.readFile(resolveWithinRoot(repoRoot, relativePath));
+  } catch {
+    return undefined;
+  }
+  if (isBinary(buffer)) return undefined;
+  const content = buffer.toString('utf-8');
+  const lines = content.split('\n');
+  if (content.endsWith('\n')) lines.pop();
+  return {
+    path: absPath,
+    relativePath,
+    fileType: 'skill',
+    content,
+    sections: parseSections(content, absPath, relativePath),
+    lineCount: lines.length,
+    charCount: content.length,
+    estimatedTokens: Math.round(content.length / 4),
+  };
+}
+
 function buildMetrics(files: InstructionFile[], onDemandFiles: InstructionFile[]): ScanMetrics {
   const metrics: ScanMetrics = {
     estimatedInstructionTokens: files.reduce((sum, file) => sum + file.estimatedTokens, 0),
@@ -347,6 +377,20 @@ export async function buildRepoContext(input: ScanInput): Promise<RepoContext> {
   for (const file of scanned) {
     (isOnDemandFileType(file.fileType) ? onDemandFiles : files).push(file);
   }
+
+  // Skills discovered outside the scanner's patterns (`.agents/skills/`, plugin
+  // `skills/<name>/`) still belong in the report inventory. Load-on-demand, so
+  // never in `files`. (Inline annotations inside a skill directory do NOT
+  // suppress skill-supply-chain findings — see scan.ts.)
+  const aiConfig = discoverAiConfigFiles(repoRoot, input);
+  const scannedPaths = new Set(scanned.map((file) => file.path));
+  for (const rel of aiConfig.allSkills ?? []) {
+    const abs = path.resolve(repoRoot, rel);
+    if (scannedPaths.has(abs)) continue;
+    const skillFile = await readSkillFile(repoRoot, rel, abs);
+    if (skillFile) onDemandFiles.push(skillFile);
+  }
+  onDemandFiles.sort((a, b) => a.path.localeCompare(b.path));
 
   let projectType =
     input.projectType && input.projectType !== 'auto'
@@ -383,7 +427,7 @@ export async function buildRepoContext(input: ScanInput): Promise<RepoContext> {
     manifests,
     packageJson: parsePackageJsonFacts(packageJson, lockfiles),
     workflows,
-    aiConfig: discoverAiConfigFiles(repoRoot, input),
+    aiConfig,
     metrics: buildMetrics(files, onDemandFiles),
     // A targetModel preset scales the context-bloat thresholds to that model's
     // window, but an explicit budget (flag or config) always wins over it.

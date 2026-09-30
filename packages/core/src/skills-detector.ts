@@ -73,7 +73,7 @@ function isBundledFileRef(ref: string): boolean {
   return hasSlash && hasExt;
 }
 
-function extractFileRefs(content: string): Array<{ ref: string; line: number }> {
+export function extractFileRefs(content: string): Array<{ ref: string; line: number }> {
   const refs: Array<{ ref: string; line: number }> = [];
   // Keyed on the anchor-STRIPPED path — `docs/x.md#one` and `docs/x.md#two`
   // name the same file and must yield one finding, not two with equal ids.

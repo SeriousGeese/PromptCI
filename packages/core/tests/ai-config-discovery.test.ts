@@ -42,6 +42,10 @@ describe('discoverAiConfigFiles', () => {
     writeFile(dir, '.github/instructions/ts.instructions.md', 'body');
     expect(discoverAiConfigFiles(dir)).toEqual({
       skills: ['.claude/skills/pdf/SKILL.md'],
+      allSkills: ['.claude/skills/pdf/SKILL.md'],
+      skillFiles: [],
+      skillFilesOverCap: [],
+      skillBundleSkips: [],
       agents: ['.claude/agents/reviewer.md'],
       settings: ['.claude/settings.json'],
       mcp: ['.mcp.json'],

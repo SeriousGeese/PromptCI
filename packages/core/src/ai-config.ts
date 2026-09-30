@@ -93,6 +93,17 @@ export function listFiles(repoRoot: string, patterns: string[], ignore: string[]
 /** Repo-relative globs for each config surface the ai_config detectors audit. */
 const AI_CONFIG_GLOBS = {
   skills: ['.claude/**/SKILL.md'],
+  // Every location an Agent Skill is installed from: the `.claude/` skills
+  // above, the cross-tool `.agents/skills/` layout, and a Claude Code plugin's
+  // (or plugin marketplace's) root-level `skills/<name>/SKILL.md`. The
+  // root-level globs are anchored on purpose: a `**/skills/**` glob would also
+  // sweep up vendored copies and test fixtures.
+  allSkills: [
+    '.claude/**/SKILL.md',
+    '.agents/skills/**/SKILL.md',
+    'skills/*/SKILL.md',
+    'plugins/*/skills/*/SKILL.md',
+  ],
   agents: ['.claude/agents/**/*.md'],
   settings: ['.claude/settings.json', '.claude/settings.local.json'],
   mcp: ['.mcp.json'],
@@ -105,8 +116,34 @@ const AI_CONFIG_GLOBS = {
 
 /** Pre-discovered config files per surface, as sorted repo-relative POSIX paths. */
 export type AiConfigFiles = {
-  /** Agent Skills: `.claude/**\/SKILL.md`. */
+  /** Agent Skills audited structurally by the skills detector: `.claude/**\/SKILL.md`. */
   skills: string[];
+  /**
+   * Every SKILL.md in any supported skill location — a superset of `skills`
+   * that adds `.agents/skills/**`, plugin `skills/*` and marketplace
+   * `plugins/*\/skills/*`. Read by the skill supply-chain scan. (The structural
+   * skills detector deliberately still audits only `skills`, so widening this
+   * list does not move existing structural scores.) Honors include/exclude but
+   * NOT the size/binary guards: the supply-chain scan must see — and report —
+   * an oversized or NUL-bearing SKILL.md rather than silently lose the skill.
+   * Optional so hand-built contexts from older releases keep working.
+   */
+  allSkills?: string[];
+  /**
+   * Files bundled alongside a skill in `allSkills` (scripts, references,
+   * manifests): every file under the skill's directory except SKILL.md files,
+   * include/exclude applied, capped per skill BEFORE any file I/O. Read as text
+   * by the supply-chain scan — never executed. Optional (see `allSkills`).
+   */
+  skillFiles?: string[];
+  /** Bundled files dropped by the per-skill cap — reported, never silently lost. */
+  skillFilesOverCap?: string[];
+  /**
+   * Parts of a skill bundle the listing did not enumerate, so the supply-chain
+   * scan can name them: dependency/VCS directories, files an `include` config
+   * left out, and bundles too large to list.
+   */
+  skillBundleSkips?: SkillBundleSkip[];
   /** Subagent definitions: `.claude/agents/**\/*.md`. */
   agents: string[];
   /** Claude Code settings: `.claude/settings.json` and `.claude/settings.local.json`. */
@@ -119,9 +156,183 @@ export type AiConfigFiles = {
   copilotInstructions: string[];
 };
 
+export type SkillBundleSkip = {
+  /** Repo-relative path: the skipped directory, or the skill directory for counts. */
+  path: string;
+  kind: 'dependency-dir' | 'include' | 'listing-limit';
+  /** Files affected, when known. */
+  count?: number;
+};
+
 /** An AiConfigFiles with every surface empty — for contexts built without discovery. */
 export function emptyAiConfigFiles(): AiConfigFiles {
-  return { skills: [], agents: [], settings: [], mcp: [], cursorRules: [], copilotInstructions: [] };
+  return {
+    skills: [], allSkills: [], skillFiles: [], skillFilesOverCap: [], skillBundleSkips: [],
+    agents: [], settings: [], mcp: [], cursorRules: [], copilotInstructions: [],
+  };
+}
+
+/**
+ * Exact repo-relative directories that hold skills rather than being one. A
+ * SKILL.md sitting directly in one of them is not a skill directory of its own
+ * — enumerating "its" bundle would sweep in the whole `.claude/` tree — so
+ * bundled-file discovery skips it. Compared as exact paths, never basenames: a
+ * skill that is itself NAMED `skills` (`.claude/skills/skills/`) is a real skill
+ * whose scripts must be scanned.
+ */
+const SKILL_CONTAINER_DIRS: ReadonlySet<string> = new Set([
+  '.', '.claude', '.agents', '.claude/skills', '.agents/skills', '.claude/plugins', 'skills', 'plugins',
+]);
+
+export function isSkillContainerDir(dir: string): boolean {
+  return SKILL_CONTAINER_DIRS.has(dir);
+}
+
+/** Upper bound on bundled files read per skill, so one huge skill cannot stall a scan. */
+export const MAX_BUNDLED_FILES_PER_SKILL = 200;
+/** Directory entries visited per skill before the listing stops (and says so). */
+const MAX_BUNDLE_LISTING = 20_000;
+/** Over-cap file names kept for reporting; the rest are counted. */
+const MAX_OVER_CAP_NAMES = 1_000;
+/**
+ * Directories inside a skill that are not walked but ARE reported: dependency
+ * trees and VCS/worktree copies (a locally installed `node_modules` would
+ * otherwise flood the scan with third-party code). Build output (`dist/`,
+ * `build/`) IS walked — inside a skill it is shipped, executable content.
+ */
+const BUNDLE_SKIP_DIRS: ReadonlySet<string> = new Set(['node_modules', '.git', 'worktrees', '.worktrees']);
+
+/** Dependency package manifests read per skill. */
+const MAX_DEPENDENCY_MANIFESTS = 100;
+
+/**
+ * Scripts, executables, manifests, shell-like config and extensionless files:
+ * listed (and scanned) before documents. Mirrors the supply-chain detector's
+ * priority classes by name, without any file I/O.
+ */
+const PRIORITY_BUNDLE_RE = new RegExp(
+  String.raw`(?:^|\/)(?:[^/.]+|package\.json|requirements[^/]{0,40}\.txt|(?:GNU)?makefile|Dockerfile[^/]{0,40}|Containerfile|Justfile)$|` +
+  String.raw`\.(?:sh|bash|zsh|ksh|fish|command|js|mjs|cjs|ts|mts|cts|jsx|tsx|py|pyw|rb|ps1|psm1|pl|php|lua|bat|cmd|mk|` +
+  String.raw`vbs|vba|vbe|hta|applescript|wsf|jse|reg|exe|dll|so|dylib|wasm|jar|war|class|zip|tar|gz|tgz|bz2|xz|7z|rar|` +
+  String.raw`msi|dmg|pkg|deb|rpm|appimage|apk|bin|o|a|lnk|scr|com|pif|scpt|node|env)$`,
+  'i',
+);
+
+export function isPriorityBundleFile(rel: string): boolean {
+  return PRIORITY_BUNDLE_RE.test(rel);
+}
+
+/** `node_modules/<pkg>/package.json` and `node_modules/@scope/<pkg>/package.json`, bounded. */
+function listPackageManifests(repoRoot: string, nodeModules: string): string[] {
+  const out: string[] = [];
+  const read = (rel: string): fs.Dirent[] => {
+    const abs = resolveWithinRoot(repoRoot, rel);
+    if (!abs) return [];
+    try { return fs.readdirSync(abs, { withFileTypes: true }); } catch { return []; }
+  };
+  const tryPkg = (pkgDir: string) => {
+    const manifest = `${pkgDir}/package.json`;
+    if (out.length < MAX_DEPENDENCY_MANIFESTS && isFileWithinRoot(repoRoot, manifest)) out.push(manifest);
+  };
+  for (const entry of read(nodeModules).sort((a, b) => (a.name < b.name ? -1 : 1))) {
+    if (out.length >= MAX_DEPENDENCY_MANIFESTS) break;
+    if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
+    if (entry.name.startsWith('@')) {
+      for (const scoped of read(`${nodeModules}/${entry.name}`).sort((a, b) => (a.name < b.name ? -1 : 1))) {
+        if (scoped.isDirectory()) tryPkg(`${nodeModules}/${entry.name}/${scoped.name}`);
+      }
+    } else {
+      tryPkg(`${nodeModules}/${entry.name}`);
+    }
+  }
+  return out;
+}
+
+/** True when `rel` or any ancestor directory matches an `exclude` pattern (glob-ignore semantics). */
+function isExcluded(rel: string, exclude: string[]): boolean {
+  if (exclude.length === 0) return false;
+  const parts = rel.split('/');
+  const candidates = [rel];
+  for (let i = 1; i < parts.length; i++) {
+    const dir = parts.slice(0, i).join('/');
+    candidates.push(dir, `${dir}/`);
+  }
+  return candidates.some((c) => micromatch.isMatch(c, exclude, { dot: true }));
+}
+
+/**
+ * Enumerate the files bundled with each skill with a bounded, deterministic
+ * directory walk: everything under the SKILL.md's directory, minus SKILL.md
+ * files and anything owned by a nested skill (a file belongs to its nearest
+ * enclosing skill directory). Symlinks are not followed. `exclude` always
+ * applies; files an `include` list leaves out are counted and reported. The
+ * per-skill cap is applied here, before any file is opened, and everything it
+ * drops is reported — nothing in a bundle disappears silently.
+ */
+function discoverSkillFiles(
+  repoRoot: string,
+  skills: string[],
+  policy: { include?: string[]; exclude: string[] },
+): { files: string[]; overCap: string[]; skips: SkillBundleSkip[] } {
+  const skillDirs = [...new Set(
+    skills.map((s) => path.posix.dirname(s)).filter((dir) => !isSkillContainerDir(dir)),
+  )].sort();
+  const skillDirSet = new Set(skillDirs);
+  const files: string[] = [];
+  const overCap: string[] = [];
+  const skips: SkillBundleSkip[] = [];
+
+  for (const dir of skillDirs) {
+    const owned: string[] = [];
+    const dependencyManifests: string[] = [];
+    let includeDropped = 0;
+    let visited = 0;
+    let truncated = false;
+    const stack = [dir];
+    while (stack.length > 0) {
+      const current = stack.pop()!;
+      const abs = resolveWithinRoot(repoRoot, current);
+      if (!abs) continue;
+      let entries: fs.Dirent[];
+      try {
+        entries = fs.readdirSync(abs, { withFileTypes: true });
+      } catch {
+        continue;
+      }
+      entries.sort((a, b) => (a.name < b.name ? 1 : a.name > b.name ? -1 : 0)); // reversed: stack pops in order
+      for (const entry of entries) {
+        if (++visited > MAX_BUNDLE_LISTING) { truncated = true; break; }
+        const rel = `${current}/${entry.name}`;
+        if (entry.isSymbolicLink()) continue;
+        if (isExcluded(rel, policy.exclude)) continue;
+        if (entry.isDirectory()) {
+          if (skillDirSet.has(rel)) continue; // a nested skill owns its own subtree
+          if (BUNDLE_SKIP_DIRS.has(entry.name)) {
+            skips.push({ path: rel, kind: 'dependency-dir' });
+            if (entry.name === 'node_modules') dependencyManifests.push(...listPackageManifests(repoRoot, rel));
+            continue;
+          }
+          stack.push(rel);
+        } else if (entry.isFile() && entry.name !== 'SKILL.md') {
+          if (policy.include && !micromatch.isMatch(rel, policy.include, { dot: true })) { includeDropped++; continue; }
+          owned.push(rel);
+        }
+      }
+      if (truncated) break;
+    }
+    // Executable content first, so the cap drops documents before it drops scripts.
+    owned.sort((a, b) => Number(isPriorityBundleFile(b)) - Number(isPriorityBundleFile(a)) || (a < b ? -1 : a > b ? 1 : 0));
+    files.push(...owned.slice(0, MAX_BUNDLED_FILES_PER_SKILL));
+    // Dependency package manifests are read (install scripts, `bin`) even though the tree is not walked.
+    files.push(...dependencyManifests.sort().slice(0, MAX_DEPENDENCY_MANIFESTS));
+    const dropped = owned.slice(MAX_BUNDLED_FILES_PER_SKILL);
+    overCap.push(...dropped.slice(0, MAX_OVER_CAP_NAMES));
+    if (dropped.length > MAX_OVER_CAP_NAMES || truncated) {
+      skips.push({ path: dir, kind: 'listing-limit', count: Math.max(0, dropped.length - MAX_OVER_CAP_NAMES) });
+    }
+    if (includeDropped > 0) skips.push({ path: dir, kind: 'include', count: includeDropped });
+  }
+  return { files: files.sort(), overCap: overCap.sort(), skips };
 }
 
 /**
@@ -166,13 +377,21 @@ export function discoverAiConfigFiles(
 ): AiConfigFiles {
   const ignore = [...DISCOVERY_IGNORE, ...(policy.exclude ?? [])];
   const include = policy.include && policy.include.length > 0 ? policy.include : undefined;
-  const discover = (patterns: readonly string[]): string[] => {
-    let files = listFiles(repoRoot, [...patterns], ignore);
-    if (include) files = micromatch(files, include, { dot: true }).sort();
-    return files.filter((file) => passesScanGuards(repoRoot, file));
+  /** include/exclude only — no file I/O. */
+  const list = (patterns: readonly string[]): string[] => {
+    const files = listFiles(repoRoot, [...patterns], ignore);
+    return include ? micromatch(files, include, { dot: true }).sort() : files;
   };
+  const discover = (patterns: readonly string[]): string[] =>
+    list(patterns).filter((file) => passesScanGuards(repoRoot, file));
+  const allSkills = list(AI_CONFIG_GLOBS.allSkills);
+  const bundled = discoverSkillFiles(repoRoot, allSkills, { include, exclude: policy.exclude ?? [] });
   return {
     skills: discover(AI_CONFIG_GLOBS.skills),
+    allSkills,
+    skillFiles: bundled.files,
+    skillFilesOverCap: bundled.overCap,
+    skillBundleSkips: bundled.skips,
     agents: discover(AI_CONFIG_GLOBS.agents),
     settings: discover(AI_CONFIG_GLOBS.settings),
     mcp: discover(AI_CONFIG_GLOBS.mcp),
