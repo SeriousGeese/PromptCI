@@ -110,6 +110,7 @@ import {
   withScannerPaths,
 } from './ai-config.js';
 import { MAX_FILE_SIZE, BINARY_CHECK_BYTES, isBinary } from './scanner.js';
+import { realPathWithinRoot } from './path-containment.js';
 import { scanFencedLines } from './markdown-fences.js';
 import { extractFileRefs } from './skills-detector.js';
 import { codepointLabel, visibleText } from './evidence.js';
@@ -2236,6 +2237,9 @@ function loadDocs(
   }
   const abs = resolveWithinRoot(repoRoot, relPath);
   if (!abs) return { docs: [], unscanned: [] };
+  if (!realPathWithinRoot(repoRoot, abs)) {
+    return { docs: [], unscanned: [{ path: relPath, reason: 'symlink to a location outside the repository — not read', severity: 'warning' }] };
+  }
   let fd: number | undefined;
   try {
     const stat = fs.statSync(abs);

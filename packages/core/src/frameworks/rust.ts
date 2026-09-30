@@ -2,6 +2,7 @@ import type { RepoContext } from '../repo-context.js';
 import type { PromptCiIssue } from '../types.js';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
+import { readTextWithinRoot } from '../ai-config.js';
 
 export function detectRust(context: RepoContext): PromptCiIssue[] {
   const issues: PromptCiIssue[] = [];
@@ -39,7 +40,7 @@ export function detectRust(context: RepoContext): PromptCiIssue[] {
   let rustVersion: string | undefined;
   if (hasCargoToml) {
     try {
-      const cargoContent = fs.readFileSync(path.join(repoRoot, 'Cargo.toml'), 'utf-8');
+      const cargoContent = readTextWithinRoot(repoRoot, 'Cargo.toml') ?? '';
       const match = /^rust-version\s*=\s*["'](.*?)["']/m.exec(cargoContent);
       if (match) {
         rustVersion = match[1]?.trim();

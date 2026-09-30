@@ -142,7 +142,8 @@ The score is self-reported by your own scan; regenerate the file in CI to keep i
 - Manifest consistency against `package.json` and `pyproject.toml`
 - CI/workflow alignment between instructions and GitHub Actions
 - Security and privacy gaps in instruction guidance
-- Vague guidance, broken local references, agent-practice gaps
+- Vague guidance, broken local references (files, directories, and documented package
+  scripts or `make` targets that no longer exist), agent-practice gaps
 - Prompt-cache-hostile content that inflates the cost of every agent turn
 - GitHub Actions `uses:` references (in workflows and composite actions) pinned to a tag or
   branch instead of a full commit SHA — detect-only, never rewritten; these findings cost at

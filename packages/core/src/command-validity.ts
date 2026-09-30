@@ -6,6 +6,9 @@ import type { PromptCiIssue } from './types.js';
 import { fencedBlocks, scanFencedLines } from './markdown-fences.js';
 import { fileIdPath } from './finding-id.js';
 import { anyWorkspaceHasScript, isKnownBinary, selectWorkspaces } from './workspace-manifests.js';
+import { makefileDefines, readMakefile } from './makefile.js';
+import type { MakefileFacts } from './makefile.js';
+import { realPathWithinRoot } from './path-containment.js';
 
 /**
  * Command Validity Detector
@@ -45,7 +48,20 @@ function fileExists(repoRoot: string, relativePath: string): boolean {
   }
 }
 
-function readPackageScripts(packageJsonPath: string): { name?: string; scripts: Record<string, string> } | null {
+function isDirectory(repoRoot: string, relativePath: string): boolean {
+  try {
+    return fs.statSync(path.resolve(repoRoot, relativePath)).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+function readPackageScripts(
+  repoRoot: string,
+  packageJsonPath: string,
+): { name?: string; scripts: Record<string, string> } | null {
+  // A manifest committed as a symlink to a file outside the repo is not read.
+  if (!realPathWithinRoot(repoRoot, packageJsonPath)) return null;
   try {
     const raw = fs.readFileSync(packageJsonPath, 'utf8');
     const parsed = JSON.parse(raw) as Record<string, unknown>;
@@ -119,7 +135,7 @@ function workspaceHasScript(context: RepoContext, selector: string | undefined, 
   }
 
   for (const candidate of workspacePackageJsonCandidates(context.repoRoot, normalizedSelector)) {
-    const pkg = readPackageScripts(candidate);
+    const pkg = readPackageScripts(context.repoRoot, candidate);
     if (!pkg) continue;
     const packageDir = path.dirname(candidate).replace(/\\/g, '/');
     const relDir = path.relative(context.repoRoot, packageDir).replace(/\\/g, '/');
@@ -184,11 +200,16 @@ type ExtractedCommand = {
   text: string;
   line: number;
   /**
-   * Repo-relative directory the command runs in. '.' = repo root. `null` means
-   * the working directory is unknown (an unresolvable `cd`, e.g. an absolute or
-   * out-of-repo path), in which case script/file validation is skipped.
+   * Repo-relative directory the command runs in. '.' = repo root; `undefined`
+   * (prose commands, which never carry a `cd`) also means the repo root.
+   * `null` means the working directory is unknown — an unresolvable `cd` (an
+   * absolute, home, out-of-repo or variable path) — and every script, file and
+   * make-target check is skipped: the command is unverifiable, NOT validated
+   * against the repo root.
    */
   cwd?: string | null;
+  /** Came from a shell code fence (a line meant to be run), not an inline code span. */
+  fenced?: boolean;
 };
 
 /**
@@ -204,6 +225,9 @@ function resolveCwd(current: string | null, target: string): string | null {
   if (!cleaned || cleaned.startsWith('/') || cleaned.startsWith('~') || /^[a-zA-Z]:[\\/]/.test(cleaned)) {
     return null; // absolute or home path — not resolvable to a repo-relative dir
   }
+  // `cd -`, `cd $DIR`, `cd "$(git rev-parse --show-toplevel)"`, `cd %TEMP%`,
+  // `cd <dir>`: computed or placeholder targets name no knowable directory.
+  if (/^-|[$`%<>{}*?]/.test(cleaned)) return null;
   const parts: string[] = current === '.' ? [] : current.split('/');
   for (const seg of cleaned.replace(/\\/g, '/').split('/')) {
     if (seg === '' || seg === '.') continue;
@@ -302,7 +326,7 @@ function extractCommands(content: string): ExtractedCommand[] {
         if (cdMatch) {
           lineCwd = resolveCwd(lineCwd, cdMatch[1]!.trim());
         }
-        commands.push({ text: seg, line: block.contentStartLine + j, cwd: lineCwd });
+        commands.push({ text: seg, line: block.contentStartLine + j, cwd: lineCwd, fenced: true });
       }
     }
   }
@@ -492,7 +516,7 @@ function findMissingScript(
 
   const inSubdir = cwd !== '.' && cwd !== '';
   const dirPkg = inSubdir
-    ? readPackageScripts(path.join(context.repoRoot, cwd, 'package.json'))
+    ? readPackageScripts(context.repoRoot, path.join(context.repoRoot, cwd, 'package.json'))
     : null;
   // cd'd into a directory whose package.json we can't read — don't guess.
   if (inSubdir && !dirPkg) return null;
@@ -609,6 +633,77 @@ function validatePackageManagerScript(
   );
 }
 
+// ── make targets ──────────────────────────────────────────────────────────────
+
+/** make options whose value is the NEXT token (unless attached: `-Cdir`, `-j4`). */
+const MAKE_FLAGS_WITH_VALUE = new Set(['-C', '-f', '-o', '-W', '-I', '--directory', '--file', '--makefile', '--old-file', '--what-if', '--include-dir', '--new-file', '--assume-old', '--assume-new']);
+/** make options with an OPTIONAL numeric value (`-j`, `-j 4`, `-l 2.5`). */
+const MAKE_FLAGS_WITH_OPTIONAL_NUMBER = new Set(['-j', '-l', '--jobs', '--load-average', '--max-load']);
+
+/**
+ * pcic-2b6.10: `make <target>` against the Makefile make would read. Reports a
+ * target only when a Makefile exists in the command's directory, this reader
+ * could enumerate every target it defines (no `include`, no computed names),
+ * and neither an explicit target, a `.PHONY` name nor a pattern rule covers it.
+ * Variable assignments (`make X=1`), file-path goals (`make build/app.o`) and
+ * names make could build from a same-stem source via its built-in implicit
+ * rules (`make hello` next to `hello.c`) are never reported.
+ */
+function validateMakeTargets(
+  parts: string[],
+  context: RepoContext,
+  cwd: string,
+  makefileFor: (dir: string) => MakefileFacts | undefined,
+): string | null {
+  let dir: string | null = cwd;
+  const goals: string[] = [];
+  for (let i = 1; i < parts.length; i++) {
+    const p = parts[i]!;
+    // Shell plumbing ends the make invocation.
+    if (/^(?:[|&<>#]|\d*>)/.test(p)) break;
+    if (p.startsWith('-')) {
+      const eq = p.indexOf('=');
+      const name = eq === -1 ? p : p.slice(0, eq);
+      if (name === '-f' || name === '--file' || name === '--makefile' || /^-f./.test(p)) return null; // another file
+      let value: string | undefined;
+      if (MAKE_FLAGS_WITH_VALUE.has(name)) {
+        value = eq !== -1 ? p.slice(eq + 1) : parts[++i];
+      } else if (/^-C./.test(p)) {
+        value = p.slice(2);
+      } else if (MAKE_FLAGS_WITH_OPTIONAL_NUMBER.has(p) && /^\d+(?:\.\d+)?$/.test(parts[i + 1] ?? '')) {
+        i++;
+      }
+      if ((name === '-C' || name === '--directory' || /^-C./.test(p)) && value !== undefined) {
+        dir = resolveCwd(dir, value);
+      }
+      continue;
+    }
+    if (p.includes('=')) continue; // `make CC=clang build`
+    goals.push(p);
+  }
+  if (dir === null || goals.length === 0) return null;
+
+  const facts = makefileFor(dir);
+  if (!facts || facts.unverifiable) return null;
+
+  const baseDir = dir === '.' ? context.repoRoot : path.join(context.repoRoot, dir);
+  let entries: string[] | undefined;
+  for (const goal of goals) {
+    const target = goal.replace(/^['"]|['"]$/g, '');
+    if (!target || isLikelyFilePath(target) || !/^[A-Za-z0-9_.+-]+$/.test(target)) continue;
+    if (makefileDefines(facts, target)) continue;
+    // make can build `target` from `target.c` etc. with its built-in rules.
+    try {
+      entries ??= fs.readdirSync(baseDir);
+    } catch {
+      entries = [];
+    }
+    if (entries.some((e) => e === target || e.startsWith(`${target}.`))) continue;
+    return `make target "${target}" does not appear in ${facts.file}`;
+  }
+  return null;
+}
+
 /**
  * Validates a single command segment against the repo context.
  * Returns a human-readable error string, or null if the command looks valid.
@@ -621,6 +716,7 @@ function validateSegment(
   context: RepoContext,
   cwd: string | null = '.',
   onScript?: (name: string) => void,
+  opts: { fenced?: boolean; makefileFor?: (dir: string) => MakefileFacts | undefined } = {},
 ): string | null {
   if (PLACEHOLDER_RE.test(seg)) return null;
 
@@ -651,8 +747,21 @@ function validateSegment(
     }
   }
 
+  // ── make <target> ──────────────────────────────────────────────────────────
+  if (tool === 'make' && cwd !== null && opts.makefileFor) {
+    return validateMakeTargets(parts, context, cwd, opts.makefileFor);
+  }
+
   // ── Direct script invocations: ./scripts/foo.sh ───────────────────────────
   if (baseDir && (tool.startsWith('./') || tool.startsWith('../'))) {
+    // pcic-2b6.8: a bare `./src` or `./docs/` in an inline code span is a
+    // directory mention, not a script invocation — it is dead-references' to
+    // judge. Only a shell-fence line (meant to be run) still reports an absent
+    // extensionless `./gradlew`; an existing directory is never a missing script.
+    if (parts.length === 1 && path.extname(tool.replace(/\/+$/, '')) === '') {
+      if (isDirectory(baseDir, tool)) return null;
+      if (!opts.fenced || tool.endsWith('/')) return null;
+    }
     if (!fileExists(baseDir, tool)) {
       return `Script "${tool}" does not appear to exist in the repository`;
     }
@@ -731,6 +840,14 @@ function computeCommandAnalysis(context: RepoContext): CommandAnalysis {
   const issues: PromptCiIssue[] = [];
   const evaluatedScripts = new Map<string, Set<string>>();
   const reported = new Set<string>();
+  // Makefiles by repo-relative directory: the root one comes from the context,
+  // subdirectory ones (`make -C dir`, `cd dir && make`) are read once each.
+  const makefiles = new Map<string, MakefileFacts | undefined>();
+  const makefileFor = (dir: string): MakefileFacts | undefined => {
+    if (dir === '.' || dir === '') return context.makefile;
+    if (!makefiles.has(dir)) makefiles.set(dir, readMakefile(context.repoRoot, dir));
+    return makefiles.get(dir);
+  };
 
   for (const file of context.files) {
     const commands = extractCommands(file.content);
@@ -738,7 +855,16 @@ function computeCommandAnalysis(context: RepoContext): CommandAnalysis {
     evaluatedScripts.set(file.path, evaluated);
 
     for (const cmd of commands) {
-      const error = validateSegment(cmd.text, context, cmd.cwd ?? '.', (name) => evaluated.add(`${cmd.line}:${name}`));
+      // pcic-2b6.13: `cmd.cwd ?? '.'` used to turn an unknown directory (null,
+      // after `cd /srv/app` or `cd $DIR`) into the repo root and validate the
+      // command against the root manifest. Only a command with no cwd at all
+      // (prose, which never carries a `cd`) runs from the root; null stays
+      // unverifiable.
+      const cwd = cmd.cwd === undefined ? '.' : cmd.cwd;
+      const error = validateSegment(cmd.text, context, cwd, (name) => evaluated.add(`${cmd.line}:${name}`), {
+        fenced: cmd.fenced === true,
+        makefileFor,
+      });
       if (!error) continue;
 
       // Deduplicate same command text appearing twice in the same file
