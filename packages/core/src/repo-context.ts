@@ -6,6 +6,8 @@ import { detectProjectType, detectProjectTypeFromContent } from './project-type.
 import micromatch from 'micromatch';
 import { MAX_FILE_SIZE, isBinary, parseSections, scanFiles } from './scanner.js';
 import type { ManifestData } from './manifest-consistency.js';
+import { discoverWorkspaceManifests } from './workspace-manifests.js';
+import type { WorkspaceManifest } from './workspace-manifests.js';
 import { isOnDemandFileType } from './types.js';
 import type { InstructionFile, ProjectType, ScanInput, ScanMetrics } from './types.js';
 import { budgetForTargetModel } from './model-budgets.js';
@@ -59,6 +61,19 @@ export type RepoContext = {
   manifests: ManifestData;
   packageJson: PackageJsonFacts;
   workflows: WorkflowFacts;
+  /**
+   * The root package.json plus every workspace package manifest (scripts,
+   * dependency names, binaries). Lets the script-validity checks resolve
+   * `--filter`/`-r` commands and package binaries the way the package manager
+   * would. Optional so hand-built contexts without it keep type-checking.
+   */
+  workspaces?: WorkspaceManifest[];
+  /**
+   * Workspace discovery stopped at its manifest cap, so `workspaces` is a
+   * sample. Checks that need the complete set (is this binary installed?) stay
+   * permissive when this is set.
+   */
+  workspacesTruncated?: boolean;
   /**
    * Config files for the ai_config detectors, discovered here so they share
    * the scan's include/exclude and size/binary policy instead of re-walking
@@ -411,6 +426,12 @@ export async function buildRepoContext(input: ScanInput): Promise<RepoContext> {
     loadCustomRules(repoRoot),
   ]);
 
+  const workspaceDiscovery = await discoverWorkspaceManifests(
+    repoRoot,
+    packageJson,
+    (posix) => isExcludedPath(posix, input.exclude ?? []),
+  );
+
   const manifests: ManifestData = {};
   if (packageJson) manifests.packageJson = packageJson;
   if (pyproject) manifests.pyproject = pyproject;
@@ -427,6 +448,8 @@ export async function buildRepoContext(input: ScanInput): Promise<RepoContext> {
     manifests,
     packageJson: parsePackageJsonFacts(packageJson, lockfiles),
     workflows,
+    workspaces: workspaceDiscovery.manifests,
+    workspacesTruncated: workspaceDiscovery.truncated,
     aiConfig,
     metrics: buildMetrics(files, onDemandFiles),
     // A targetModel preset scales the context-bloat thresholds to that model's
