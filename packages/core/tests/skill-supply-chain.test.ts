@@ -607,15 +607,25 @@ describe('skill discovery', () => {
       'plugins/p/skills/c/SKILL.md',
       'skills/b/SKILL.md',
     ]);
-    // The structural skills detector keeps its original scope, so existing
-    // structural scores do not move when these locations are added.
-    expect(found.skills).toEqual(['.claude/skills/demo/SKILL.md']);
+    // pcic-0r0: the structural skills detector audits the same locations.
+    expect(found.skills).toEqual(found.allSkills);
   });
 
-  it('does not widen the structural skills detector to the new locations', () => {
+  it('audits skills in the new locations structurally too (pcic-0r0)', () => {
     const dir = repo();
-    writeFile(dir, '.agents/skills/a/SKILL.md', '# no frontmatter, would be a structural finding');
-    expect(detectSkills(ctx(dir))).toEqual([]);
+    writeFile(dir, '.agents/skills/a/SKILL.md', '# no frontmatter, now a structural finding');
+    writeFile(dir, 'skills/b/SKILL.md', '# no frontmatter either');
+    writeFile(dir, 'plugins/p/skills/c/SKILL.md', '# nor this one');
+    writeFile(dir, 'vendor/other/skills/d/SKILL.md', '# not an anchored skill location');
+    const flagged = detectSkills(ctx(dir))
+      .filter((i) => i.title.includes('missing YAML frontmatter'))
+      .map((i) => path.relative(dir, i.filePaths[0]!).split(path.sep).join('/'))
+      .sort();
+    expect(flagged).toEqual([
+      '.agents/skills/a/SKILL.md',
+      'plugins/p/skills/c/SKILL.md',
+      'skills/b/SKILL.md',
+    ]);
   });
 
   it('assigns bundled files to their nearest skill and skips container-level SKILL.md', () => {

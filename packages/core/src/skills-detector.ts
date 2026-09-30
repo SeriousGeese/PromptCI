@@ -1,15 +1,15 @@
 /**
  * Skills Detector (issue #23)
  *
- * Audits Agent Skills — `SKILL.md` files under `.claude/` (project skills and
- * plugin-bundled skills) — against filesystem reality:
+ * Audits Agent Skills — `SKILL.md` files under `.claude/`, `.agents/skills/`
+ * and plugin `skills/<name>/` directories — against filesystem reality:
  *
  *  - Frontmatter validity: present, closed, required `name`/`description`, and
  *    `name` matching the skill's directory (how Claude resolves a skill).
  *  - Trigger descriptions: an empty `description` never triggers the skill; two
  *    skills sharing a description compete for the same triggers.
  *  - Dead file references: paths in the skill body (scripts, references) that
- *    point at bundled files which do not exist.
+ *    resolve neither beside the skill nor from the repo root.
  *
  * All checks are deterministic and offline. Findings are cautiously worded.
  */
@@ -21,6 +21,7 @@ import {
   parseFrontmatter,
   readTextWithinRoot,
   isFileWithinRoot,
+  existsWithinRoot,
   shortHash,
   toPosix,
   withScannerPaths,
@@ -28,6 +29,8 @@ import {
   frontmatterStructureIssues,
 } from './ai-config.js';
 import type { FrontmatterSurface } from './ai-config.js';
+import { isHomeRooted } from './dead-references.js';
+import { createGitIgnoreChecker } from './gitignore.js';
 
 /** A description shorter than this (after trimming) is treated as effectively empty. */
 const MIN_DESCRIPTION_CHARS = 12;
@@ -58,12 +61,16 @@ function normalizeDescription(text: string): string {
 
 // ── Dead-reference extraction (scoped to a skill body) ────────────────────────
 
-/** Looks like a relative file reference to a bundled resource, not prose or a URL. */
+/**
+ * Looks like a file reference (a bundled resource or a repo file), not prose or
+ * a URL. A leading `/` is kept: the detector reads it as repo-root-relative and
+ * only checks it when its first segment exists at the repo root.
+ */
 function isBundledFileRef(ref: string): boolean {
   if (!ref) return false;
   const r = ref.trim();
   if (/^(https?:|mailto:|#|\/\/)/i.test(r)) return false; // URL / anchor
-  if (r.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(r)) return false; // absolute
+  if (/^[a-zA-Z]:[\\/]/.test(r)) return false; // Windows absolute
   if (/[<>{}*?|"\s]/.test(r)) return false; // placeholder / glob / whitespace
   if (r.includes('..')) return false; // don't chase parent escapes
   const withoutAnchor = r.split('#')[0]!;
@@ -100,11 +107,35 @@ export function extractFileRefs(content: string): Array<{ ref: string; line: num
   return refs;
 }
 
+/**
+ * Repo-relative paths a skill's file reference may resolve to, in lookup order,
+ * or `undefined` when the reference should not be checked at all.
+ *
+ *  - `/Docs/x.md` is repo-root-relative. It is only checked when its first
+ *    segment exists at the repo root; otherwise it is an absolute system path
+ *    (`/usr/local/bin/tool.sh`) that says nothing about this repository.
+ *  - `scripts/x.py` is looked up beside the SKILL.md, then (for a
+ *    `…/skills/<name>/` layout) at the plugin root, then at the repo root.
+ */
+function resolutionCandidates(repoRoot: string, skillDir: string, ref: string): string[] | undefined {
+  if (ref.startsWith('/')) {
+    const rooted = ref.slice(1);
+    return existsWithinRoot(repoRoot, rooted.split('/')[0]!) ? [rooted] : undefined;
+  }
+  const pluginRoot = /^(.*?)\/?skills\/[^/]+$/.exec(skillDir)?.[1];
+  const bases = [skillDir, ...(pluginRoot ? [pluginRoot] : []), '.'];
+  return [...new Set(bases.map((b) => (b === '.' || b === '' ? ref : `${b}/${ref}`)))];
+}
+
 // ── Detector ──────────────────────────────────────────────────────────────────
+
+/** A line telling the reader NOT to touch a file ("never commit `.beads/issues.jsonl`") is not a claim that it exists. */
+const PROHIBITION_RE = /\b(?:do\s+not|don'?t|never|avoid|must\s+not|should\s+not|shouldn'?t)\b/i;
 
 export function detectSkills(context: RepoContext): PromptCiIssue[] {
   const issues: PromptCiIssue[] = [];
   const parsed: ParsedSkill[] = [];
+  let isIgnored: ((repoRelativePath: string) => boolean) | undefined;
 
   for (const filePath of context.aiConfig.skills) {
     const content = readTextWithinRoot(context.repoRoot, filePath);
@@ -167,22 +198,37 @@ export function detectSkills(context: RepoContext): PromptCiIssue[] {
       }));
     }
 
-    // Dead file references in the body.
+    // Dead file references in the body. A skill may point at its own bundled
+    // files (`scripts/run.py`) or at files of the repository it documents
+    // (`Docs/contract.md`, `.github/workflows/ci.yml`), so a relative reference
+    // is only dead when it resolves from NEITHER the skill directory NOR the
+    // repo root. A leading slash (`/Docs/contract.md`) means repo root.
     const skillDir = toPosix(path.dirname(filePath));
+    const bodyLines = content.split(/\r?\n/);
     for (const { ref, line } of extractFileRefs(content)) {
-      const resolved = skillDir === '.' ? ref : `${skillDir}/${ref}`;
-      if (!isFileWithinRoot(context.repoRoot, resolved)) {
-        issues.push(base({
-          id: id('dead-ref', filePath, ref),
-          title: 'Skill references a bundled file that does not exist',
-          summary: `${filePath} references \`${ref}\`, but no such file exists relative to the skill directory.`,
-          filePaths: [filePath],
-          locations: [{ filePath, startLine: line, endLine: line }],
-          evidence: [`Reference: ${ref}`, `Resolved to: ${resolved}`],
-          recommendation: 'Add the referenced file, fix the path, or remove the reference.',
-          confidence: 0.75,
-        }));
-      }
+      // Files that are not part of a checkout by nature: the reader's home
+      // directory, git internals, and "never commit `X`"-style prohibitions.
+      if (isHomeRooted(ref) || /^\/?\.git\//.test(ref)) continue;
+      if (PROHIBITION_RE.test(bodyLines[line - 1] ?? '')) continue;
+      const candidates = resolutionCandidates(context.repoRoot, skillDir, ref);
+      if (!candidates) continue; // e.g. `/usr/bin/tool.sh` — a system path, not a repo file
+      if (candidates.some((candidate) => isFileWithinRoot(context.repoRoot, candidate))) continue;
+      // Local/generated state the repo's own ignore rules say is never checked in.
+      isIgnored ??= createGitIgnoreChecker(context.repoRoot);
+      if (candidates.some((candidate) => isIgnored!(candidate))) continue;
+      const leadingSlash = ref.startsWith('/');
+      issues.push(base({
+        id: id('dead-ref', filePath, ref),
+        title: 'Skill references a bundled file that does not exist',
+        summary: leadingSlash
+          ? `${filePath} references \`${ref}\`, but no such file exists at that path from the repository root.`
+          : `${filePath} references \`${ref}\`, but no such file exists relative to the skill directory or the repository root.`,
+        filePaths: [filePath],
+        locations: [{ filePath, startLine: line, endLine: line }],
+        evidence: [`Reference: ${ref}`, `Looked in: ${candidates.join(', ')}`],
+        recommendation: 'Add the referenced file, fix the path, or remove the reference.',
+        confidence: 0.75,
+      }));
     }
 
     if (description) parsed.push({ filePath, description });
