@@ -56,26 +56,31 @@
  * window alignment. HTML comments and tags are found with indexOf walks. A
  * rule keeps scanning past its evidence cap (a flood of low-severity matches
  * cannot hide a later high-severity one). Documents are loaded, scanned and
- * dropped one at a time under a per-scan byte and file budget; whatever the
- * budget skips is reported. There is deliberately no wall-clock budget:
- * output must not depend on the clock.
+ * dropped one at a time under a per-scan byte, file and line budget, SKILL.md
+ * files and scripts/executables first; a priority file the budget cannot
+ * reach is reported at HIGH (fail closed). There is deliberately no
+ * wall-clock budget: output must not depend on the clock.
  *
- * Documentation vs directive (the false-positive controls): outside fenced
- * code — prose, inline code, table rows — a match is skipped only when a
- * negation or discussion word GOVERNS it: an imperative negation within ~30
- * characters before it in the same clause ("never run `curl … | bash`"), a
- * discussion verb/adjective within ~30 characters before it ("this skill
- * detects `curl | bash`"), or a predicate right after it ("… is dangerous").
- * Generic words (bad, risk, flag, skip…) elsewhere in the sentence do not
- * count, "never mind"/"don't hesitate" are not negations, and a governed
- * match that names a real (non-documentation) host is downgraded to a
- * low-confidence warning, never dropped. Fenced code is judged as written.
+ * Documentation vs directive (the false-positive controls). Outside fenced
+ * code — prose, inline code, table rows — a negation or discussion word only
+ * counts when it directly GOVERNS the match: an imperative negation at most
+ * two words before it in the same clause ("never run `curl … | bash`"), a
+ * discussion word right before it ("this skill detects `curl | bash`"), or a
+ * predicate right after it ("… is dangerous"). Governance ends at but / and /
+ * then / instead / so and at clause punctuation; "never forget/hesitate/stop/
+ * skip/fail/neglect/mind" is not a negation. Even then, context NEVER drops a
+ * match, or lowers its severity, when the match names a concrete target — a
+ * URL, a bare host or host/path, a `$VARIABLE` or `$(…)` — it only lowers
+ * confidence (0.4) and notes "looks like documentation". Only target-less
+ * documentation ("never run `curl | bash`") is dropped. The trade-off: a
+ * security skill quoting a real installer URL is reported (high, low
+ * confidence); the escape hatch is the baseline or a config `exclude`.
  * Other controls: one named API key sent to an API is not exfiltration;
  * dynamic require/import only counts next to network access; emoji ZWJ, a
  * single variation selector after a non-ASCII character, flag tag sequences,
  * RTL marks in RTL text, a leading BOM and `data:` URIs are ignored; `npx
- * tool` without a version is not flagged; a markdown table row whose first
- * cell is just a flag documents that flag.
+ * tool` without a version is not flagged; a table row whose first cell is just
+ * a flag, and whose other cells direct nothing, documents that flag.
  *
  * Findings list the file they were found in plus the owning SKILL.md in
  * `filePaths`, with `locations` at the exact line. Inline `promptci-ignore`
@@ -128,10 +133,12 @@ type SkillDoc = {
   lang: Lang;
   content: string;
   lines: string[];
+  /** Indices of non-blank lines — the only lines most rules need to look at. */
+  active: number[];
   /** Per line: inside a fenced code block (instructions only). */
-  fenced: boolean[];
+  fenced: Uint8Array;
   /** Per line: the enclosing fence's info string. */
-  fenceLang: string[];
+  fenceLang: Map<number, string>;
   /** Last line of the SKILL.md frontmatter block (0 when none / not a SKILL.md). */
   frontmatterEnd: number;
   /** The trailing 500 KB of an oversized file: line numbers are unknown. */
@@ -322,34 +329,45 @@ const SCRIPT_EXT: Record<string, Lang> = {
   ps1: 'ps', psm1: 'ps',
   pl: 'other', php: 'other', lua: 'other', bat: 'other', cmd: 'other',
 };
-/** Executable/compiled source this scan reads only for command/exfil patterns — reported as partially checked. */
+/**
+ * Compiled-language and infrastructure sources: read for command/exfil
+ * patterns only. Noted at info (the rules that matter still ran on them).
+ */
 const SOURCE_EXT: ReadonlySet<string> = new Set([
   'go', 'rs', 'java', 'c', 'cc', 'cpp', 'cxx', 'h', 'hpp', 'cs', 'swift', 'kt', 'kts', 'groovy', 'gradle', 'scala',
-  'tf', 'hcl', 'sql', 'service', 'desktop', 'vbs', 'vba', 'vbe', 'hta', 'applescript', 'wsf', 'jse', 'reg',
+  'tf', 'hcl', 'sql', 'service', 'desktop',
 ]);
+/** Windows/macOS script hosts: read for command/exfil patterns, noted at warning (they run directly). */
+const SCRIPT_HOST_EXT: ReadonlySet<string> = new Set(['vbs', 'vba', 'vbe', 'hta', 'applescript', 'wsf', 'jse', 'reg']);
 /** Binary executables, archives and shortcuts: never readable as text — reported. */
 const BINARY_REPORT_EXT: ReadonlySet<string> = new Set([
   'exe', 'dll', 'so', 'dylib', 'wasm', 'jar', 'war', 'class', 'zip', 'tar', 'gz', 'tgz', 'bz2', 'xz', '7z', 'rar',
-  'msi', 'dmg', 'pkg', 'deb', 'rpm', 'appimage', 'apk', 'bin', 'o', 'a', 'pyc', 'lnk', 'scr', 'com', 'pif', 'scpt', 'node',
+  'msi', 'dmg', 'pkg', 'deb', 'rpm', 'appimage', 'apk', 'bin', 'o', 'a', 'lnk', 'scr', 'com', 'pif', 'scpt', 'node',
 ]);
-/** Media, fonts and data: assets, not read and not reported. */
+/** Office documents and databases: not readable here, rarely executable — noted at info. */
+const OPAQUE_DOC_EXT: ReadonlySet<string> = new Set(['docx', 'xlsx', 'pptx', 'doc', 'xls', 'ppt', 'odt', 'sqlite', 'sqlite3', 'db']);
+/** Media, fonts, data and OS clutter: assets, not read and not reported. */
 const ASSET_EXT: ReadonlySet<string> = new Set([
   'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'ico', 'tif', 'tiff', 'pdf', 'woff', 'woff2', 'ttf', 'otf', 'eot',
-  'mp3', 'mp4', 'wav', 'ogg', 'flac', 'mov', 'avi', 'webm', 'm4a', 'csv', 'tsv', 'parquet', 'psd', 'sketch', 'fig',
+  'mp3', 'mp4', 'wav', 'ogg', 'flac', 'mov', 'avi', 'webm', 'm4a', 'csv', 'tsv', 'parquet', 'psd', 'sketch', 'fig', 'pyc',
 ]);
+const ASSET_NAMES: ReadonlySet<string> = new Set(['.ds_store', 'thumbs.db', 'desktop.ini']);
 
-type Classified = { kind: Kind; lang: Lang; note?: Unscanned['reason'] };
-type Classification = Classified | 'probe' | { skip: 'asset' } | { report: string };
+type Classified = { kind: Kind; lang: Lang; note?: { reason: string; severity: IssueSeverity } };
+type Classification = Classified | 'probe' | { skip: 'asset' } | { report: string; severity: IssueSeverity };
 
 /** Classify by name alone; 'probe' means "sniff the first bytes". */
 function classifyByName(relPath: string): Classification {
   const base = path.posix.basename(relPath);
+  if (ASSET_NAMES.has(base.toLowerCase())) return { skip: 'asset' };
   if (base === 'package.json' || /^requirements[\w.-]{0,40}\.txt$/i.test(base)) return { kind: 'manifest', lang: 'other' };
   if (/^(?:GNU)?makefile$/i.test(base) || /^(?:Dockerfile|Containerfile|Justfile)(?:\..{1,40})?$/i.test(base)) {
     return { kind: 'text', lang: 'sh' };
   }
+  // Templates (.env.example/.sample/.template/.dist) document variable names, not secrets.
+  if (/^\.env\.(?:example|sample|template|dist|defaults?)$/i.test(base)) return { skip: 'asset' };
   if (/^\.env(?:\..{1,40})?$/i.test(base) || /\.env$/i.test(base)) {
-    return { report: 'environment/secrets file bundled with the skill — not read; review it by hand' };
+    return { report: 'environment/secrets file bundled with the skill — not read; review it by hand', severity: 'warning' };
   }
   const ext = /\.([a-z0-9]{1,12})$/i.exec(base)?.[1]?.toLowerCase();
   if (ext === undefined || base.lastIndexOf('.') <= 0) return 'probe';
@@ -358,11 +376,29 @@ function classifyByName(relPath: string): Classification {
   if (ext === 'mk' || ext === 'dockerfile') return { kind: 'text', lang: 'sh' };
   if (TEXT_EXT.has(ext)) return { kind: 'text', lang: 'other' };
   if (SOURCE_EXT.has(ext)) {
-    return { kind: 'text', lang: 'other', note: `.${ext} source — only command and exfiltration patterns were checked` };
+    return { kind: 'text', lang: 'other', note: { reason: `.${ext} source — only command and exfiltration patterns were checked`, severity: 'info' } };
   }
-  if (BINARY_REPORT_EXT.has(ext)) return { report: `binary executable or archive (.${ext}) — cannot be reviewed as text` };
+  if (SCRIPT_HOST_EXT.has(ext)) {
+    return { kind: 'script', lang: 'other', note: { reason: `.${ext} script — only command and exfiltration patterns were checked`, severity: 'warning' } };
+  }
+  if (BINARY_REPORT_EXT.has(ext)) return { report: `binary executable or archive (.${ext}) — cannot be reviewed as text`, severity: 'warning' };
+  if (OPAQUE_DOC_EXT.has(ext)) return { report: `.${ext} document/database — not read`, severity: 'info' };
   if (ASSET_EXT.has(ext)) return { skip: 'asset' };
   return 'probe'; // unknown extension: text is scanned, binary is reported
+}
+
+/**
+ * Scanned first, so no amount of decoy content can push them past a budget:
+ * every SKILL.md, scripts, manifests, shell-like config, executables and
+ * extensionless/unknown files (which may be executables).
+ */
+function isPriorityFile(relPath: string): boolean {
+  if (path.posix.basename(relPath) === 'SKILL.md') return true;
+  const cls = classifyByName(relPath);
+  if (cls === 'probe') return true;
+  if ('skip' in cls) return false;
+  if ('report' in cls) return cls.severity !== 'info';
+  return cls.kind === 'script' || cls.kind === 'manifest' || (cls.kind === 'text' && cls.lang === 'sh');
 }
 
 function langFromShebang(firstLine: string): Lang | undefined {
@@ -489,8 +525,15 @@ function logicalLines(doc: SkillDoc): { lines: Logical[]; capped: number[] } {
   let buf = '';
   let start = 0;
   let joined = 0;
-  for (let i = 0; i < doc.lines.length; i++) {
+  let prev = -2;
+  // Only non-blank lines produce logical lines; a blank line ends any continuation.
+  for (const i of doc.active) {
     const l = doc.lines[i]!;
+    if (buf !== '' && i !== prev + 1) {
+      out.push({ text: buf, line: start });
+      buf = '';
+    }
+    prev = i;
     if (buf === '') {
       start = i + 1;
       joined = 0;
@@ -516,9 +559,21 @@ function logicalLines(doc: SkillDoc): { lines: Logical[]; capped: number[] } {
 
 // ── Documentation vs directive ────────────────────────────────────────────────
 
-/** Imperative negations. "never mind" and "don't hesitate" are not negations. */
+/**
+ * Imperative negations. Followed by mind/hesitate/forget/stop/skip/fail/neglect
+ * they are not negations of what follows ("never forget to run …").
+ */
 const NEGATION_WORD_RE =
-  /\b(?:never(?!\s{1,5}mind\b)|don't(?!\s{1,5}hesitate)|dont(?!\s{1,5}hesitate)|do\s{1,5}not(?!\s{1,5}hesitate)|avoid|must\s{1,5}not|mustn't|should\s{1,5}not|shouldn't|refuse\s{1,5}to)\b/gi;
+  /\b(?:never|don't|dont|do\s{1,5}not|avoid|must\s{1,5}not|mustn't|should\s{1,5}not|shouldn't|refuse\s{1,5}to)\b(?!\s{1,5}(?:mind|hesitate|forget|stop|skip|fail|neglect)\w{0,4}\b)/gi;
+/** Governance ends at a clause boundary or a coordinating word. */
+const GOVERNANCE_BREAK_RE = /[,;:.!?]|\b(?:but|and|then|instead|so)\b/i;
+const GOVERNANCE_BREAK_NO_LABEL_RE = /[,;.!?]|\b(?:but|and|then|instead|so)\b/i;
+/** At most this many words between the governing word and the match. */
+const MAX_GOVERNED_WORDS = 2;
+
+function wordCount(gap: string): number {
+  return gap.match(/[A-Za-z0-9_'-]+/g)?.length ?? 0;
+}
 /**
  * Words that mark a match as being *discussed* — only these, and only when they
  * govern the match. Generic words (bad, risk, flag, wrong, skip, avoid) are
@@ -529,9 +584,6 @@ const DISCUSSION_WORD_RE =
 /** "`…` is dangerous" — a predicate right after the match. */
 const DISCUSSION_AFTER_RE =
   /^[`'")\]\s]{0,6}(?:is|are|was|would\s{1,5}be|looks)\s{1,5}(?:dangerous|insecure|unsafe|malicious|risky|an?\s{1,5}(?:security\s{1,5})?(?:risk|red\s{1,5}flag|attack))\b/i;
-/** Documentation hosts: a governed match naming only these can be skipped. */
-const DOC_HOST_RE = /^(?:[\w-]{1,63}\.){0,5}(?:example\.(?:com|org|net)|example|test|invalid|localhost)$|^localhost$|^127\.0\.0\.1$/i;
-
 /** The last `re` match inside `before` whose gap to the end passes `gapOk`. */
 function governs(before: string, re: RegExp, gapOk: (gap: string) => boolean): boolean {
   let last: RegExpExecArray | undefined;
@@ -541,37 +593,58 @@ function governs(before: string, re: RegExp, gapOk: (gap: string) => boolean): b
   return gapOk(before.slice((last.index ?? 0) + last[0].length));
 }
 
-/** An imperative negation within ~30 characters before `index`, same clause, at most 4 words away. */
+/**
+ * An imperative negation that directly governs the match: at most two words
+ * between them ("never run `…`"), same clause, no but/and/then/instead/so.
+ */
 function governedNegation(text: string, index: number): boolean {
   return governs(text.slice(Math.max(0, index - 80), index), NEGATION_WORD_RE,
-    (gap) => gap.length <= 30 && !/[,;:.!?]/.test(gap) && gap.split(/\s+/).filter(Boolean).length <= 4);
+    (gap) => gap.length <= 30 && !GOVERNANCE_BREAK_RE.test(gap) && wordCount(gap) <= MAX_GOVERNED_WORDS);
 }
 
-/** A discussion word within ~30 characters before the match (a `label:` is allowed), or a predicate right after it. */
+/** A discussion word directly before the match (a `label:` is allowed), or a predicate right after it. */
 function governedDiscussion(text: string, index: number, length: number): boolean {
   if (DISCUSSION_AFTER_RE.test(text.slice(index + length, index + length + 60))) return true;
   return governs(text.slice(Math.max(0, index - 80), index), DISCUSSION_WORD_RE,
-    (gap) => gap.length <= 30 && !/[,;.!?]/.test(gap));
+    (gap) => gap.length <= 30 && !GOVERNANCE_BREAK_NO_LABEL_RE.test(gap) && wordCount(gap) <= MAX_GOVERNED_WORDS);
 }
 
-function namesUntrustedHost(span: string): boolean {
-  for (const m of span.matchAll(/https?:\/\/([^/\s:?#'"`)]{1,253})/gi)) {
-    if (!DOC_HOST_RE.test(m[1]!)) return true;
-  }
-  return false;
+/**
+ * A concrete target: a URL, a bare host or host/path (`evil.com/x.sh`,
+ * `get.evil.com`), or a variable/command substitution (`$INSTALLER`, `$(…)`).
+ * Documentation context never drops (or lowers the severity of) a match that
+ * names one — it only lowers confidence.
+ */
+const TARGET_RE = new RegExp(
+  [
+    String.raw`https?:\/\/`,
+    String.raw`\b(?:[a-z0-9-]{1,63}\.){1,5}[a-z]{2,24}(?::\d{1,5})?\/\S`,
+    String.raw`\b(?:[a-z0-9-]{1,63}\.){2,5}[a-z]{2,24}\b`,
+    String.raw`\b[a-z0-9-]{1,63}\.(?:com|net|org|io|dev|app|xyz|ru|cn|info|biz|co|me|tk|top|site|online|cloud|run|link|ly|gg|ai|so|to)\b`,
+    String.raw`\$\{?[A-Za-z_][A-Za-z0-9_]{0,60}\}?`,
+    String.raw`\$\(`,
+  ].join('|'),
+  'i',
+);
+
+function hasTarget(span: string): boolean {
+  return TARGET_RE.test(span.slice(0, 600));
 }
 
-type DocVerdict = 'skip' | 'downgrade' | 'none';
+/** skip: pure documentation, dropped. lowconf: documentation that names a target — kept at full severity, low confidence. */
+type DocVerdict = 'skip' | 'lowconf' | 'none';
 
 /**
  * Is this match documentation rather than a directive? Only outside fenced
- * code, and only when a negation/discussion word governs it; a governed match
- * that names a real host is downgraded, never dropped.
+ * code, and only when a negation/discussion word directly governs it. A match
+ * with a concrete target is never dropped and never loses severity — it only
+ * gets low confidence and a "looks like documentation" note. (The escape
+ * hatch for a real false positive is the baseline or a config `exclude`.)
  */
 function documentationVerdict(doc: SkillDoc, lineIndex: number, text: string, index: number, length: number): DocVerdict {
   if (doc.kind !== 'instructions' || doc.fenced[lineIndex]) return 'none';
   if (!governedNegation(text, index) && !governedDiscussion(text, index, length)) return 'none';
-  return namesUntrustedHost(text.slice(index, index + Math.max(length, 1) + 200)) ? 'downgrade' : 'skip';
+  return hasTarget(text.slice(index, index + Math.max(length, 1) + 80)) ? 'lowconf' : 'skip';
 }
 
 /** The match sits inside a double-quoted, curly-quoted or backticked span. */
@@ -587,6 +660,19 @@ function isQuoted(line: string, start: number, end: number): boolean {
 
 /** A table row whose first cell is just a flag/setting name: `| --yolo | … |`. */
 const FLAG_DOC_ROW_RE = /^\s{0,10}\|\s{0,5}`?(?:--[\w-]{2,60}|bypassPermissions)`?\s{0,5}\|/;
+/** A cell that runs something or tells the reader to: code, or an imperative. */
+const ROW_DIRECTIVE_RE =
+  /`[^`]{0,200}`|\b(?:run|use|execute|launch|invoke|start|pass|add|set|enable|always|call|claude|codex|npx|bash|sh)\b/i;
+
+/**
+ * Flag documentation: the first cell is just the flag, and no other cell
+ * contains code or an imperative (`| --yolo | always pass this |` is a directive).
+ */
+function isFlagDocRow(row: string): boolean {
+  if (!FLAG_DOC_ROW_RE.test(row)) return false;
+  const cells = row.split(/(?<!\\)\|/).slice(2); // [lead, flag cell, …rest]
+  return !cells.some((cell) => ROW_DIRECTIVE_RE.test(cell));
+}
 
 // ── Shell structure (quote-aware, linear) ─────────────────────────────────────
 
@@ -620,11 +706,11 @@ function splitCommands(text: string, quoteAware: boolean, quoted?: Array<{ start
     }
     if (quoteAware && c === '\\') { i++; continue; }
     let sep = '';
-    if (c === '|') sep = text[i + 1] === '|' ? '||' : '|';
+    if (c === '|') sep = text[i + 1] === '|' ? '||' : text[i + 1] === '&' ? '|&' : '|';
     else if (c === '&') sep = text[i + 1] === '&' ? '&&' : (text[i - 1] === '>' || text[i + 1] === '>' ? '' : '&');
     else if (c === ';') sep = ';';
     if (!sep) continue;
-    out.push({ text: text.slice(start, i), start, sep });
+    out.push({ text: text.slice(start, i), start, sep: sep === '|&' ? '|' : sep });
     i += sep.length - 1;
     start = i + 1;
   }
@@ -637,17 +723,36 @@ const FETCH_STAGE_RE = new RegExp(String.raw`(?:^|[\s(\x60{>"':=])${FETCH_CMD}\b
 const DECODE_STAGE_RE = /(?:^|[\s(`{>"':=])(?:base64\s{1,5}(?:-\S{1,10}\s{1,5}){0,3}(?:-d|--decode|-D)\b|xxd\s{1,5}(?:-\S{1,10}\s{1,5}){0,3}-r\b|openssl\s{1,5}(?:base64|enc)\b[^|;&\n]{0,80}\s-d\b|uudecode\b)/i;
 /** Interpreters that execute whatever arrives on stdin when given no script argument. */
 const STDIN_INTERP = String.raw`(?:python[0-9.]{0,5}|node|perl|ruby|php|deno|bun)(?=\s{0,5}$|\s{1,5}-(?:\s|$)|\s{0,5}[;&|)}\x60'"])`;
-const SHELL_WORD = String.raw`(?:(?:ba|z|k|da|fi|a)?sh\b|${STDIN_INTERP}|iex\b|invoke-expression\b|pwsh\b|powershell\b)`;
 /**
- * A pipeline stage that is a shell: optional subshell/brace, sudo (with option
- * arguments), env assignments, xargs, busybox, a path prefix, `env`.
+ * What executes stdin (or its lines): a shell, `$SHELL`, `source /dev/stdin`,
+ * a stdin-reading interpreter, `python -c 'exec(sys.stdin.read())'`,
+ * `awk '{system($0)}'`, PowerShell's iex.
+ */
+const SHELL_WORD = String.raw`(?:\$\{?SHELL\}?(?!\w)|(?:source|\.)\s{1,5}\/dev\/stdin\b|(?:ba|z|k|da|fi|a)?sh\b|` +
+  String.raw`python[0-9.]{0,5}\s{1,5}-c\s{1,5}["']?[^|\n]{0,80}?(?:exec|eval)\s{0,5}\(\s{0,5}sys\.stdin|` +
+  String.raw`g?awk\s{1,5}(?:-\S{1,20}\s{1,5}){0,3}["']?[^|\n]{0,60}?system\s{0,5}\(\s{0,5}\$0|` +
+  String.raw`${STDIN_INTERP}|iex\b|invoke-expression\b|pwsh\b|powershell\b)`;
+/** Command wrappers that can sit in front of the shell in a pipeline stage. */
+const STAGE_WRAPPER = String.raw`(?:` + [
+  String.raw`sudo(?:\s{1,5}-{1,2}[\w-]{1,20}(?:[= ]\s{0,3}[\w.@:-]{1,40})?){0,5}`,
+  String.raw`env(?:\s{1,5}-\S{1,20}){0,3}(?:\s{1,5}[^\s=]{1,40}=\S{0,100}){0,5}`,
+  String.raw`xargs(?:\s{1,5}-\S{1,20}(?:\s{1,5}[^\s-]\S{0,20})?){0,4}`,
+  String.raw`busybox`,
+  String.raw`nice(?:\s{1,5}-n\s{0,3}-?\d{1,3}|\s{1,5}-\d{1,3})?`,
+  String.raw`timeout(?:\s{1,5}-\S{1,20}){0,3}\s{1,5}[\d.]{1,8}[smhd]?`,
+  String.raw`nohup`,
+  String.raw`exec`,
+  String.raw`command`,
+  String.raw`stdbuf(?:\s{1,5}-\S{1,20}){0,3}`,
+  String.raw`[A-Za-z_]\w{0,40}=\S{0,100}`,
+].join('|') + String.raw`)\s{1,5}`;
+/**
+ * A pipeline stage that is a shell: optional subshell/brace, up to six
+ * wrappers (sudo -u x, env A=…, nice, timeout N, exec, command, xargs…), a
+ * path prefix, `env`.
  */
 const SHELL_STAGE_RE = new RegExp(
-  String.raw`^\s{0,5}[({]?\s{0,3}` +
-  String.raw`(?:sudo\s{1,5}(?:-{1,2}[\w-]{1,20}(?:[= ]\s{0,3}[\w.@:-]{1,40})?\s{1,5}){0,5})?` +
-  String.raw`(?:env\s{1,5}(?:-\S{1,20}\s{1,5}){0,3}(?:[^\s=]{1,40}=\S{0,100}\s{1,5}){0,5})?` +
-  String.raw`(?:xargs\s{1,5}(?:-\S{1,20}(?:\s{1,5}[^\s-]\S{0,20})?\s{1,5}){0,4})?` +
-  String.raw`(?:busybox\s{1,5})?` +
+  String.raw`^\s{0,5}[({]?\s{0,3}(?:${STAGE_WRAPPER}){0,6}` +
   String.raw`(?:[\w./-]{0,40}\/)?(?:env\s{1,5}(?:-\S{1,20}\s{1,5}){0,3})?` +
   SHELL_WORD,
   'i',
@@ -674,7 +779,7 @@ function pipeInto(text: string, producer: RegExp, quoteAware: boolean, depth = 0
   return undefined;
 }
 
-const SHELL_WORD_HINT_RE = /sh\b|python|node|perl|ruby|php|deno|bun|iex|invoke-expression|pwsh|powershell/i;
+const SHELL_WORD_HINT_RE = /sh\b|SHELL|stdin|awk|python|node|perl|ruby|php|deno|bun|iex|invoke-expression|pwsh|powershell/i;
 
 function pipeInSegments(text: string, segs: Segment[], producer: RegExp): Found | undefined {
   // Each segment is tested as a shell stage at most once, however many producers look at it.
@@ -703,13 +808,29 @@ function pipeInSegments(text: string, segs: Segment[], producer: RegExp): Found 
   return undefined;
 }
 
-/** A download that is verified before it runs is not "remote exec". */
-const VERIFY_RE =
-  /\b(?:sha(?:1|224|256|384|512)sum\b|shasum\b|gpgv?\b[^|;&\n]{0,80}--verify\b|cosign\s{1,5}verify(?:-blob)?\b|minisign\s{1,5}-V\b|slsa-verifier\b|openssl\s{1,5}dgst\b[^|;&\n]{0,80}-verify\b)/i;
+/**
+ * A real verification command (the first word of its segment, not text inside
+ * an `echo` or a comment) that actually checks something: `sha256sum -c`,
+ * `shasum -c`, `gpg --verify`, `gpgv`, `cosign verify[-blob]`, `minisign -V`,
+ * `slsa-verifier verify…`, `openssl dgst … -verify`. A bare `sha256sum x`
+ * only prints a hash — it verifies nothing.
+ */
+const VERIFY_CMD_RE =
+  /^\s{0,5}(?:sudo\s{1,5})?(?:(?:sha(?:1|224|256|384|512)sum|shasum)\b(?=[^|;&]{0,300}\s(?:-c|--check)\b)|gpg\b(?=[^|;&]{0,300}\s--verify\b)|gpgv\b|cosign\s{1,5}verify(?:-blob)?\b|minisign\s{1,5}-V\b|slsa-verifier\s{1,5}verify|openssl\s{1,5}dgst\b(?=[^|;&]{0,300}\s-verify\b))/i;
+const CHECKSUM_MANIFEST_RE = /^\s{0,5}(?:sudo\s{1,5})?(?:sha(?:1|224|256|384|512)sum|shasum)\b[^|;&]{0,300}\s(?:-c|--check)(?:\s{1,5}|=)(\S{1,300})/i;
 const RUN_FILE_RE = /^\s{0,5}(?:sudo\s{1,5}(?:-\S{1,20}\s{1,5}){0,5})?(?:(?:[\w./-]{0,40}\/)?(?:(?:ba|z|k|da)?sh|source|\.|python[0-9.]{0,5}|node|perl|ruby|pwsh|powershell)\s{1,5}(?:-\S{1,20}\s{1,5}){0,3})?(\S{1,300})/i;
+/** `X=$(curl …)` — a variable holding fetched content. */
+const FETCH_ASSIGN_RE = /^\s{0,5}(?:export\s{1,5}|local\s{1,5}|readonly\s{1,5})?([A-Za-z_]\w{0,60})=["']?(?:\$\(|`)\s{0,5}(?:curl|wget|iwr|irm)\b/i;
+/** `eval "$X"` / `bash -c "$X"` / `sh <<< "$X"` — running a variable's content. */
+const RUN_VAR_RE = /^\s{0,5}(?:eval|(?:ba|z|k|da)?sh\s{1,5}(?:-c|<<<)|iex|invoke-expression)\s{0,5}\(?\s{0,5}["']?\$\{?([A-Za-z_]\w{0,60})\}?/i;
 
 function fileKey(p: string): string {
-  return path.posix.basename(p.replace(/^['"]|['"]$/g, '').replace(/\\/g, '/'));
+  return path.posix.basename(p.replace(/^['"]+|['"]+$/g, '').replace(/\\/g, '/'));
+}
+
+/** Exact file-name tokens of a command segment (quotes stripped, basenames) — no substring matching. */
+function tokenKeys(seg: string): Set<string> {
+  return new Set(seg.split(/\s+/).filter(Boolean).map(fileKey));
 }
 
 /** Output file of a download/decode command (`curl -o f`, `curl -O URL`, `wget URL`, `base64 -d > f`). */
@@ -732,36 +853,82 @@ function producedFile(seg: string, kind: 'remote' | 'encoded'): string | undefin
 }
 
 /**
- * `curl -o x URL && chmod +x x && ./x` / `base64 -d > f; sh f`: a file produced
- * by a download (or a decode) and executed later in the same logical command.
- * A checksum/signature check of THAT file BEFORE it runs clears a download.
+ * `curl -o x URL && chmod +x x && ./x` / `base64 -d > f; sh f` /
+ * `X=$(curl …); eval "$X"`: content produced by a download (or a decode) and
+ * executed later in the same logical command.
+ *
+ * A download is cleared only by a REAL verification command, placed between
+ * the fetch and the run, chained to both with `&&` (a failed check must stop
+ * the run — `;` and `||` do not), that names the executed file exactly —
+ * `sha256sum -c x.sum` (a checksum manifest), `echo "h  x.sh" | sha256sum -c -`
+ * (the piped line names the file), `gpg --verify x.sh.asc x.sh`.
  */
 function producedThenRun(text: string, quoteAware: boolean): { rule: 'remote-exec' | 'encoded-exec'; found: Found } | undefined {
   if (!/&&|;|\|\||&/.test(text)) return undefined;
-  const segs = splitCommands(text, quoteAware);
-  const produced = new Map<string, { kind: 'remote' | 'encoded'; index: number }>();
-  const verified = new Set<string>();
-  for (const seg of segs.slice(0, 500)) {
+  let segs = splitCommands(text, quoteAware).slice(0, 500);
+  // A comment ends the command line: nothing after `#` runs (or verifies).
+  const commentAt = segs.findIndex((s) => /(?:^|\s)#/.test(s.text));
+  if (commentAt >= 0) {
+    const s = segs[commentAt]!;
+    segs = [...segs.slice(0, commentAt), { ...s, text: s.text.slice(0, s.text.search(/(?:^|\s)#/)), sep: '' }];
+  }
+  const isVerify = segs.map((s) => VERIFY_CMD_RE.test(s.text));
+  /** Every separator from segment `from` up to `to` is `&&` (or the pipe feeding a verify command). */
+  const chainedAnd = (from: number, to: number): boolean => {
+    for (let m = from; m < to; m++) {
+      const sep = segs[m]!.sep;
+      if (sep === '&&') continue;
+      if (sep === '|' && isVerify[m + 1]) continue;
+      return false;
+    }
+    return true;
+  };
+  const produced = new Map<string, { kind: 'remote' | 'encoded'; index: number; seg: number }>();
+  const verifiedAt = new Map<string, number[]>();
+  const fetchedVars = new Map<string, { index: number; seg: number }>();
+
+  for (let k = 0; k < segs.length; k++) {
+    const seg = segs[k]!;
     const t = seg.text;
+    const assign = FETCH_ASSIGN_RE.exec(t);
+    if (assign) {
+      fetchedVars.set(assign[1]!, { index: seg.start + Math.max(0, t.search(/\S/)), seg: k });
+      continue;
+    }
     const isFetch = FETCH_STAGE_RE.test(t) && /https?:\/\//i.test(t);
     const isDecode = DECODE_STAGE_RE.test(t);
     if (isFetch || isDecode) {
       const kind = isFetch ? 'remote' : 'encoded';
       const file = producedFile(t, kind);
-      if (file) produced.set(file, { kind, index: seg.start + Math.max(0, t.search(/\S/)) });
+      if (file) produced.set(file, { kind, index: seg.start + Math.max(0, t.search(/\S/)), seg: k });
       continue;
     }
-    if (VERIFY_RE.test(t)) {
-      for (const file of produced.keys()) if (t.includes(file)) verified.add(file);
+    if (isVerify[k]) {
+      const manifest = CHECKSUM_MANIFEST_RE.exec(t)?.[1];
+      let names: Set<string>;
+      if (manifest && manifest !== '-') names = new Set(produced.keys()); // a checksum manifest covers what it lists
+      else if (manifest === '-' && k > 0 && segs[k - 1]!.sep === '|') names = tokenKeys(segs[k - 1]!.text);
+      else names = tokenKeys(t);
+      for (const file of produced.keys()) {
+        if (names.has(file)) verifiedAt.set(file, [...(verifiedAt.get(file) ?? []), k]);
+      }
       continue;
     }
+    const runVar = RUN_VAR_RE.exec(t);
+    if (runVar && fetchedVars.has(runVar[1]!)) {
+      const src = fetchedVars.get(runVar[1]!)!;
+      return { rule: 'remote-exec', found: { index: src.index, match: fakeMatch(text, src.index, Math.min(text.length, seg.start + t.length)) } };
+    }
+    // `chmod +x f` and `cat f` are not executions.
+    if (/^\s{0,5}(?:chmod|cat|ls|rm|mv|cp|echo|printf|test|\[)\b/i.test(t)) continue;
     const run = RUN_FILE_RE.exec(t);
     if (!run) continue;
     const file = fileKey(run[1]!);
     const source = produced.get(file);
-    if (!source || (source.kind === 'remote' && verified.has(file))) continue;
-    // `chmod +x f` and `cat f` are not executions.
-    if (/^\s{0,5}(?:chmod|cat|ls|rm|mv|cp|echo|test|\[)\b/i.test(t)) continue;
+    if (!source) continue;
+    const verified = source.kind === 'remote' &&
+      (verifiedAt.get(file) ?? []).some((v) => v > source.seg && chainedAnd(source.seg, k));
+    if (verified) continue;
     const end = Math.min(text.length, seg.start + t.length);
     return {
       rule: source.kind === 'remote' ? 'remote-exec' : 'encoded-exec',
@@ -922,7 +1089,7 @@ const CREDENTIAL_SOURCE_RE = new RegExp(
 // Prose: prompt-injection overrides.
 const OVERRIDE_PATTERNS: RegExp[] = [
   // Not "…previous instructions files in legacy/": a following path/noun makes it a file reference.
-  /\b(?:ignore|disregard|forget)\s{1,5}(?:all\s{1,5}|any\s{1,5}|every\s{1,5})?(?:of\s{1,5})?(?:the\s{1,5}|your\s{1,5}|my\s{1,5}|these\s{1,5}|those\s{1,5})?(?:previous|prior|above|earlier|preceding|system|developer|safety)\s{1,5}(?:instructions?|prompts?|rules|guidelines|directives|messages?|context)\b(?![\w./-]|\s{1,5}(?:files?|folders?|director(?:y|ies)|docs?|pages?|in\s{1,5}\S{0,80}\/))/i,
+  /\b(?:ignore|disregard|forget)\s{1,5}(?:all\s{1,5}|any\s{1,5}|every\s{1,5})?(?:of\s{1,5})?(?:the\s{1,5}|your\s{1,5}|my\s{1,5}|these\s{1,5}|those\s{1,5})?(?:previous|prior|above|earlier|preceding|system|developer|safety)\s{1,5}(?:instructions?|prompts?|rules|guidelines|directives|messages?|context)\b(?![\w/-]|\.[\w/]|\s{1,5}(?:files?|folders?|director(?:y|ies)|docs?|pages?|in\s{1,5}\S{0,80}\/))/i,
   /\byou\s{1,5}are\s{1,5}(?:now\s{1,5})?(?:in\s{1,5})?(?:DAN|developer\s{1,5}mode|jailbroken|jailbreak\s{1,5}mode|unrestricted\s{1,5}mode|god\s{1,5}mode)\b/i,
   /<\|im_start\|>|<\|(?:system|endoftext)\|>|<<SYS>>|\[\/?INST\]/i,
   /\b(?:new|updated|actual|real)\s{1,5}system\s{1,5}prompt\b/i,
@@ -984,6 +1151,9 @@ const BENIGN_COMMENT_RE =
 /** Comment content that is always suspicious, even behind a benign-looking prefix. */
 const STRONG_COMMENT_RE =
   /\b(?:ignore|disregard|forget)\b[^\n]{0,40}\b(?:instructions?|prompts?|rules|guidelines)\b|\bsystem\s{1,5}prompt\b|\b(?:curl|wget|iwr|invoke-webrequest)\b|\bbase64\s{1,5}-d\b|~\/\.ssh|\b(?:send|upload|exfiltrate)\b[^\n]{0,40}\b(?:secrets?|credentials?|keys?|tokens?|\.env)\b/i;
+/** A second-person or imperative directive: a benign-looking prefix does not excuse it. */
+const COMMENT_DIRECTIVE_RE =
+  /\byou\b|\b(?:must|always|never|approve|run|ignore|execute|send|upload|install|delete|disable|download|fetch|read|print|reveal)\b/i;
 const AGENT_DIRECTED_RE = new RegExp(
   [
     String.raw`\b(?:ignore|disregard|forget)\b[^\n]{0,40}\b(?:instructions?|prompts?|rules|guidelines)\b`,
@@ -1093,6 +1263,20 @@ function outranks(a: Hit, b: Hit): boolean {
 class HitCollector {
   private readonly groups = new Map<string, { rule: SkillSupplyChainRule; file: string; hits: Hit[]; total: number }>();
 
+  /** Would a hit of this strength be kept? (Full groups keep only their strongest hits.) */
+  accepts(rule: SkillSupplyChainRule, file: string, severity: IssueSeverity, confidence: number): boolean {
+    const group = this.groups.get(`${rule}|${file}`);
+    if (!group || group.hits.length < MAX_HITS_PER_RULE_FILE) return true;
+    const probe: Hit = { excerpt: '', severity, confidence };
+    return group.hits.some((h) => outranks(probe, h));
+  }
+
+  /** Count a hit that was not kept, so the evidence can say how many more there were. */
+  count(rule: SkillSupplyChainRule, file: string): void {
+    const group = this.groups.get(`${rule}|${file}`);
+    if (group) group.total++;
+  }
+
   add(rule: SkillSupplyChainRule, file: string, hit: Hit): void {
     const key = `${rule}|${file}`;
     let group = this.groups.get(key);
@@ -1158,15 +1342,20 @@ function buildIssue(skillMd: string, rule: SkillSupplyChainRule, file: string, h
 
 // ── Rule checks ───────────────────────────────────────────────────────────────
 
-type Add = (rule: SkillSupplyChainRule, line: number, excerptText: string, severity: IssueSeverity, confidence: number) => void;
+/** `excerptText` may be a thunk: it is only rendered when the collector keeps the hit. */
+type Add = (rule: SkillSupplyChainRule, line: number, excerptText: string | (() => string), severity: IssueSeverity, confidence: number) => void;
+const render = (t: string | (() => string)): string => (typeof t === 'function' ? t() : t);
 
-/** Record a hit under a documentation verdict: skipped, downgraded to a low-confidence warning, or as-is. */
+/** Confidence given to a match that looks like documentation but names a concrete target. */
+const DOCUMENTED_CONFIDENCE = 0.4;
+
+/** Record a hit under a documentation verdict: skipped, kept at low confidence (same severity), or as-is. */
 function addJudged(
-  add: Add, verdict: DocVerdict, rule: SkillSupplyChainRule, line: number, text: string,
+  add: Add, verdict: DocVerdict, rule: SkillSupplyChainRule, line: number, text: string | (() => string),
   severity: IssueSeverity, confidence: number,
 ): void {
   if (verdict === 'skip') return;
-  if (verdict === 'downgrade') add(rule, line, `(documented, names a real host) ${text}`, 'warning', 0.4);
+  if (verdict === 'lowconf') add(rule, line, () => `(looks like documentation, but names a target) ${render(text)}`, severity, DOCUMENTED_CONFIDENCE);
   else add(rule, line, text, severity, confidence);
 }
 
@@ -1174,36 +1363,41 @@ function addJudged(
 /** Cheap per-line prefilter: a line with none of these cannot match any exec rule. */
 const EXEC_HINT_RE = /[|&;<$`]|iex|invoke-expression|atob|decode|FromBase64|powershell|pwsh/i;
 
+/** remote-exec / encoded-exec matches in one logical command. */
+function execMatches(text: string, quoteAware: boolean): Array<{ rule: SkillSupplyChainRule; found: Found }> {
+  const hits: Array<{ rule: SkillSupplyChainRule; found: Found }> = [];
+  if (!EXEC_HINT_RE.test(text)) return hits;
+  const pipe = pipeInto(text, FETCH_STAGE_RE, quoteAware);
+  if (pipe) hits.push({ rule: 'remote-exec', found: pipe });
+  const decodedPipe = pipeInto(text, DECODE_STAGE_RE, quoteAware);
+  if (decodedPipe) hits.push({ rule: 'encoded-exec', found: decodedPipe });
+  const chain = producedThenRun(text, quoteAware);
+  if (chain) hits.push(chain);
+  if (!hits.some((h) => h.rule === 'remote-exec')) {
+    for (const g of REMOTE_EXEC_PATTERNS) {
+      const f = findFirst(g.pattern, text, g.requires);
+      if (f) { hits.push({ rule: 'remote-exec', found: f }); break; }
+    }
+  }
+  if (!hits.some((h) => h.rule === 'encoded-exec')) {
+    for (const g of ENCODED_EXEC_PATTERNS) {
+      const f = findFirst(g.pattern, text, g.requires);
+      if (f) { hits.push({ rule: 'encoded-exec', found: f }); break; }
+    }
+  }
+  return hits;
+}
+
 function checkExec(doc: SkillDoc, logical: Logical[], commands: Logical[], add: Add): Set<number> {
   const consumed = new Set<number>();
   for (const { text, line } of logical) {
-    if (!EXEC_HINT_RE.test(text)) continue;
     const i = line - 1;
-    const quoteAware = doc.kind !== 'instructions' || doc.fenced[i] === true;
-    const hits: Array<{ rule: SkillSupplyChainRule; found: Found }> = [];
-
-    const pipe = pipeInto(text, FETCH_STAGE_RE, quoteAware);
-    if (pipe) hits.push({ rule: 'remote-exec', found: pipe });
-    const decodedPipe = pipeInto(text, DECODE_STAGE_RE, quoteAware);
-    if (decodedPipe) hits.push({ rule: 'encoded-exec', found: decodedPipe });
-    const chain = producedThenRun(text, quoteAware);
-    if (chain) hits.push(chain);
-    if (!hits.some((h) => h.rule === 'remote-exec')) {
-      for (const g of REMOTE_EXEC_PATTERNS) {
-        const f = findFirst(g.pattern, text, g.requires);
-        if (f) { hits.push({ rule: 'remote-exec', found: f }); break; }
-      }
-    }
-    if (!hits.some((h) => h.rule === 'encoded-exec')) {
-      for (const g of ENCODED_EXEC_PATTERNS) {
-        const f = findFirst(g.pattern, text, g.requires);
-        if (f) { hits.push({ rule: 'encoded-exec', found: f }); break; }
-      }
-    }
+    const quoteAware = doc.kind !== 'instructions' || doc.fenced[i] === 1;
+    const hits = execMatches(text, quoteAware);
     for (const { rule, found } of hits) {
       const len = found.match[0].length;
       const verdict = documentationVerdict(doc, i, text, found.index, len);
-      addJudged(add, verdict, rule, line, excerpt(text, found.index, len), 'high', 0.85);
+      addJudged(add, verdict, rule, line, () => excerpt(text, found.index, len), 'high', 0.85);
       if (verdict !== 'skip') consumed.add(line);
     }
   }
@@ -1221,7 +1415,7 @@ function checkExec(doc: SkillDoc, logical: Logical[], commands: Logical[], add: 
 }
 
 function firstLineMatching(doc: SkillDoc, re: RegExp): { line: number; index: number } | undefined {
-  for (let i = 0; i < doc.lines.length; i++) {
+  for (const i of doc.active) {
     const m = findFirst(re, doc.lines[i]!);
     if (m) return { line: i + 1, index: m.index };
   }
@@ -1236,7 +1430,7 @@ function checkScript(doc: SkillDoc, consumed: Set<number>, add: Add): void {
   const evalPatterns = EVAL_PATTERNS[doc.lang] ?? [];
   const loadPatterns = DYNAMIC_LOAD_PATTERNS[doc.lang] ?? [];
 
-  for (let i = 0; i < doc.lines.length; i++) {
+  for (const i of doc.active) {
     const line = i + 1;
     if (consumed.has(line)) continue;
     const text = doc.lines[i]!;
@@ -1261,7 +1455,8 @@ function checkScript(doc: SkillDoc, consumed: Set<number>, add: Add): void {
 
   if (!network) return;
   const sources: Array<{ line: number; index: number }> = [];
-  for (let i = 0; i < doc.lines.length && sources.length < MAX_HITS_PER_RULE_FILE; i++) {
+  for (const i of doc.active) {
+    if (sources.length >= MAX_HITS_PER_RULE_FILE) break;
     const text = doc.lines[i]!;
     const m = findFirst(BULK_ENV_RE, text) ?? findFirst(CREDENTIAL_SOURCE_RE, text);
     if (!m) continue;
@@ -1293,7 +1488,9 @@ function directive(
     if (opts.skipQuoted && isQuoted(text, m.index, m.index + len)) continue;
     let verdict: DocVerdict;
     if (opts.negatable === false) {
-      verdict = !doc.fenced[lineIndex] && governedDiscussion(text, m.index, len) ? 'skip' : 'none';
+      verdict = !doc.fenced[lineIndex] && governedDiscussion(text, m.index, len)
+        ? (hasTarget(text.slice(m.index, m.index + len + 80)) ? 'lowconf' : 'skip')
+        : 'none';
     } else {
       verdict = documentationVerdict(doc, lineIndex, text, m.index, len);
     }
@@ -1304,9 +1501,12 @@ function directive(
 }
 
 /** exfil-instruction for one clause: verb → secret → preposition → destination, each in a bounded window. */
-function checkExfil(clause: string): { index: number; severity: IssueSeverity; confidence: number; strong: boolean } | undefined {
+function checkExfil(clause: string): {
+  index: number; severity: IssueSeverity; confidence: number; strong: boolean; negated: boolean; target: boolean;
+} | undefined {
   for (const verb of findAll(EXFIL_VERB_RE, clause, 20)) {
-    if (governedNegation(clause, verb.index)) continue;
+    // A negated verb is still examined: "never send the keys to https://evil" names a target and is kept.
+    const negated = governedNegation(clause, verb.index);
     const afterVerb = verb.index + verb.match[0].length;
     const window = clause.slice(afterVerb, afterVerb + 120);
     const bulk = SECRET_BULK_RE.exec(window);
@@ -1321,9 +1521,11 @@ function checkExfil(clause: string): { index: number; severity: IssueSeverity; c
     const strong = EXFIL_DEST_STRONG_RE.test(dest);
     // Auth context ("in the Authorization header") only excuses a non-exfil destination.
     if (!strong && AUTH_CONTEXT_RE.test(clause)) continue;
-    if (strong) return { index: verb.index, severity: 'high', confidence: 0.75, strong };
-    if (bulk && EXFIL_DEST_ANY_RE.test(dest)) return { index: verb.index, severity: 'warning', confidence: 0.6, strong };
-    if (single && EXFIL_DEST_EXTERNAL_RE.test(dest)) return { index: verb.index, severity: 'warning', confidence: 0.6, strong };
+    const target = hasTarget(dest);
+    const base = { index: verb.index, strong, negated, target };
+    if (strong) return { ...base, severity: 'high', confidence: 0.75 };
+    if (bulk && EXFIL_DEST_ANY_RE.test(dest)) return { ...base, severity: 'warning', confidence: 0.6 };
+    if (single && EXFIL_DEST_EXTERNAL_RE.test(dest)) return { ...base, severity: 'warning', confidence: 0.6 };
   }
   return undefined;
 }
@@ -1345,7 +1547,7 @@ function checkProse(doc: SkillDoc, add: Add): void {
   const record = (rule: SkillSupplyChainRule, line: number, text: string, r: { found: Found; verdict: DocVerdict }, severity: IssueSeverity, confidence: number) =>
     addJudged(add, r.verdict, rule, line, excerpt(text, r.found.index, r.found.match[0].length), severity, confidence);
 
-  for (let i = 0; i < doc.lines.length; i++) {
+  for (const i of doc.active) {
     const text = doc.lines[i]!;
     if (text.length < 8) continue;
     const line = i + 1;
@@ -1373,8 +1575,8 @@ function checkProse(doc: SkillDoc, add: Add): void {
         const hit = checkExfil(c.text);
         if (!hit) continue;
         const at = c.offset + hit.index;
-        let verdict: DocVerdict = doc.fenced[i] ? 'none' : (governedDiscussion(text, at, 10) ? 'skip' : 'none');
-        if (verdict === 'skip' && namesUntrustedHost(c.text)) verdict = 'downgrade';
+        const governed = !doc.fenced[i] && (hit.negated || governedDiscussion(text, at, 10));
+        const verdict: DocVerdict = !governed ? 'none' : hit.target ? 'lowconf' : 'skip';
         addJudged(add, verdict, 'exfil-instruction', line, excerpt(text, at, 60), hit.severity, hit.confidence);
         break;
       }
@@ -1384,14 +1586,14 @@ function checkProse(doc: SkillDoc, add: Add): void {
 
 /** permission-bypass flags — every file kind. Only a flag-documentation table row is exempt. */
 function checkBypassFlags(doc: SkillDoc, add: Add): void {
-  for (let i = 0; i < doc.lines.length; i++) {
+  for (const i of doc.active) {
     const text = doc.lines[i]!;
     const m = findFirst(BYPASS_FLAG_RE, text);
     if (!m) continue;
-    if (doc.kind === 'instructions' && !doc.fenced[i] && FLAG_DOC_ROW_RE.test(text)) continue;
+    if (doc.kind === 'instructions' && !doc.fenced[i] && isFlagDocRow(text)) continue;
     const len = m.match[0].length;
     addJudged(add, documentationVerdict(doc, i, text, m.index, len), 'permission-bypass', i + 1,
-      excerpt(text, m.index, len), 'warning', 0.7);
+      () => excerpt(text, m.index, len), 'warning', 0.7);
   }
 }
 
@@ -1460,7 +1662,7 @@ function hiddenClass(
 
 /** hidden-unicode — every file kind. Every line is examined: a severe payload after many mild lines still counts. */
 function checkHiddenUnicode(doc: SkillDoc, add: Add): void {
-  for (let i = 0; i < doc.lines.length; i++) {
+  for (const i of doc.active) {
     const lineText = doc.lines[i]!;
     // Fast path: plain printable ASCII (plus tab) cannot hide anything.
     if (!/[^\t\x20-\x7e]/.test(lineText)) continue;
@@ -1543,6 +1745,30 @@ function hiddenElementAt(text: string): Found | undefined {
 
 /** hidden-html-comment, hidden-html-element, encoded-blob — instruction files. */
 function checkHiddenMarkup(doc: SkillDoc, add: Add): void {
+  if (doc.content.includes('<!--')) checkHiddenComments(doc, add);
+
+  for (const i of doc.active) {
+    if (doc.fenced[i]) continue;
+    const text = doc.lines[i]!;
+    if (!text.includes('<') || !/style|hidden/i.test(text)) continue;
+    const el = hiddenElementAt(text);
+    if (el) add('hidden-html-element', i + 1, excerpt(text, el.index, el.match[0].length), 'warning', 0.6);
+  }
+
+  for (const i of doc.active) {
+    const text = doc.lines[i]!;
+    if (text.length < 200) continue;
+    const blob = findAll(BLOB_RE, text, 5).find((b) => {
+      const s = b.match[0];
+      if (/(?:base64,|data:[^,\s]{0,100},)\s{0,5}$/i.test(text.slice(Math.max(0, b.index - 120), b.index))) return false; // data: URI
+      if (!/[0-9]/.test(s) || !/[A-Z]/.test(s) || !/[a-z]/.test(s)) return false;
+      return (s.match(/\//g)?.length ?? 0) <= s.length / 10; // more slashes = a long path, not a payload
+    });
+    if (blob) add('encoded-blob', i + 1, `${blob.match[0].length}-char encoded string: ${blob.match[0].slice(0, 40)}…`, 'warning', 0.5);
+  }
+}
+
+function checkHiddenComments(doc: SkillDoc, add: Add): void {
   // Fenced code blocks blanked out, line count preserved.
   const blankedLines = doc.lines.map((l, i) => (doc.fenced[i] ? '' : l));
   const blanked = blankedLines.join('\n');
@@ -1559,32 +1785,14 @@ function checkHiddenMarkup(doc: SkillDoc, add: Add): void {
     pos = close < 0 ? blanked.length : close + 3;
     const body = blanked.slice(start + 4, bodyEnd);
     // A tooling directive or TODO is exempt only when the WHOLE comment is short and plain.
-    if (BENIGN_COMMENT_RE.test(body.slice(0, 200)) && body.length <= 120 && !STRONG_COMMENT_RE.test(body)) continue;
+    if (BENIGN_COMMENT_RE.test(body.slice(0, 200)) && body.length <= 120 &&
+        !STRONG_COMMENT_RE.test(body) && !COMMENT_DIRECTIVE_RE.test(body)) continue;
     const hit = findFirst(AGENT_DIRECTED_RE, body);
     if (!hit) continue;
     const line = lineAt(lineStarts, start + 4 + hit.index);
     const lineText = doc.lines[line - 1] ?? '';
     const col = start + 4 + hit.index - lineStarts[line - 1]!;
-    add('hidden-html-comment', line, excerpt(lineText, col, hit.match[0].length), 'warning', 0.6);
-  }
-
-  for (let i = 0; i < blankedLines.length; i++) {
-    const text = blankedLines[i]!;
-    if (!text.includes('<') || !/style|hidden/i.test(text)) continue;
-    const el = hiddenElementAt(text);
-    if (el) add('hidden-html-element', i + 1, excerpt(text, el.index, el.match[0].length), 'warning', 0.6);
-  }
-
-  for (let i = 0; i < doc.lines.length; i++) {
-    const text = doc.lines[i]!;
-    if (text.length < 200) continue;
-    const blob = findAll(BLOB_RE, text, 5).find((b) => {
-      const s = b.match[0];
-      if (/(?:base64,|data:[^,\s]{0,100},)\s{0,5}$/i.test(text.slice(Math.max(0, b.index - 120), b.index))) return false; // data: URI
-      if (!/[0-9]/.test(s) || !/[A-Z]/.test(s) || !/[a-z]/.test(s)) return false;
-      return (s.match(/\//g)?.length ?? 0) <= s.length / 10; // more slashes = a long path, not a payload
-    });
-    if (blob) add('encoded-blob', i + 1, `${blob.match[0].length}-char encoded string: ${blob.match[0].slice(0, 40)}…`, 'warning', 0.5);
+    add('hidden-html-comment', line, () => excerpt(lineText, col, hit.match[0].length), 'warning', 0.6);
   }
 }
 
@@ -1614,14 +1822,12 @@ function commandTexts(doc: SkillDoc, logical: Logical[]): Logical[] {
 }
 
 /** unpinned-remote-dep — command text in every file, plus bundled manifests. */
-function checkUnpinned(doc: SkillDoc, commands: Logical[], consumed: Set<number>, add: Add): void {
+/** unpinned-remote-dep; for a manifest also its install scripts. Returns package `bin` targets to scan. */
+function checkUnpinned(doc: SkillDoc, commands: Logical[], consumed: Set<number>, add: Add): string[] {
   const hit = (line: number, text: string, index: number, confidence = 0.6) =>
     add('unpinned-remote-dep', line, excerpt(text, index, 80), 'warning', confidence);
 
-  if (doc.kind === 'manifest') {
-    checkManifest(doc, hit);
-    return;
-  }
+  if (doc.kind === 'manifest') return checkManifest(doc, hit, add);
 
   for (const { text, line } of commands) {
     if (consumed.has(line)) continue;
@@ -1657,14 +1863,41 @@ function checkUnpinned(doc: SkillDoc, commands: Logical[], consumed: Set<number>
       if (imp) hit(line, text, imp.index);
     }
   }
+  return [];
 }
 
-function checkManifest(doc: SkillDoc, hit: (line: number, text: string, index: number) => void): void {
+/**
+ * package.json lifecycle/`scripts` commands run on install: each is checked
+ * with the exec rules. `bin` targets are returned so the caller can scan them
+ * as scripts (the shallow scan of a dependency package).
+ */
+function checkPackageScripts(doc: SkillDoc, parsed: Record<string, unknown>, add: Add): string[] {
+  const scripts = parsed.scripts;
+  if (typeof scripts === 'object' && scripts !== null) {
+    for (const [name, cmd] of Object.entries(scripts as Record<string, unknown>).slice(0, 100)) {
+      if (typeof cmd !== 'string') continue;
+      for (const { rule, found } of execMatches(cmd, true)) {
+        add(rule, lineOf(doc.content, `"${name}"`), `scripts.${visible(name)}: ${excerpt(cmd, found.index, found.match[0].length)}`, 'high', 0.85);
+      }
+    }
+  }
+  const bin = parsed.bin;
+  const targets = typeof bin === 'string' ? [bin] : typeof bin === 'object' && bin !== null
+    ? Object.values(bin as Record<string, unknown>).filter((v): v is string => typeof v === 'string')
+    : [];
+  const dir = path.posix.dirname(doc.path);
+  return targets.slice(0, 5)
+    .map((t) => path.posix.normalize(`${dir}/${t.replace(/\\/g, '/')}`))
+    .filter((t) => t.startsWith(`${dir}/`));
+}
+
+function checkManifest(doc: SkillDoc, hit: (line: number, text: string, index: number) => void, add: Add): string[] {
   const base = path.posix.basename(doc.path);
   if (base === 'package.json') {
     let parsed: unknown;
-    try { parsed = JSON.parse(doc.content); } catch { return; }
-    if (typeof parsed !== 'object' || parsed === null) return;
+    try { parsed = JSON.parse(doc.content); } catch { return []; }
+    if (typeof parsed !== 'object' || parsed === null) return [];
+    const bins = checkPackageScripts(doc, parsed as Record<string, unknown>, add);
     let flagged = 0;
     for (const section of ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies']) {
       const deps = (parsed as Record<string, unknown>)[section];
@@ -1673,22 +1906,23 @@ function checkManifest(doc: SkillDoc, hit: (line: number, text: string, index: n
         if (typeof spec !== 'string') continue;
         const s = spec.trim();
         if (s === '' || s === '*' || s === 'latest' || isUnpinnedRemoteSpec(s)) {
-          if (++flagged > MAX_HITS_PER_RULE_FILE) return;
+          if (++flagged > MAX_HITS_PER_RULE_FILE) return bins;
           const line = lineOf(doc.content, `"${name}"`);
           hit(line, doc.lines[line - 1] ?? `"${name}": "${spec}"`, 0);
         }
       }
     }
-    return;
+    return bins;
   }
   // requirements*.txt
-  for (let i = 0; i < doc.lines.length; i++) {
+  for (const i of doc.active) {
     const text = doc.lines[i]!.replace(/\s#.*$/, '');
     const g = findFirst(/\bgit\+[a-z]{1,10}:\/\/\S{1,500}/i, text);
     if (g && !isPinnedRef(gitSourceRef(g.match[0]))) { hit(i + 1, text, g.index); continue; }
     const u = findFirst(/\bhttps?:\/\/\S{1,500}?\.(?:zip|tar\.gz|tgz|whl)\S{0,200}/i, text);
     if (u && !/\d+\.\d+|#sha256=/i.test(u.match[0])) hit(i + 1, text, u.index);
   }
+  return [];
 }
 
 // ── missing-script ────────────────────────────────────────────────────────────
@@ -1731,10 +1965,26 @@ function checkMissingScripts(
     return bases.map((b) => (b === '.' ? ref : `${b}/${ref}`));
   };
 
-  for (let i = 0; i < doc.lines.length; i++) {
+  // Filesystem checks are cached per path and capped per document, and the
+  // rule stops after its evidence cap: a SKILL.md with 28k distinct script
+  // references must not turn into 28k × 3 stat calls.
+  const exists = new Map<string, boolean>();
+  let fsChecks = 0;
+  let found = 0;
+  const fileExists = (p: string): boolean | undefined => {
+    const cached = exists.get(p);
+    if (cached !== undefined) return cached;
+    if (fsChecks >= MAX_FS_CHECKS_PER_DOC) return undefined;
+    fsChecks++;
+    const result = isFileWithinRoot(repoRoot, p);
+    exists.set(p, result);
+    return result;
+  };
+
+  for (const i of doc.active) {
     const text = doc.lines[i]!;
     // A `"command": "bash …"` inside a JSON/YAML example is sample config, not an instruction to run.
-    if (doc.fenced[i] && CONFIG_FENCE_LANGS.has(doc.fenceLang[i]!)) continue;
+    if (doc.fenced[i] && CONFIG_FENCE_LANGS.has(doc.fenceLang.get(i) ?? '')) continue;
     if (!SCRIPT_EXT_HINT_RE.test(text)) continue;
     for (const re of [INVOKE_RE, DIRECT_EXEC_RE]) {
       for (const m of findAll(re, text, 10)) {
@@ -1742,17 +1992,32 @@ function checkMissingScripts(
         const bare = raw.replace(/^\.\//, '');
         const candidates = resolveCandidates(raw);
         if (!candidates) continue;
-        if (candidates.some((c) => isFileWithinRoot(repoRoot, c))) continue;
+        let anyExists = false;
+        let unknown = false;
+        for (const c of candidates) {
+          const e = fileExists(c);
+          if (e === undefined) unknown = true;
+          else if (e) { anyExists = true; break; }
+        }
+        if (anyExists) continue;
+        if (unknown) return; // the per-document check budget is spent — stop rather than guess
         if (alreadyReported().has(bare) || alreadyReported().has(raw)) continue;
         add('missing-script', i + 1, `${visible(raw)} not found (looked in: ${candidates.map(visible).join(', ')})`, 'warning', 0.6);
+        if (++found >= MAX_HITS_PER_RULE_FILE) return;
       }
     }
   }
 }
 
-// ── Loading (streamed, budgeted) ──────────────────────────────────────────────
+/** Filesystem existence checks per document for missing-script. */
+const MAX_FS_CHECKS_PER_DOC = 200;
 
-type Budget = { bytes: number; files: number };
+// ── Loading (streamed, budgeted, priority-ordered) ────────────────────────────
+
+type Budget = { bytes: number; files: number; lines: number };
+
+/** Total lines examined per scan: bounds per-line work however the bytes are shaped (e.g. megabytes of newlines). */
+export const MAX_SCAN_LINES = 3_000_000;
 
 function readRange(fd: number, position: number, length: number): Buffer {
   const buf = Buffer.alloc(length);
@@ -1762,35 +2027,68 @@ function readRange(fd: number, position: number, length: number): Buffer {
 
 function makeDoc(relPath: string, cls: Classified, content: string, isSkillMd: boolean, tail: boolean): SkillDoc {
   const lines = content.split(/\r?\n/);
-  const fence = cls.kind === 'instructions' ? scanFencedLines(content.replace(/\r\n/g, '\n')) : [];
+  const active: number[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i]!;
+    // Blank lines carry nothing any rule looks at; iterating only the rest keeps
+    // a file of 500k empty lines as cheap as an empty file.
+    // Only ASCII spaces/tabs count as blank — a line of invisible characters is exactly what hidden-unicode wants.
+    if (l.length > 0 && NOT_BLANK_RE.test(l)) active.push(i);
+  }
+  const fenced = new Uint8Array(lines.length);
+  const fenceLang = new Map<number, string>();
+  // Fence tracking only when the document has a fence marker at all.
+  if (cls.kind === 'instructions' && (content.includes('```') || content.includes('~~~'))) {
+    const fence = scanFencedLines(content.replace(/\r\n/g, '\n'));
+    for (let i = 0; i < lines.length; i++) {
+      const f = fence[i];
+      if (f?.inFence) {
+        fenced[i] = 1;
+        if (f.lang) fenceLang.set(i, f.lang);
+      }
+    }
+  }
   return {
     path: relPath,
     kind: cls.kind,
     lang: cls.lang,
     content,
     lines,
-    fenced: cls.kind === 'instructions' ? lines.map((_, i) => fence[i]?.inFence ?? false) : new Array<boolean>(lines.length).fill(false),
-    fenceLang: cls.kind === 'instructions' ? lines.map((_, i) => fence[i]?.lang ?? '') : [],
+    active,
+    fenced,
+    fenceLang,
     frontmatterEnd: isSkillMd && !tail ? frontmatterEnd(lines) : 0,
     tail,
   };
 }
 
+const NOT_BLANK_RE = /[^ \t\r]/;
+
+function countLines(buf: Buffer): number {
+  let n = 1;
+  for (let i = buf.indexOf(10); i >= 0; i = buf.indexOf(10, i + 1)) n++;
+  return n;
+}
+
 /**
- * Load one file as 1–2 docs (head, and tail when larger than 500 KB), or say
+ * Load one file as 1–2 docs (head, and tail when larger than 1 MB), or say
  * why it was not read. Oversized files are read at their first AND last 500 KB
  * so padding a payload past the head does not hide it; the middle is reported.
+ * A priority file (SKILL.md, script, executable) the budget cannot cover is
+ * reported at HIGH — the scan fails closed rather than passing it silently.
  */
 function loadDocs(
   repoRoot: string,
   relPath: string,
   isSkillMd: boolean,
+  priority: boolean,
   budget: Budget,
 ): { docs: SkillDoc[]; unscanned: Unscanned[] } {
+  const budgetSeverity: IssueSeverity = priority ? 'high' : 'warning';
   let cls = isSkillMd ? ({ kind: 'instructions', lang: 'other' } as Classification) : classifyByName(relPath);
   if (typeof cls === 'object' && 'skip' in cls) return { docs: [], unscanned: [] };
   if (typeof cls === 'object' && 'report' in cls) {
-    return { docs: [], unscanned: [{ path: relPath, reason: cls.report, severity: 'warning' }] };
+    return { docs: [], unscanned: [{ path: relPath, reason: cls.report, severity: cls.severity }] };
   }
   const abs = resolveWithinRoot(repoRoot, relPath);
   if (!abs) return { docs: [], unscanned: [] };
@@ -1799,8 +2097,8 @@ function loadDocs(
     const stat = fs.statSync(abs);
     if (!stat.isFile()) return { docs: [], unscanned: [] };
     const size = stat.size;
-    if (budget.files <= 0 || budget.bytes <= 0) {
-      return { docs: [], unscanned: [{ path: relPath, reason: 'per-scan budget exhausted — not scanned', severity: 'warning' }] };
+    if (budget.files <= 0 || budget.bytes <= 0 || budget.lines <= 0) {
+      return { docs: [], unscanned: [{ path: relPath, reason: 'per-scan budget exhausted — not scanned', severity: budgetSeverity }] };
     }
     fd = fs.openSync(abs, 'r');
     if (cls === 'probe') {
@@ -1812,28 +2110,28 @@ function loadDocs(
       cls = lang ? { kind: 'script', lang } : { kind: 'text', lang: 'other' };
     }
     const classified = cls as Classified;
-    const unscanned: Unscanned[] = classified.note ? [{ path: relPath, reason: classified.note, severity: 'warning' }] : [];
+    const unscanned: Unscanned[] = classified.note ? [{ path: relPath, reason: classified.note.reason, severity: classified.note.severity }] : [];
     budget.files--;
+    const take = (position: number, length: number, tail: boolean): SkillDoc => {
+      const buf = readRange(fd!, position, length);
+      budget.bytes -= buf.length;
+      budget.lines -= countLines(buf);
+      return makeDoc(relPath, classified, buf.toString('utf8'), isSkillMd && !tail, tail);
+    };
     // Text files are read even with NUL bytes: a stray NUL must not hide a file (hidden-unicode reports it).
     if (size <= 2 * MAX_FILE_SIZE) {
       const want = Math.min(size, budget.bytes);
-      budget.bytes -= want;
-      const docs = [makeDoc(relPath, classified, readRange(fd, 0, want).toString('utf8'), isSkillMd, false)];
-      if (want < size) unscanned.push({ path: relPath, reason: 'per-scan budget exhausted part-way — the rest was not scanned', severity: 'warning' });
+      const docs = [take(0, want, false)];
+      if (want < size) unscanned.push({ path: relPath, reason: 'per-scan budget exhausted part-way — the rest was not scanned', severity: budgetSeverity });
       return { docs, unscanned };
     }
-    const headLen = Math.min(MAX_FILE_SIZE, budget.bytes);
-    budget.bytes -= headLen;
-    const docs = [makeDoc(relPath, classified, readRange(fd, 0, headLen).toString('utf8'), isSkillMd, false)];
+    const docs = [take(0, Math.min(MAX_FILE_SIZE, budget.bytes), false)];
     const tailLen = Math.min(MAX_FILE_SIZE, budget.bytes);
-    if (tailLen > 0) {
-      budget.bytes -= tailLen;
-      docs.push(makeDoc(relPath, classified, readRange(fd, size - tailLen, tailLen).toString('utf8'), false, true));
-    }
+    if (tailLen > 0) docs.push(take(size - tailLen, tailLen, true));
     unscanned.push({
       path: relPath,
       reason: `larger than 1 MB (${Math.round(size / 1024)} KB) — only the first and last 500 KB were scanned`,
-      severity: 'warning',
+      severity: tailLen > 0 ? 'warning' : budgetSeverity,
     });
     return { docs, unscanned };
   } catch {
@@ -1845,7 +2143,7 @@ function loadDocs(
 
 // ── Detector ──────────────────────────────────────────────────────────────────
 
-/** Scan one document; the doc is dropped by the caller right after. */
+/** Scan one document (dropped by the caller right after). Returns package `bin` targets to scan next. */
 function scanDoc(
   repoRoot: string,
   skillDir: string,
@@ -1854,18 +2152,19 @@ function scanDoc(
   alreadyReported: () => ReadonlySet<string>,
   collector: HitCollector,
   unscanned: Unscanned[],
-): void {
+): string[] {
   const add: Add = (rule, line, excerptText, severity, confidence) => {
+    if (!collector.accepts(rule, doc.path, severity, confidence)) {
+      collector.count(rule, doc.path);
+      return;
+    }
     const where = doc.tail ? '(end of file) ' : doc.frontmatterEnd > 0 && line <= doc.frontmatterEnd ? '(frontmatter) ' : '';
-    collector.add(rule, doc.path, { line: doc.tail ? undefined : line, excerpt: `${where}${excerptText}`, severity, confidence });
+    collector.add(rule, doc.path, { line: doc.tail ? undefined : line, excerpt: `${where}${render(excerptText)}`, severity, confidence });
   };
 
   checkHiddenUnicode(doc, add);
   checkBypassFlags(doc, add);
-  if (doc.kind === 'manifest') {
-    checkUnpinned(doc, [], new Set(), add);
-    return;
-  }
+  if (doc.kind === 'manifest') return checkUnpinned(doc, [], new Set(), add);
   const { lines: logical, capped } = logicalLines(doc);
   if (capped.length > 0) {
     unscanned.push({
@@ -1884,12 +2183,21 @@ function scanDoc(
   } else {
     checkScript(doc, consumed, add);
   }
+  return [];
 }
 
-function skipReason(skip: SkillBundleSkip): Unscanned {
+/** Dependency/VCS directory names a skill might reference by path. */
+const DEPENDENCY_DIR_NAMES = ['node_modules', '.git', 'worktrees', '.worktrees'];
+
+function skipReason(skip: SkillBundleSkip, referenced: ReadonlySet<string>): Unscanned {
   switch (skip.kind) {
-    case 'dependency-dir':
-      return { path: skip.path, reason: 'dependency/VCS directory — not walked', severity: 'info' };
+    case 'dependency-dir': {
+      const name = path.posix.basename(skip.path);
+      const read = name === 'node_modules' ? ' (only package manifests and their bin targets were read)' : '';
+      return referenced.has(name)
+        ? { path: skip.path, reason: `dependency/VCS directory referenced by the skill — not walked${read}`, severity: 'warning' }
+        : { path: skip.path, reason: `dependency/VCS directory — not walked${read}`, severity: 'info' };
+    }
     case 'include':
       return { path: skip.path, reason: `${skip.count ?? 0} file(s) outside the configured include patterns — not scanned`, severity: 'info' };
     default:
@@ -1897,7 +2205,24 @@ function skipReason(skip: SkillBundleSkip): Unscanned {
   }
 }
 
-export function detectSkillSupplyChain(context: RepoContext): PromptCiIssue[] {
+type SkillState = {
+  skillMd: string;
+  dir: string;
+  collector: HitCollector;
+  unscanned: Unscanned[];
+  alreadyReported: () => ReadonlySet<string>;
+  /** The SKILL.md head content, kept only for the lazy structural-ref lookup. */
+  headContent?: string;
+  /** Dependency/VCS directory names referenced by path from the SKILL.md or a script. */
+  referenced: Set<string>;
+  queue: { priority: string[]; rest: string[] };
+  loaded: boolean;
+};
+
+/** Per-scan budget overrides (tests exercise budget exhaustion without generating gigabytes). */
+export type SkillScanLimits = Partial<{ bytes: number; files: number; lines: number }>;
+
+export function detectSkillSupplyChain(context: RepoContext, limits: SkillScanLimits = {}): PromptCiIssue[] {
   // `allSkills`/`skillFiles` are optional for hand-built contexts from older releases.
   const ai: Partial<RepoContext['aiConfig']> = context.aiConfig ?? {};
   const allSkills = ai.allSkills ?? ai.skills ?? [];
@@ -1911,52 +2236,91 @@ export function detectSkillSupplyChain(context: RepoContext): PromptCiIssue[] {
     });
     return best;
   };
-  const bundled = new Map<number, string[]>();
-  const pre = new Map<number, Unscanned[]>();
-  const push = <T>(map: Map<number, T[]>, idx: number, item: T) => {
-    const list = map.get(idx) ?? [];
-    list.push(item);
-    map.set(idx, list);
-  };
+
+  const states: SkillState[] = allSkills.map((skillMd, idx) => {
+    const state: SkillState = {
+      skillMd,
+      dir: dirs[idx]!,
+      collector: new HitCollector(),
+      unscanned: [],
+      alreadyReported: () => new Set<string>(),
+      referenced: new Set<string>(),
+      queue: { priority: [], rest: [] },
+      loaded: false,
+    };
+    // Refs the structural detector already flags when missing are not reported twice
+    // (computed lazily, only once a missing script is actually found).
+    if (audited.has(skillMd)) {
+      let refs: Set<string> | undefined;
+      state.alreadyReported = () => (refs ??= new Set(extractFileRefs(state.headContent ?? '').map((r) => r.ref)));
+    }
+    return state;
+  });
   for (const file of ai.skillFiles ?? []) {
     const idx = owner(file);
-    if (idx >= 0) push(bundled, idx, file);
+    if (idx >= 0) (isPriorityFile(file) ? states[idx]!.queue.priority : states[idx]!.queue.rest).push(file);
   }
   for (const file of ai.skillFilesOverCap ?? []) {
     const idx = owner(file);
-    if (idx >= 0) push(pre, idx, { path: file, reason: 'over the per-skill file cap — not scanned', severity: 'warning' });
-  }
-  for (const skip of ai.skillBundleSkips ?? []) {
-    const idx = owner(skip.path);
-    if (idx >= 0) push(pre, idx, skipReason(skip));
+    if (idx >= 0) {
+      states[idx]!.unscanned.push({
+        path: file,
+        reason: 'over the per-skill file cap — not scanned',
+        severity: isPriorityFile(file) ? 'high' : 'warning',
+      });
+    }
   }
 
-  const budget: Budget = { bytes: MAX_SCAN_BYTES, files: MAX_SCAN_FILES };
+  const budget: Budget = {
+    bytes: limits.bytes ?? MAX_SCAN_BYTES,
+    files: limits.files ?? MAX_SCAN_FILES,
+    lines: limits.lines ?? MAX_SCAN_LINES,
+  };
+  const noteReferences = (state: SkillState, doc: SkillDoc) => {
+    if (doc.kind !== 'instructions' && doc.kind !== 'script' && !(doc.kind === 'text' && doc.lang === 'sh')) return;
+    for (const name of DEPENDENCY_DIR_NAMES) if (doc.content.includes(`${name}/`)) state.referenced.add(name);
+  };
+  const visited = new Set<string>();
+  const scanFile = (state: SkillState, file: string, isSkillMd: boolean, priority: boolean): ReturnType<typeof loadDocs> => {
+    if (visited.has(file)) return { docs: [], unscanned: [] };
+    visited.add(file);
+    const loaded = loadDocs(context.repoRoot, file, isSkillMd, priority, budget);
+    state.unscanned.push(...loaded.unscanned);
+    const extra: string[] = [];
+    if (isSkillMd) state.headContent = loaded.docs[0]?.content;
+    for (const doc of loaded.docs) {
+      noteReferences(state, doc);
+      extra.push(...scanDoc(context.repoRoot, state.dir, doc, isSkillMd, state.alreadyReported, state.collector, state.unscanned));
+    }
+    // A dependency package's `bin` targets are what `npx`/install runs: scan them as scripts.
+    for (const target of extra) if (owner(target) >= 0) scanFile(state, target, false, true);
+    return loaded;
+  };
+
+  // Pass 1 — every SKILL.md and every script/executable, across all skills,
+  // before any other document: decoys cannot push them past the budget.
+  for (const state of states) {
+    const main = scanFile(state, state.skillMd, true, true);
+    state.loaded = main.docs.length > 0 || main.unscanned.length > 0;
+    for (const file of state.queue.priority) scanFile(state, file, false, true);
+  }
+  // Pass 2 — everything else, while the budget lasts.
+  for (const state of states) {
+    for (const file of state.queue.rest) scanFile(state, file, false, false);
+  }
+
   const issues: PromptCiIssue[] = [];
-  allSkills.forEach((skillMd, idx) => {
-    const collector = new HitCollector();
-    const unscanned: Unscanned[] = [...(pre.get(idx) ?? [])];
-    const main = loadDocs(context.repoRoot, skillMd, true, budget);
-    unscanned.push(...main.unscanned);
-    if (main.docs.length === 0 && main.unscanned.length === 0) return; // unreadable
-    // Refs the structural detector already flags when missing — don't report them twice.
-    // Computed lazily: only needed once a missing script is actually found.
-    const headContent = audited.has(skillMd) ? main.docs[0]?.content : undefined;
-    let refs: Set<string> | undefined;
-    const alreadyReported = (): ReadonlySet<string> =>
-      (refs ??= new Set(headContent !== undefined ? extractFileRefs(headContent).map((r) => r.ref) : []));
-    for (const doc of main.docs) scanDoc(context.repoRoot, dirs[idx]!, doc, true, alreadyReported, collector, unscanned);
-    for (const file of bundled.get(idx) ?? []) {
-      const loaded = loadDocs(context.repoRoot, file, false, budget);
-      unscanned.push(...loaded.unscanned);
-      for (const doc of loaded.docs) scanDoc(context.repoRoot, dirs[idx]!, doc, false, alreadyReported, collector, unscanned);
+  for (const state of states) {
+    if (!state.loaded) continue; // unreadable SKILL.md
+    for (const skip of ai.skillBundleSkips ?? []) {
+      if (owner(skip.path) === states.indexOf(state)) state.unscanned.push(skipReason(skip, state.referenced));
     }
     // Name what could not be scanned — never drop it silently.
-    for (const u of unscanned) {
-      collector.add('unscanned-files', skillMd, { excerpt: `${visible(u.path)}: ${u.reason}`, severity: u.severity, confidence: 0.8 });
+    for (const u of state.unscanned) {
+      state.collector.add('unscanned-files', state.skillMd, { excerpt: `${visible(u.path)}: ${u.reason}`, severity: u.severity, confidence: 0.8 });
     }
-    issues.push(...collector.toIssues(skillMd));
-  });
+    issues.push(...state.collector.toIssues(state.skillMd));
+  }
   // Scanner-form paths so inline suppressions can match (see withScannerPaths).
   return withScannerPaths(context.repoRoot, issues);
 }

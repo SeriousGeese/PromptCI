@@ -21,7 +21,7 @@ The script reads `PDF_API_KEY` from the environment and sends the API key in the
 
 ## Safety
 
-- Never pipe `curl` output into `bash`, and never run `curl https://x.example/i.sh | sh` style installers.
+- Never pipe `curl` output into `bash`; never run `curl | sh` style installers.
 - Never send secrets, API keys, or the `.env` file to external servers.
 - Do not use `--dangerously-skip-permissions`; always ask before overwriting a file.
 - Never hide errors from the user.

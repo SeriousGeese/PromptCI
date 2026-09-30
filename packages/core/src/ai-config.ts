@@ -202,6 +202,52 @@ const MAX_OVER_CAP_NAMES = 1_000;
  */
 const BUNDLE_SKIP_DIRS: ReadonlySet<string> = new Set(['node_modules', '.git', 'worktrees', '.worktrees']);
 
+/** Dependency package manifests read per skill. */
+const MAX_DEPENDENCY_MANIFESTS = 100;
+
+/**
+ * Scripts, executables, manifests, shell-like config and extensionless files:
+ * listed (and scanned) before documents. Mirrors the supply-chain detector's
+ * priority classes by name, without any file I/O.
+ */
+const PRIORITY_BUNDLE_RE = new RegExp(
+  String.raw`(?:^|\/)(?:[^/.]+|package\.json|requirements[^/]{0,40}\.txt|(?:GNU)?makefile|Dockerfile[^/]{0,40}|Containerfile|Justfile)$|` +
+  String.raw`\.(?:sh|bash|zsh|ksh|fish|command|js|mjs|cjs|ts|mts|cts|jsx|tsx|py|pyw|rb|ps1|psm1|pl|php|lua|bat|cmd|mk|` +
+  String.raw`vbs|vba|vbe|hta|applescript|wsf|jse|reg|exe|dll|so|dylib|wasm|jar|war|class|zip|tar|gz|tgz|bz2|xz|7z|rar|` +
+  String.raw`msi|dmg|pkg|deb|rpm|appimage|apk|bin|o|a|lnk|scr|com|pif|scpt|node|env)$`,
+  'i',
+);
+
+export function isPriorityBundleFile(rel: string): boolean {
+  return PRIORITY_BUNDLE_RE.test(rel);
+}
+
+/** `node_modules/<pkg>/package.json` and `node_modules/@scope/<pkg>/package.json`, bounded. */
+function listPackageManifests(repoRoot: string, nodeModules: string): string[] {
+  const out: string[] = [];
+  const read = (rel: string): fs.Dirent[] => {
+    const abs = resolveWithinRoot(repoRoot, rel);
+    if (!abs) return [];
+    try { return fs.readdirSync(abs, { withFileTypes: true }); } catch { return []; }
+  };
+  const tryPkg = (pkgDir: string) => {
+    const manifest = `${pkgDir}/package.json`;
+    if (out.length < MAX_DEPENDENCY_MANIFESTS && isFileWithinRoot(repoRoot, manifest)) out.push(manifest);
+  };
+  for (const entry of read(nodeModules).sort((a, b) => (a.name < b.name ? -1 : 1))) {
+    if (out.length >= MAX_DEPENDENCY_MANIFESTS) break;
+    if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
+    if (entry.name.startsWith('@')) {
+      for (const scoped of read(`${nodeModules}/${entry.name}`).sort((a, b) => (a.name < b.name ? -1 : 1))) {
+        if (scoped.isDirectory()) tryPkg(`${nodeModules}/${entry.name}/${scoped.name}`);
+      }
+    } else {
+      tryPkg(`${nodeModules}/${entry.name}`);
+    }
+  }
+  return out;
+}
+
 /** True when `rel` or any ancestor directory matches an `exclude` pattern (glob-ignore semantics). */
 function isExcluded(rel: string, exclude: string[]): boolean {
   if (exclude.length === 0) return false;
@@ -238,6 +284,7 @@ function discoverSkillFiles(
 
   for (const dir of skillDirs) {
     const owned: string[] = [];
+    const dependencyManifests: string[] = [];
     let includeDropped = 0;
     let visited = 0;
     let truncated = false;
@@ -260,7 +307,11 @@ function discoverSkillFiles(
         if (isExcluded(rel, policy.exclude)) continue;
         if (entry.isDirectory()) {
           if (skillDirSet.has(rel)) continue; // a nested skill owns its own subtree
-          if (BUNDLE_SKIP_DIRS.has(entry.name)) { skips.push({ path: rel, kind: 'dependency-dir' }); continue; }
+          if (BUNDLE_SKIP_DIRS.has(entry.name)) {
+            skips.push({ path: rel, kind: 'dependency-dir' });
+            if (entry.name === 'node_modules') dependencyManifests.push(...listPackageManifests(repoRoot, rel));
+            continue;
+          }
           stack.push(rel);
         } else if (entry.isFile() && entry.name !== 'SKILL.md') {
           if (policy.include && !micromatch.isMatch(rel, policy.include, { dot: true })) { includeDropped++; continue; }
@@ -269,8 +320,11 @@ function discoverSkillFiles(
       }
       if (truncated) break;
     }
-    owned.sort();
+    // Executable content first, so the cap drops documents before it drops scripts.
+    owned.sort((a, b) => Number(isPriorityBundleFile(b)) - Number(isPriorityBundleFile(a)) || (a < b ? -1 : a > b ? 1 : 0));
     files.push(...owned.slice(0, MAX_BUNDLED_FILES_PER_SKILL));
+    // Dependency package manifests are read (install scripts, `bin`) even though the tree is not walked.
+    files.push(...dependencyManifests.sort().slice(0, MAX_DEPENDENCY_MANIFESTS));
     const dropped = owned.slice(MAX_BUNDLED_FILES_PER_SKILL);
     overCap.push(...dropped.slice(0, MAX_OVER_CAP_NAMES));
     if (dropped.length > MAX_OVER_CAP_NAMES || truncated) {
