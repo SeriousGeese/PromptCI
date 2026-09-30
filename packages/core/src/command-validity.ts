@@ -112,9 +112,11 @@ function workspaceHasScript(context: RepoContext, selector: string | undefined, 
   if (!normalizedSelector) return false;
 
   // Workspace manifests discovered while building the context (declared
-  // `workspaces` globs, any layout). The path-based lookup below stays as a
-  // fallback for contexts built without them and for `--filter ./some/dir`.
-  if (selectWorkspaces(context, normalizedSelector).some((ws) => !!ws.scripts[scriptName])) return true;
+  // `workspaces` globs, any layout). The path-based lookup below is only for
+  // contexts built without them.
+  if (context.workspaces) {
+    return selectWorkspaces(context, normalizedSelector).some((ws) => !!ws.scripts[scriptName]);
+  }
 
   for (const candidate of workspacePackageJsonCandidates(context.repoRoot, normalizedSelector)) {
     const pkg = readPackageScripts(candidate);
@@ -480,6 +482,14 @@ function findMissingScript(
   const inWorkspaceScope = (name: string): boolean =>
     allWorkspaces ? anyWorkspaceHasScript(context, name) : workspaceHasScript(context, selector, name);
 
+  // With discovered workspaces, an explicit selector means ONLY the selected
+  // packages: the root manifest's same-named script is not what runs, and a
+  // selector that matches no package is itself the error.
+  const selectedWorkspaces =
+    selector && context.workspaces && !allWorkspaces
+      ? selectWorkspaces(context, selector.replace(/^['"]|['"]$/g, '').replace(/^\.\.\./, '').replace(/\.\.\.$/, '').trim())
+      : undefined;
+
   const inSubdir = cwd !== '.' && cwd !== '';
   const dirPkg = inSubdir
     ? readPackageScripts(path.join(context.repoRoot, cwd, 'package.json'))
@@ -495,6 +505,18 @@ function findMissingScript(
     // `pnpm vitest run`, `yarn tsc --noEmit`: no script of that name, but it is
     // an installed dependency's binary — the package manager runs that instead.
     if (lookup.allowBinary && isKnownBinary(context, name)) continue;
+
+    if (selectedWorkspaces) {
+      if (selectedWorkspaces.length === 0) {
+        if (context.workspacesTruncated) continue; // only a sample of the workspace was read
+        return `no workspace matches "${selector}" for ${tool} script "${name}"`;
+      }
+      if (selectedWorkspaces.some((ws) => !!ws.scripts[name])) continue;
+      const target = selectedWorkspaces.length === 1
+        ? `${selectedWorkspaces[0]!.name ?? selectedWorkspaces[0]!.dir} (${selectedWorkspaces[0]!.dir}/package.json)`
+        : `the ${selectedWorkspaces.length} workspaces selected by "${selector}"`;
+      return `${tool} script "${name}" does not appear in ${target} scripts`;
+    }
 
     if (dirPkg) {
       // A command that runs inside a subdir resolves scripts ONLY from that
@@ -672,22 +694,40 @@ function validateSegment(
  * out of scope.
  */
 export function detectCommandValidity(context: RepoContext): PromptCiIssue[] {
-  return analyzeCommands(context).issues;
+  // Copies: the cached analysis is shared with manifest-consistency.
+  return analyzeCommands(context).issues.map((issue) => ({ ...issue }));
 }
 
 export type CommandAnalysis = {
   issues: PromptCiIssue[];
   /**
-   * Script names (`pnpm build`, `npm run lint`, …) of every package-manager
-   * command this detector judged — valid, broken, or uncheckable — keyed by
+   * Every package-manager script occurrence this detector judged — valid,
+   * broken, or uncheckable — as `"<line>:<script name>"`, keyed by
    * `InstructionFile.path`. The manifest-consistency script check uses it to
-   * stay silent on commands command-validity already owns, so one command never
-   * yields two findings.
+   * stay silent on the occurrences command-validity already owns, so one
+   * command never yields two findings. Keyed by occurrence, not name: another
+   * mention of the same script elsewhere in the file is still that check's to
+   * judge.
    */
   evaluatedScripts: Map<string, Set<string>>;
 };
 
+/**
+ * Both command-validity and manifest-consistency need the analysis; compute it
+ * once per context.
+ */
+const analysisCache = new WeakMap<RepoContext, CommandAnalysis>();
+
 export function analyzeCommands(context: RepoContext): CommandAnalysis {
+  let analysis = analysisCache.get(context);
+  if (!analysis) {
+    analysis = computeCommandAnalysis(context);
+    analysisCache.set(context, analysis);
+  }
+  return analysis;
+}
+
+function computeCommandAnalysis(context: RepoContext): CommandAnalysis {
   const issues: PromptCiIssue[] = [];
   const evaluatedScripts = new Map<string, Set<string>>();
   const reported = new Set<string>();
@@ -698,7 +738,7 @@ export function analyzeCommands(context: RepoContext): CommandAnalysis {
     evaluatedScripts.set(file.path, evaluated);
 
     for (const cmd of commands) {
-      const error = validateSegment(cmd.text, context, cmd.cwd ?? '.', (name) => evaluated.add(name));
+      const error = validateSegment(cmd.text, context, cmd.cwd ?? '.', (name) => evaluated.add(`${cmd.line}:${name}`));
       if (!error) continue;
 
       // Deduplicate same command text appearing twice in the same file

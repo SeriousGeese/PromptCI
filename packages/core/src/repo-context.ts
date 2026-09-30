@@ -69,6 +69,12 @@ export type RepoContext = {
    */
   workspaces?: WorkspaceManifest[];
   /**
+   * Workspace discovery stopped at its manifest cap, so `workspaces` is a
+   * sample. Checks that need the complete set (is this binary installed?) stay
+   * permissive when this is set.
+   */
+  workspacesTruncated?: boolean;
+  /**
    * Config files for the ai_config detectors, discovered here so they share
    * the scan's include/exclude and size/binary policy instead of re-walking
    * the repo with a policy of their own.
@@ -420,7 +426,7 @@ export async function buildRepoContext(input: ScanInput): Promise<RepoContext> {
     loadCustomRules(repoRoot),
   ]);
 
-  const workspaces = await discoverWorkspaceManifests(
+  const workspaceDiscovery = await discoverWorkspaceManifests(
     repoRoot,
     packageJson,
     (posix) => isExcludedPath(posix, input.exclude ?? []),
@@ -442,7 +448,8 @@ export async function buildRepoContext(input: ScanInput): Promise<RepoContext> {
     manifests,
     packageJson: parsePackageJsonFacts(packageJson, lockfiles),
     workflows,
-    workspaces,
+    workspaces: workspaceDiscovery.manifests,
+    workspacesTruncated: workspaceDiscovery.truncated,
     aiConfig,
     metrics: buildMetrics(files, onDemandFiles),
     // A targetModel preset scales the context-bloat thresholds to that model's

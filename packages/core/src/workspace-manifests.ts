@@ -11,14 +11,16 @@
  *  - Scripts defined by a workspace package rather than the root manifest:
  *    `pnpm --filter web dev` or `pnpm -r build` in a monorepo.
  *
- * `node_modules/.bin` is not available when scanning a checkout, so binaries are
- * derived from the dependency blocks of every workspace manifest plus a list of
- * well-known tool binaries. Everything here is deterministic and offline.
+ * `node_modules/.bin` is not available when scanning a checkout, so a binary is
+ * accepted only when a package that provides it is declared in some workspace
+ * manifest (or, for a dependency whose name IS the command, the dependency
+ * itself). Everything here is deterministic and offline.
  */
 
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
-import { listFiles } from './ai-config.js';
+import micromatch from 'micromatch';
+import { listFiles, resolveWithinRoot } from './ai-config.js';
 import { MAX_FILE_SIZE } from './scanner.js';
 import type { RepoContext } from './repo-context.js';
 
@@ -27,10 +29,20 @@ export type WorkspaceManifest = {
   dir: string;
   name?: string;
   scripts: Record<string, string>;
-  /** Names from dependencies, devDependencies, peerDependencies and optionalDependencies. */
+  /**
+   * Names from dependencies, devDependencies, peerDependencies and
+   * optionalDependencies, minus `workspace:` links to sibling packages (those
+   * are packages of this repo, not installed tools).
+   */
   dependencies: string[];
   /** Binary names the package itself exposes (`bin`). */
   bins: string[];
+};
+
+export type WorkspaceDiscovery = {
+  manifests: WorkspaceManifest[];
+  /** More manifests matched than were read: the list is a sample, not the whole workspace. */
+  truncated: boolean;
 };
 
 /** Upper bound on workspace manifests read, so a huge repo cannot stall a scan. */
@@ -44,53 +56,48 @@ const DEPENDENCY_BLOCKS = ['dependencies', 'devDependencies', 'peerDependencies'
 // ── Well-known binaries ───────────────────────────────────────────────────────
 
 /**
- * Binaries of common JS/TS tooling. A bare `pnpm <bin>` / `yarn <bin>` runs the
- * installed binary, so these are valid invocations whether or not the package is
- * listed in a manifest this scan could read (hoisted workspace installs).
+ * Common JS/TS tool binaries and the packages that install them. A bare
+ * `pnpm <bin>` / `yarn <bin>` runs the installed binary, so `pnpm prisma
+ * migrate` is valid when `prisma` is a dependency somewhere in the workspace —
+ * and a missing script when nothing installs it.
  */
-export const KNOWN_BINS: ReadonlySet<string> = new Set([
+const BIN_PROVIDERS: Readonly<Record<string, readonly string[]>> = {
   // compilers / bundlers / transpilers
-  'tsc', 'tsx', 'ts-node', 'tsup', 'tsc-alias', 'vue-tsc', 'esbuild', 'rollup', 'webpack', 'vite',
-  'swc', 'babel', 'parcel', 'turbopack', 'rspack', 'unbuild', 'bunchee',
+  tsc: ['typescript'], tsserver: ['typescript'], tsx: ['tsx'], 'ts-node': ['ts-node'],
+  tsup: ['tsup'], 'tsc-alias': ['tsc-alias'], 'vue-tsc': ['vue-tsc'], esbuild: ['esbuild'],
+  rollup: ['rollup'], webpack: ['webpack-cli', 'webpack'], vite: ['vite'], swc: ['@swc/cli'],
+  babel: ['@babel/cli'], parcel: ['parcel'], rspack: ['@rspack/cli'], unbuild: ['unbuild'],
+  bunchee: ['bunchee'],
   // lint / format / type tools
-  'eslint', 'prettier', 'biome', 'oxlint', 'stylelint', 'knip', 'depcheck', 'madge', 'commitlint',
-  'svelte-check', 'typedoc', 'size-limit',
+  eslint: ['eslint'], prettier: ['prettier'], biome: ['@biomejs/biome'], oxlint: ['oxlint'],
+  stylelint: ['stylelint'], knip: ['knip'], depcheck: ['depcheck'], madge: ['madge'],
+  commitlint: ['@commitlint/cli'], 'svelte-check': ['svelte-check'], typedoc: ['typedoc'],
+  'size-limit': ['size-limit'],
   // test runners
-  'vitest', 'jest', 'mocha', 'ava', 'playwright', 'cypress', 'storybook', 'msw',
+  vitest: ['vitest'], jest: ['jest'], mocha: ['mocha'], ava: ['ava'],
+  playwright: ['@playwright/test', 'playwright'], cypress: ['cypress'],
+  storybook: ['storybook', '@storybook/cli'], msw: ['msw'],
   // monorepo / release
-  'turbo', 'nx', 'lerna', 'changeset', 'changesets', 'semantic-release', 'husky', 'lint-staged',
+  turbo: ['turbo'], nx: ['nx'], lerna: ['lerna'], changeset: ['@changesets/cli'],
+  'semantic-release': ['semantic-release'], husky: ['husky'], 'lint-staged': ['lint-staged'],
   // frameworks
-  'next', 'nuxt', 'nuxi', 'astro', 'remix', 'expo', 'eas', 'react-native', 'ng', 'nest', 'gatsby',
-  'docusaurus', 'vitepress', 'tauri', 'electron', 'electron-builder', 'sanity', 'strapi',
+  next: ['next'], nuxt: ['nuxt'], nuxi: ['nuxt', 'nuxi'], astro: ['astro'], remix: ['@remix-run/dev'],
+  expo: ['expo'], eas: ['eas-cli'], 'react-native': ['react-native'], ng: ['@angular/cli'],
+  nest: ['@nestjs/cli'], gatsby: ['gatsby'], docusaurus: ['@docusaurus/core'], vitepress: ['vitepress'],
+  tauri: ['@tauri-apps/cli'], electron: ['electron'], 'electron-builder': ['electron-builder'],
+  sanity: ['sanity', '@sanity/cli'], strapi: ['@strapi/strapi'],
   // data / infra / deploy
-  'prisma', 'drizzle-kit', 'knex', 'typeorm', 'sequelize', 'supabase', 'wrangler', 'vercel', 'netlify',
-  'firebase', 'sst', 'cdk', 'serverless',
+  prisma: ['prisma'], 'drizzle-kit': ['drizzle-kit'], knex: ['knex'], typeorm: ['typeorm'],
+  sequelize: ['sequelize-cli'], supabase: ['supabase'], wrangler: ['wrangler'], vercel: ['vercel'],
+  netlify: ['netlify-cli'], firebase: ['firebase-tools'], sst: ['sst'], cdk: ['aws-cdk'],
+  serverless: ['serverless'],
   // process / shell helpers
-  'nodemon', 'concurrently', 'cross-env', 'rimraf', 'dotenv', 'npm-run-all', 'run-s', 'run-p',
+  nodemon: ['nodemon'], concurrently: ['concurrently'], 'cross-env': ['cross-env'], rimraf: ['rimraf'],
+  dotenv: ['dotenv-cli', 'dotenv'], 'npm-run-all': ['npm-run-all', 'npm-run-all2'],
+  'run-s': ['npm-run-all', 'npm-run-all2'], 'run-p': ['npm-run-all', 'npm-run-all2'],
   // css / codegen
-  'tailwindcss', 'postcss', 'graphql-codegen', 'openapi-typescript',
-]);
-
-/**
- * Dependencies whose binary name differs from the package name. The unscoped
- * package name is always accepted as well (`@biomejs/biome` -> `biome`).
- */
-const DEP_BIN_ALIASES: Readonly<Record<string, readonly string[]>> = {
-  typescript: ['tsc', 'tsserver'],
-  '@playwright/test': ['playwright'],
-  '@changesets/cli': ['changeset'],
-  '@angular/cli': ['ng'],
-  '@nestjs/cli': ['nest'],
-  '@tailwindcss/cli': ['tailwindcss'],
-  '@graphql-codegen/cli': ['graphql-codegen'],
-  '@storybook/cli': ['storybook'],
-  '@commitlint/cli': ['commitlint'],
-  '@sanity/cli': ['sanity'],
-  '@tauri-apps/cli': ['tauri'],
-  '@redwoodjs/cli': ['rw'],
-  '@swc/cli': ['swc'],
-  '@babel/cli': ['babel'],
-  'npm-run-all2': ['npm-run-all', 'run-s', 'run-p'],
+  tailwindcss: ['tailwindcss', '@tailwindcss/cli'], postcss: ['postcss-cli'],
+  'graphql-codegen': ['@graphql-codegen/cli'], 'openapi-typescript': ['openapi-typescript'],
 };
 
 // ── Discovery (async; called once while building the RepoContext) ─────────────
@@ -127,7 +134,10 @@ export function parseWorkspaceManifest(dir: string, raw: string): WorkspaceManif
   const obj = parsed as Record<string, unknown>;
   const dependencies = new Set<string>();
   for (const block of DEPENDENCY_BLOCKS) {
-    for (const dep of stringKeys(obj[block])) dependencies.add(dep);
+    const specs = stringRecord(obj[block]);
+    for (const dep of Object.keys(specs)) {
+      if (!specs[dep]!.startsWith('workspace:')) dependencies.add(dep);
+    }
   }
   return {
     dir,
@@ -155,23 +165,62 @@ function packageJsonWorkspaceGlobs(rawPackageJson: string | undefined): string[]
   }
 }
 
-/** `packages:` entries of pnpm-workspace.yaml — the tiny subset of YAML it uses. */
-function pnpmWorkspaceGlobs(rawYaml: string | undefined): string[] {
+function unquoteYamlScalar(raw: string): string {
+  const trimmed = raw.trim();
+  const quoted = /^(?:"([^"]*)"|'([^']*)')/.exec(trimmed);
+  if (quoted) return quoted[1] ?? quoted[2] ?? '';
+  return trimmed.replace(/\s+#.*$/, '');
+}
+
+/**
+ * `packages:` entries of pnpm-workspace.yaml — the small subset of YAML it
+ * uses: a block list (indented or not) or a flow list (`['a/*', "b/*"]`,
+ * possibly across lines).
+ */
+export function pnpmWorkspaceGlobs(rawYaml: string | undefined): string[] {
   if (!rawYaml) return [];
+  const lines = rawYaml.split(/\r?\n/);
   const globs: string[] = [];
-  let inPackages = false;
-  for (const line of rawYaml.split(/\r?\n/)) {
-    if (/^packages\s*:/.test(line)) {
-      inPackages = true;
-      continue;
+  for (let i = 0; i < lines.length; i++) {
+    const header = /^packages\s*:\s*(.*)$/.exec(lines[i]!);
+    if (!header) continue;
+    const rest = header[1]!.trim();
+    if (rest.startsWith('[')) {
+      let flow = rest;
+      for (let j = i + 1; !flow.includes(']') && j < lines.length; j++) flow += ` ${lines[j]!.trim()}`;
+      const inner = flow.slice(1, flow.includes(']') ? flow.indexOf(']') : undefined);
+      for (const item of inner.split(',')) {
+        const glob = unquoteYamlScalar(item);
+        if (glob) globs.push(glob);
+      }
+      break;
     }
-    if (!inPackages) continue;
-    if (/^\S/.test(line) && line.trim() !== '' && !line.startsWith('#')) break; // next top-level key
-    const item = /^\s*-\s*(?:"([^"]+)"|'([^']+)'|([^\s#]+))/.exec(line);
-    const glob = item?.[1] ?? item?.[2] ?? item?.[3];
-    if (glob) globs.push(glob);
+    for (let j = i + 1; j < lines.length; j++) {
+      const line = lines[j]!;
+      const item = /^\s*-\s+(.*)$/.exec(line); // `- x` at any indent, including column 0
+      if (item) {
+        const glob = unquoteYamlScalar(item[1]!);
+        if (glob) globs.push(glob);
+        continue;
+      }
+      // Blank lines and comments continue the list; the next top-level key ends it.
+      if (line.trim() === '' || /^\s*#/.test(line) || /^\s/.test(line)) continue;
+      break;
+    }
+    break;
   }
   return globs;
+}
+
+/**
+ * A workspace glob is only followed when it stays inside the repository: an
+ * absolute path or a `..` segment would let a hostile `workspaces` entry read
+ * package.json files of sibling directories.
+ */
+function isContainedGlob(glob: string): boolean {
+  const posix = glob.replace(/\\/g, '/');
+  if (posix.startsWith('/') || /^[a-zA-Z]:/.test(posix)) return false;
+  return !posix.split('/').includes('..');
 }
 
 function toManifestGlob(workspaceGlob: string): string {
@@ -183,14 +232,16 @@ function toManifestGlob(workspaceGlob: string): string {
  * Read the root manifest and every workspace package manifest. Workspace
  * directories come from the declared `workspaces` globs (package.json or
  * pnpm-workspace.yaml) or, when none are declared, the conventional
- * `apps/`, `packages/` and `libs/` roots. Dot-directories, dependency trees and
- * paths the scan's `exclude` patterns cover (`isExcluded`) are never read.
+ * `apps/`, `packages/` and `libs/` roots. Only dependency trees and VCS
+ * directories are ignored — a declared glob may legitimately reach
+ * `tools/build/`. Paths the scan's `exclude` patterns cover (`isExcluded`) are
+ * never read.
  */
 export async function discoverWorkspaceManifests(
   repoRoot: string,
   rawRootPackageJson: string | undefined,
   isExcluded: (posixPath: string) => boolean = () => false,
-): Promise<WorkspaceManifest[]> {
+): Promise<WorkspaceDiscovery> {
   let pnpmYaml: string | undefined;
   try {
     pnpmYaml = await fs.readFile(path.join(repoRoot, 'pnpm-workspace.yaml'), 'utf-8');
@@ -198,27 +249,27 @@ export async function discoverWorkspaceManifests(
     pnpmYaml = undefined;
   }
   const declared = [...packageJsonWorkspaceGlobs(rawRootPackageJson), ...pnpmWorkspaceGlobs(pnpmYaml)];
-  const positive = declared.filter((g) => !g.startsWith('!'));
+  const positive = declared.filter((g) => !g.startsWith('!') && isContainedGlob(g));
   const negative = declared.filter((g) => g.startsWith('!')).map((g) => g.slice(1));
   const globs = positive.length > 0 ? positive : CONVENTIONAL_WORKSPACE_GLOBS;
 
   const ignore = [
-    '**/node_modules/**', '**/.git/**', '**/dist/**', '**/build/**', '**/worktrees/**', '**/.worktrees/**',
-    '**/.*/**',
-    ...negative.map((g) => `${g.replace(/\/+$/, '')}/**`),
+    '**/node_modules/**', '**/.git/**',
+    ...negative.filter(isContainedGlob).map((g) => `${g.replace(/\/+$/, '')}/**`),
   ];
-  const manifestPaths = listFiles(repoRoot, globs.map(toManifestGlob), ignore)
-    .filter((rel) => !isExcluded(rel))
-    .slice(0, MAX_WORKSPACE_MANIFESTS);
+  const matched = listFiles(repoRoot, globs.map(toManifestGlob), ignore)
+    .filter((rel) => resolveWithinRoot(repoRoot, rel) !== null && !isExcluded(rel));
+  const truncated = matched.length > MAX_WORKSPACE_MANIFESTS;
 
   const manifests: WorkspaceManifest[] = [];
   const rootManifest = rawRootPackageJson ? parseWorkspaceManifest('.', rawRootPackageJson) : undefined;
   if (rootManifest) manifests.push(rootManifest);
 
-  for (const rel of manifestPaths) {
+  for (const rel of matched.slice(0, MAX_WORKSPACE_MANIFESTS)) {
     if (rel === 'package.json') continue;
     try {
-      const abs = path.join(repoRoot, rel);
+      const abs = resolveWithinRoot(repoRoot, rel);
+      if (!abs) continue;
       const stat = await fs.stat(abs);
       if (!stat.isFile() || stat.size > MAX_FILE_SIZE) continue;
       const manifest = parseWorkspaceManifest(path.posix.dirname(rel), await fs.readFile(abs, 'utf-8'));
@@ -227,23 +278,43 @@ export async function discoverWorkspaceManifests(
       // unreadable — skip
     }
   }
-  return manifests;
+  return { manifests, truncated };
 }
 
 // ── Queries (pure; used by the detectors) ─────────────────────────────────────
 
-/** Package names and binaries that resolve as an installed command, across the whole workspace. */
-export function isKnownBinary(context: RepoContext, name: string): boolean {
-  if (KNOWN_BINS.has(name)) return true;
+/** Dependency names declared anywhere in the workspace, without @types and sibling-package links. */
+function installedPackages(context: RepoContext): Set<string> {
+  const localNames = new Set((context.workspaces ?? []).map((ws) => ws.name).filter((n): n is string => !!n));
+  const names = new Set<string>();
+  const add = (dep: string): void => {
+    if (!dep.startsWith('@types/') && !localNames.has(dep)) names.add(dep);
+  };
   const { dependencies, devDependencies, peerDependencies } = context.packageJson;
-  const isDep = (dep: string): boolean =>
-    dep === name || dep.split('/').pop() === name || (DEP_BIN_ALIASES[dep]?.includes(name) ?? false);
-  if ([dependencies, devDependencies, peerDependencies].some((block) => Object.keys(block).some(isDep))) {
-    return true;
+  for (const block of [dependencies, devDependencies, peerDependencies]) {
+    for (const [dep, spec] of Object.entries(block)) if (!spec.startsWith('workspace:')) add(dep);
   }
-  return (context.workspaces ?? []).some(
-    (ws) => ws.bins.includes(name) || ws.dependencies.some(isDep),
-  );
+  for (const ws of context.workspaces ?? []) ws.dependencies.forEach(add);
+  return names;
+}
+
+/**
+ * True when `pnpm|yarn|bun <name>` would run an installed binary:
+ *  - a workspace package exposes it (`bin`);
+ *  - a dependency is literally named `<name>`; or
+ *  - `<name>` is a well-known tool binary AND a package providing it is declared.
+ *
+ * When workspace discovery is absent or was truncated the declared packages are
+ * not the whole picture, so a well-known tool binary is accepted unconditionally.
+ */
+export function isKnownBinary(context: RepoContext, name: string): boolean {
+  if ((context.workspaces ?? []).some((ws) => ws.bins.includes(name))) return true;
+  const installed = installedPackages(context);
+  if (installed.has(name)) return true;
+  const providers = BIN_PROVIDERS[name];
+  if (!providers) return false;
+  if (context.workspaces === undefined || context.workspacesTruncated) return true;
+  return providers.some((provider) => installed.has(provider));
 }
 
 /** True when the root manifest or any workspace package defines the script. */
@@ -252,13 +323,25 @@ export function anyWorkspaceHasScript(context: RepoContext, name: string): boole
   return (context.workspaces ?? []).some((ws) => !!ws.scripts[name]);
 }
 
-/** Find workspace manifests a pnpm/npm/yarn selector (name, path, or glob) refers to. */
+/**
+ * Workspaces a pnpm/npm/yarn selector (package name, path, or glob) refers to.
+ * `*`, `**` and exclusion/dependents selectors (`!web`, `[origin/main]`) select
+ * every workspace — they cannot be evaluated statically, so stay permissive.
+ */
 export function selectWorkspaces(context: RepoContext, selector: string): WorkspaceManifest[] {
   const workspaces = context.workspaces ?? [];
-  // `*` / `[since]` / `...dependents` style selectors span many packages; be permissive.
-  if (/[*[]/.test(selector)) return workspaces;
+  if (selector === '*' || selector === '**' || selector.startsWith('!') || selector.startsWith('[')) {
+    return workspaces;
+  }
   const posix = selector.replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/+$/, '');
+  const options = { dot: true };
   return workspaces.filter(
-    (ws) => ws.name === selector || ws.dir === posix || ws.dir.endsWith(`/${posix}`),
+    (ws) =>
+      ws.name === selector ||
+      ws.dir === posix ||
+      ws.dir.endsWith(`/${posix}`) ||
+      (/[*?[{]/.test(selector) &&
+        ((ws.name !== undefined && micromatch.isMatch(ws.name, selector, options)) ||
+          micromatch.isMatch(ws.dir, posix, options))),
   );
 }

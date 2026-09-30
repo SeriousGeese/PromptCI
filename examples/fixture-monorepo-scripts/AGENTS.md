@@ -26,5 +26,3 @@ Playwright runs through the `web` workspace: `pnpm --filter web test:e2e`.
 ```bash
 pnpm run release:nightly
 ```
-
-Afterwards, pnpm run release:nightly to publish.

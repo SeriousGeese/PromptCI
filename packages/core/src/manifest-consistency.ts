@@ -544,9 +544,19 @@ function checkMissingScripts(context: RepoContext): PromptCiIssue[] {
   // can be told apart from a bare `pnpm <token>` — the latter needs code
   // context before it counts as an invocation.
   const SCRIPT_RUN_RE = /\b(npm|yarn|pnpm|bun)\s+(run(?:-script)?\s+)?([a-z0-9][a-z0-9:_-]*)\b/gi;
-  // A `cd <dir>`, `--filter`, `--cwd`, `-C`, `--prefix`, `-w`/`--workspace(s)` or `-r` earlier on the
-  // line means the script is resolved somewhere other than the root manifest.
-  const SCOPED_INVOCATION_RE = /\bcd\s+\S|--filter\b|\s-F\s|--cwd\b|\s-C\s|--prefix\b|\s-w\s|--workspaces?\b|\s-ws\b|\s-r\s|--recursive\b/;
+  // Only the scope that governs THIS command counts: a `cd <dir> &&` chained
+  // directly before it, or a workspace/directory flag later in the same command
+  // (`npm run build -w web`). A `-r` or `cd` belonging to an earlier command on
+  // the line says nothing about this one.
+  const CD_CHAIN_BEFORE_RE = /\bcd\s+\S+\s*&&\s*(?:[^&;|\n]*&&\s*)*$/;
+  const SCOPE_FLAG_RE = /(?:^|\s)(?:--filter\b|-F\b|--cwd\b|-C\b|--prefix\b|--dir\b|-w\b|--workspaces?\b|-ws\b|-r\b|--recursive\b)/;
+  const isScopedInvocation = (content: string, matchStart: number, matchEnd: number): boolean => {
+    const lineStart = content.lastIndexOf('\n', matchStart - 1) + 1;
+    if (CD_CHAIN_BEFORE_RE.test(content.slice(lineStart, matchStart))) return true;
+    const newline = content.indexOf('\n', matchEnd);
+    const after = content.slice(matchEnd, newline === -1 ? undefined : newline);
+    return SCOPE_FLAG_RE.test(after.split(/&&|\|\||;|\||`|,\s|\.\s|\bthen\b/)[0]!);
+  };
 
   const reported = new Set<string>();
 
@@ -613,7 +623,11 @@ function checkMissingScripts(context: RepoContext): PromptCiIssue[] {
       }
 
       if (!availableScripts.has(scriptName)) {
-        if (evaluatedByCommandValidity?.has(scriptName)) continue;
+        // This exact occurrence was already judged by command-validity.
+        if (evaluatedByCommandValidity?.size) {
+          const line = file.content.slice(0, match.index).split('\n').length;
+          if (evaluatedByCommandValidity.has(`${line}:${scriptName}`)) continue;
+        }
         // A script defined by a workspace package (monorepo) is runnable via
         // `--filter`/`-r`/`cd`; the root manifest is not the only place to look.
         if (anyWorkspaceHasScript(context, scriptName)) continue;
@@ -621,8 +635,7 @@ function checkMissingScripts(context: RepoContext): PromptCiIssue[] {
         // (`npm run` and `pnpm run` accept scripts only.)
         const scriptsOnly = explicitRun && (packageManager === 'npm' || packageManager === 'pnpm');
         if (!scriptsOnly && isKnownBinary(context, scriptName)) continue;
-        const lineStart = file.content.lastIndexOf('\n', match.index - 1) + 1;
-        if (SCOPED_INVOCATION_RE.test(file.content.slice(lineStart, match.index + match[0].length))) continue;
+        if (isScopedInvocation(file.content, match.index, match.index + match[0].length)) continue;
 
         const dedupeKey = `${file.path}:${scriptName}`;
         if (reported.has(dedupeKey)) continue;

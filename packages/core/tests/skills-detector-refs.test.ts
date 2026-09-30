@@ -71,6 +71,13 @@ describe('skill references resolve from the skill directory or the repo root', (
     expect(finding!.evidence.join(' ')).toContain('Docs/gone.md');
   });
 
+  it('does not treat .claude/ as a plugin root', () => {
+    const dir = repo();
+    writeFile(dir, '.claude/scripts/deploy.sh', '#!/bin/sh');
+    skill(dir, ['Run `scripts/deploy.sh`.']);
+    expect(deadRefs(dir)).toEqual(['scripts/deploy.sh']);
+  });
+
   it('resolves a plugin skill against its plugin root too', () => {
     const dir = repo();
     writeFile(dir, 'plugins/p/scripts/tool.sh', '#!/bin/sh');
@@ -97,10 +104,20 @@ describe('leading-slash references are repo-root-relative', () => {
     expect(deadRefs(dir)).toEqual(['/Docs/gone.md']);
   });
 
-  it('ignores a leading-slash path whose first segment is not in the repo (system path)', () => {
+  it('ignores a leading-slash path under a well-known OS root (system path)', () => {
     const dir = repo();
-    skill(dir, ['Logs go to `/var/log/app/output.log`; the binary is `/usr/local/bin/tool.sh`.']);
+    skill(dir, [
+      'Logs go to `/var/log/app/output.log`; the binary is `/usr/local/bin/tool.sh`.',
+      'Config: `/etc/app/app.conf.yaml`, `/Users/me/x.json`, `/home/me/y.json`, `/tmp/z.json`.',
+    ]);
     expect(deadRefs(dir)).toEqual([]);
+  });
+
+  it('checks a leading-slash path even when its top directory no longer exists (renamed/deleted)', () => {
+    const dir = repo();
+    writeFile(dir, 'Docs/contract.md', '# contract');
+    skill(dir, ['See `/docs-old/guide.md`.']);
+    expect(deadRefs(dir)).toEqual(['/docs-old/guide.md']);
   });
 
   it('extractFileRefs keeps leading-slash paths and still drops URLs and protocol-relative links', () => {
@@ -120,6 +137,31 @@ describe('paths that are not part of a checkout are not dead references', () => 
     expect(deadRefs(dir)).toEqual([]);
   });
 
+  it.each([
+    'Do not edit generated files; run `scripts/regen.py` instead.',
+    "Don't forget to update `docs/CHANGELOG.md`.",
+    'Never skip `scripts/validate.sh` before merging.',
+    'Avoid the old flow; follow `Docs/new-flow.md`.',
+    'You should not commit early; read `docs/policy.md` first.',
+    'Run `scripts/regen.py`.',
+  ])('still checks a ref on a line that merely contains a prohibition: %s', (body) => {
+    const dir = repo();
+    skill(dir, [body]);
+    expect(deadRefs(dir)).toHaveLength(1);
+  });
+
+  it.each([
+    'Never commit `out/report.html`.',
+    "Don't stage `out/report.html` or `out/other.html`.",
+    'You must not check in `out/report.html`.',
+    'Never ever push `out/report.html`',
+    'Do not accidentally add the local `out/report.html` file.',
+  ])('skips a file the line forbids committing: %s', (body) => {
+    const dir = repo();
+    skill(dir, [body]);
+    expect(deadRefs(dir)).toEqual([]);
+  });
+
   it('skips files the repository ignores (root and nested .gitignore)', () => {
     const dir = repo();
     writeFile(dir, '.gitignore', '*.db\n/data/\n');
@@ -127,6 +169,18 @@ describe('paths that are not part of a checkout are not dead references', () => 
     writeFile(dir, 'data/.keep', '');
     skill(dir, ['Reads `.beads/issues.jsonl`, `var/app.db` and `/data/app.sqlite`, plus `docs/gone.md`.']);
     expect(deadRefs(dir)).toEqual(['docs/gone.md']);
+  });
+});
+
+describe('a missing frontmatter block is a portability warning', () => {
+  it('is warning severity and names strict loaders rather than claiming the skill will not load', () => {
+    const dir = repo();
+    writeFile(dir, '.claude/skills/demo/SKILL.md', '# no frontmatter');
+    const finding = detectSkills(ctx(dir)).find((i) => i.title.includes('missing YAML frontmatter'));
+    expect(finding).toBeDefined();
+    expect(finding!.severity).toBe('warning');
+    expect(finding!.summary).toContain('Codex');
+    expect(finding!.summary).not.toContain('will not load');
   });
 });
 
@@ -151,6 +205,47 @@ describe('createGitIgnoreChecker', () => {
     for (const [rel, content] of Object.entries(files)) writeFile(dir, rel, content);
     return createGitIgnoreChecker(dir);
   }
+
+  // [.gitignore content, path, what git does]. Escapes, braces and extglobs are
+  // literal in gitignore; a leading `!` after a backslash is NOT a negation.
+  it.each<[string, string, boolean]>([
+    ['\\!important.txt', 'docs/gone.md', false],
+    ['\\!important.txt', '!important.txt', true],
+    ['\\#file.md', '#file.md', true],
+    ['#notacomment', 'x.md', false],
+    ['{docs,src}', 'docs/gone.md', false],
+    ['{docs,src}', '{docs,src}/x.md', true],
+    ['+(a|b).md', 'a.md', false],
+    ['+(a|b).md', '+(a|b).md', true],
+    ['!(x).md', 'y.md', false],
+    ['@(docs)', 'docs/gone.md', false],
+    ['foo/**', 'foo/bar.md', true],
+    ['foo/**', 'foo', false],
+    ['**/baz.md', 'a/b/baz.md', true],
+    ['**/baz.md', 'baz.md', true],
+    ['a/**/b', 'a/b', true],
+    ['a/**/b', 'a/x/y/b', true],
+    ['doc/**/*.pdf', 'doc/a/b/x.pdf', true],
+    ['[Dd]ebug/', 'src/Debug/x.cs', true],
+    ['[!a]x.md', 'bx.md', true],
+    ['[!a]x.md', 'ax.md', false],
+    ['?.md', 'a.md', true],
+    ['?.md', 'ab.md', false],
+    ['*.log', 'logs.log/keep.md', true],
+    ['foo\\ ', 'foo /x.md', true],
+    ['/*\n!/docs', 'docs/gone.md', false],
+    ['*.md\n!docs/*.md', 'docs/gone.md', false],
+    ['*', 'docs/gone.md', true],
+    ['[', 'x.md', false], // malformed class is skipped, not thrown on
+  ])('git semantics: rules %j, path %s -> ignored=%s', (rules, p, expected) => {
+    expect(checker({ '.gitignore': rules })(p)).toBe(expected);
+  });
+
+  it('lets a nested !negation re-include a file ignored by the root', () => {
+    const ignored = checker({ '.gitignore': '*.md\n', 'sub/.gitignore': '!keep.md\n' });
+    expect(ignored('sub/keep.md')).toBe(false);
+    expect(ignored('sub/other.md')).toBe(true);
+  });
 
   it('matches basename globs at any depth, anchored paths, and directory rules', () => {
     const ignored = checker({ '.gitignore': '*.log\n/build\nnode_modules/\ndocs/*.tmp\n# comment\n' });

@@ -45,18 +45,6 @@ export function isFileWithinRoot(repoRoot: string, relativePath: string): boolea
   }
 }
 
-/** True when a repo-relative path exists (file or directory) without escaping the repo. */
-export function existsWithinRoot(repoRoot: string, relativePath: string): boolean {
-  const abs = resolveWithinRoot(repoRoot, relativePath);
-  if (!abs) return false;
-  try {
-    fs.statSync(abs);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 /** Read a repo-relative text file, or `undefined` if it is absent/unreadable. */
 export function readTextWithinRoot(repoRoot: string, relativePath: string): string | undefined {
   const abs = resolveWithinRoot(repoRoot, relativePath);

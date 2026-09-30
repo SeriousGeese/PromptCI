@@ -10,9 +10,14 @@
  * a shallower one, and a file under an ignored directory is ignored. It does not
  * read `.git/info/exclude` or the user's global excludes file — only what the
  * repository itself commits.
+ *
+ * Patterns are translated to regular expressions with gitignore's own glob
+ * dialect (`*`, `?`, `[...]`, `**`, backslash escapes). They are deliberately
+ * NOT handed to a general-purpose glob library: braces, extglobs (`+(a|b)`),
+ * a leading `!` after an escape, and `#` mean something different there than
+ * they do to git, which treats them literally.
  */
 
-import micromatch from 'micromatch';
 import { readTextWithinRoot } from './ai-config.js';
 
 type Rule = {
@@ -20,20 +25,81 @@ type Rule = {
   dirOnly: boolean;
   /** Contains a slash (other than a trailing one): matched against the path below the ignore file. */
   anchored: boolean;
-  glob: string;
+  regex: RegExp;
 };
+
+function escapeRegex(ch: string): string {
+  return /[\\^$.*+?()[\]{}|/]/.test(ch) ? `\\${ch}` : ch;
+}
+
+/** Translate a gitignore glob (no leading `/`, no trailing `/`) to an anchored RegExp source. */
+function globToRegexSource(glob: string): string {
+  let out = '';
+  let i = 0;
+  while (i < glob.length) {
+    const ch = glob[i]!;
+    if (ch === '\\') {
+      // A backslash makes the next character literal.
+      if (i + 1 < glob.length) out += escapeRegex(glob[i + 1]!);
+      i += 2;
+    } else if (ch === '*') {
+      if (glob[i + 1] === '*') {
+        const atStart = i === 0 || glob[i - 1] === '/';
+        let end = i + 2;
+        while (glob[end] === '*') end++;
+        if (atStart && glob[end] === '/') {
+          out += '(?:.*/)?'; // `**/` — zero or more directories
+          i = end + 1;
+        } else if (atStart && end === glob.length) {
+          out += '.*'; // trailing `/**` (the slash is already emitted) — everything below
+          i = end;
+        } else {
+          out += '[^/]*'; // `**` not bounded by slashes behaves like `*`
+          i = end;
+        }
+      } else {
+        out += '[^/]*';
+        i++;
+      }
+    } else if (ch === '?') {
+      out += '[^/]';
+      i++;
+    } else if (ch === '[') {
+      const close = glob.indexOf(']', i + 2); // `[]x]` / `[!]x]` make the first `]` a member
+      if (close === -1) {
+        out += '\\[';
+        i++;
+      } else {
+        let body = glob.slice(i + 1, close);
+        let negated = false;
+        if (body.startsWith('!') || body.startsWith('^')) {
+          negated = true;
+          body = body.slice(1);
+        }
+        body = body.replace(/[\\^\]]/g, (c) => `\\${c}`);
+        out += `[${negated ? '^' : ''}${body}]`;
+        i = close + 1;
+      }
+    } else {
+      out += escapeRegex(ch);
+      i++;
+    }
+  }
+  return out;
+}
 
 function parseRules(content: string): Rule[] {
   const rules: Rule[] = [];
   for (const raw of content.split(/\r?\n/)) {
+    // Unescaped trailing spaces are dropped; `foo\ ` keeps its space.
     let line = raw.replace(/(?<!\\)[ \t]+$/, '');
-    if (line === '' || line.startsWith('#')) continue;
+    if (line === '' || line.startsWith('#')) continue; // `\#file` starts with a backslash, not `#`
     let negate = false;
     if (line.startsWith('!')) {
       negate = true;
       line = line.slice(1);
     }
-    if (line.startsWith('\\')) line = line.slice(1); // `\#file`, `\!file`
+    // `\!file` and `\#file`: the backslash stays in the glob, where it reads as an escape.
     let dirOnly = false;
     if (line.endsWith('/')) {
       dirOnly = true;
@@ -42,7 +108,11 @@ function parseRules(content: string): Rule[] {
     const anchored = line.includes('/');
     line = line.replace(/^\//, '');
     if (line === '') continue;
-    rules.push({ negate, dirOnly, anchored, glob: line });
+    try {
+      rules.push({ negate, dirOnly, anchored, regex: new RegExp(`^${globToRegexSource(line)}$`) });
+    } catch {
+      // An unparseable pattern is skipped, as git would warn about and ignore it.
+    }
   }
   return rules;
 }
@@ -50,7 +120,7 @@ function parseRules(content: string): Rule[] {
 function ruleMatches(rule: Rule, pathBelowIgnoreFile: string, isDir: boolean): boolean {
   if (rule.dirOnly && !isDir) return false;
   const target = rule.anchored ? pathBelowIgnoreFile : pathBelowIgnoreFile.split('/').pop()!;
-  return micromatch.isMatch(target, rule.glob, { dot: true });
+  return rule.regex.test(target);
 }
 
 /** Build a checker over one repository; ignore files are read lazily and once each. */

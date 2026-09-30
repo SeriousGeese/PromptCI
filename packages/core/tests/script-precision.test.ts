@@ -84,10 +84,57 @@ describe('dependency binaries are not missing scripts', () => {
     expect(scriptFindings(issues)).toEqual([]);
   });
 
-  it('does not flag well-known tool binaries even when no manifest lists them', async () => {
+  it('accepts a well-known tool binary when a package providing it is declared', async () => {
+    const issues = await scanRepo({
+      'package.json': pkg({
+        name: 'app',
+        scripts: { build: 'tsc -b' },
+        devDependencies: { '@playwright/test': '^1.50.0', turbo: '^2.0.0', '@biomejs/biome': '^1.9.0' },
+      }),
+      'AGENTS.md': '# Agents\n\nRun `pnpm playwright test`, `pnpm turbo run build` and `pnpm biome check .`.\n',
+    });
+    expect(scriptFindings(issues)).toEqual([]);
+  });
+
+  it('flags a well-known tool binary that nothing in the workspace installs', async () => {
     const issues = await scanRepo({
       'package.json': pkg({ name: 'app', scripts: { build: 'tsc -b' } }),
-      'AGENTS.md': '# Agents\n\nRun `pnpm playwright test` and `pnpm turbo run build`.\n',
+      'AGENTS.md': '# Agents\n\n```bash\npnpm prisma migrate deploy\npnpm next build\npnpm storybook\npnpm turbopack\n```\n',
+    });
+    const summaries = scriptFindings(issues).map((i) => i.summary).join('\n');
+    for (const name of ['prisma', 'next', 'storybook', 'turbopack']) {
+      expect(summaries).toContain(`pnpm script "${name}"`);
+    }
+  });
+
+  it('does not treat @types/*, scoped basenames or sibling workspace packages as binaries', async () => {
+    const issues = await scanRepo({
+      'package.json': pkg({
+        name: 'root',
+        scripts: { build: 'turbo build' },
+        devDependencies: { '@types/node': '1', '@trpc/server': '1' },
+      }),
+      'pnpm-workspace.yaml': 'packages:\n  - "apps/*"\n  - "packages/*"\n',
+      'apps/web/package.json': pkg({
+        name: '@acme/web',
+        dependencies: { '@acme/db': 'workspace:*', '@acme/e2e': 'workspace:*' },
+      }),
+      'packages/db/package.json': pkg({ name: '@acme/db', scripts: { generate: 'x' } }),
+      'packages/e2e/package.json': pkg({ name: '@acme/e2e', scripts: { test: 'x' } }),
+      'AGENTS.md': '# Agents\n\n```bash\npnpm node\npnpm server\npnpm db\npnpm e2e\npnpm web\n```\n',
+    });
+    const summaries = scriptFindings(issues).map((i) => i.summary).join('\n');
+    for (const name of ['node', 'server', 'db', 'e2e', 'web']) {
+      expect(summaries).toContain(`pnpm script "${name}"`);
+    }
+  });
+
+  it('still accepts a dependency literally named like the command, and workspace package bins', async () => {
+    const issues = await scanRepo({
+      'package.json': pkg({ name: 'root', scripts: { build: 'x' }, devDependencies: { 'my-cli': '1' } }),
+      'pnpm-workspace.yaml': 'packages:\n  - "tools/*"\n',
+      'tools/gen/package.json': pkg({ name: '@acme/gen', bin: { 'acme-gen': './bin.js' } }),
+      'AGENTS.md': '# Agents\n\n```bash\npnpm my-cli --help\npnpm acme-gen\n```\n',
     });
     expect(scriptFindings(issues)).toEqual([]);
   });
@@ -253,6 +300,124 @@ describe('npm run-script and bun run', () => {
     expect(summaries).toHaveLength(2);
     expect(summaries.some((s) => s.includes('bun script "nope"'))).toBe(true);
     expect(summaries.some((s) => s.includes('scripts/missing.ts'))).toBe(true);
+  });
+});
+
+describe('workspace selectors resolve only against the selected workspaces', () => {
+  const files = {
+    'package.json': pkg({ name: 'root', scripts: { build: 'turbo build', lint: 'eslint .' } }),
+    'pnpm-workspace.yaml': 'packages:\n  - "apps/*"\n',
+    'apps/web/package.json': pkg({ name: '@acme/web', scripts: { dev: 'next dev' } }),
+  };
+
+  it('flags a selector that matches no workspace even when the root defines the script', async () => {
+    const issues = await scanRepo({
+      ...files,
+      'AGENTS.md': [
+        '# Agents',
+        '',
+        '```bash',
+        'yarn workspace @acme/nope build',
+        'pnpm --filter @acme/nope build',
+        'npm run build -w nope',
+        '```',
+      ].join('\n'),
+    });
+    const summaries = scriptFindings(issues).map((i) => i.summary);
+    expect(summaries).toHaveLength(3);
+    expect(summaries.every((s) => s.includes('no workspace matches'))).toBe(true);
+    expect(summaries.some((s) => s.includes('@acme/nope'))).toBe(true);
+  });
+
+  it('does not let a same-named root script stand in for the selected workspace, and names the workspace', async () => {
+    const issues = await scanRepo({
+      ...files,
+      'AGENTS.md': '# Agents\n\n```bash\nyarn workspace @acme/web lint\npnpm --filter @acme/web lint\npnpm --filter @acme/web dev\n```\n',
+    });
+    const summaries = scriptFindings(issues).map((i) => i.summary);
+    expect(summaries).toHaveLength(2);
+    expect(summaries.every((s) => s.includes('@acme/web (apps/web/package.json)'))).toBe(true);
+  });
+
+  it('keeps matching by directory, glob and exclusion selectors', async () => {
+    const issues = await scanRepo({
+      ...files,
+      'AGENTS.md': '# Agents\n\n```bash\npnpm --filter ./apps/web dev\npnpm --filter "@acme/*" dev\npnpm --filter "!@acme/other" dev\n```\n',
+    });
+    expect(scriptFindings(issues)).toEqual([]);
+  });
+});
+
+describe('workspace discovery', () => {
+  it('does not follow workspace globs out of the repository', async () => {
+    const repo = makeTempRepo('promptci-scripts-');
+    const sibling = `${repo}-outside`;
+    tempRepos.push(repo, sibling);
+    writeFile(sibling, 'pkgx/package.json', pkg({ name: 'outside', scripts: { 'secret-script': 'x' } }));
+    writeFile(repo, 'package.json', pkg({
+      name: 'root',
+      scripts: { build: 'x' },
+      workspaces: [`../${path.basename(sibling)}/*`, `/${path.basename(sibling)}/*`],
+    }));
+    writeFile(repo, 'AGENTS.md', '# Agents\n\n```bash\npnpm -r secret-script\n```\n');
+    const findings = scriptFindings(await scanIssues(repo));
+    expect(findings).toHaveLength(1);
+    expect(findings[0]!.summary).toContain('secret-script');
+  });
+
+  it.each([
+    ['block list at column 0', 'packages:\n- "services/*"\n'],
+    ['block list, single quotes, comment', "packages:\n  - 'services/*' # api\n"],
+    ['flow list', "packages: ['services/*']\n"],
+    ['multi-line flow list', 'packages: [\n  "services/*",\n  "tools/*"\n]\n'],
+  ])('reads pnpm-workspace.yaml: %s', async (_label, yaml) => {
+    const issues = await scanRepo({
+      'package.json': pkg({ name: 'root', scripts: { build: 'x' } }),
+      'pnpm-workspace.yaml': yaml,
+      'services/api/package.json': pkg({ name: 'api', scripts: { migrate: 'x' } }),
+      'AGENTS.md': '# Agents\n\n```bash\npnpm --filter api migrate\n```\n',
+    });
+    expect(scriptFindings(issues)).toEqual([]);
+  });
+
+  it('keeps a declared workspace package that lives under a directory named build', async () => {
+    const issues = await scanRepo({
+      'package.json': pkg({ name: 'root', scripts: { build: 'x' }, workspaces: ['tools/*'] }),
+      'tools/build/package.json': pkg({ name: 'buildtool', scripts: { bundle: 'x' } }),
+      'AGENTS.md': '# Agents\n\n```bash\npnpm --filter buildtool bundle\n```\n',
+    });
+    expect(scriptFindings(issues)).toEqual([]);
+  });
+});
+
+describe('manifest-missing-script judges each occurrence on its own', () => {
+  const manifest = pkg({ name: 'app', scripts: { build: 'tsc -b' } });
+
+  it('still flags a prose mention when an uncheckable command elsewhere used the same script name', async () => {
+    const issues = await scanRepo({
+      'package.json': manifest,
+      // `services/api` has no package.json, so command-validity cannot judge the first command.
+      'AGENTS.md': '# Agents\n\n`cd services/api && pnpm run deploy-prod`\n\nLater, npm run deploy-prod again.\n',
+    });
+    const findings = scriptFindings(issues);
+    expect(findings).toHaveLength(1);
+    expect(findings[0]!.id.startsWith('manifest-missing-script')).toBe(true);
+  });
+
+  it('does not let a -r or cd from an earlier command on the line excuse this one', async () => {
+    const issues = await scanRepo({
+      'package.json': manifest,
+      'AGENTS.md': '# Agents\n\nFirst pnpm -r build, then afterwards npm run deploy-prod to ship.\n',
+    });
+    expect(scriptFindings(issues)).toHaveLength(1);
+  });
+
+  it('honors a scope that governs the command: a cd chained right before it, or a workspace flag after it', async () => {
+    const issues = await scanRepo({
+      'package.json': manifest,
+      'AGENTS.md': '# Agents\n\nThen cd apps/web && npm run deploy-prod to ship.\n\nAlso npm run other-prod -w web works.\n',
+    });
+    expect(scriptFindings(issues)).toEqual([]);
   });
 });
 

@@ -21,7 +21,6 @@ import {
   parseFrontmatter,
   readTextWithinRoot,
   isFileWithinRoot,
-  existsWithinRoot,
   shortHash,
   toPosix,
   withScannerPaths,
@@ -38,8 +37,12 @@ const MIN_DESCRIPTION_CHARS = 12;
 const SURFACE: FrontmatterSurface = {
   idPrefix: 'skill',
   noun: 'Skill',
-  why: 'A skill needs `name` and `description` frontmatter or it will not load.',
+  why:
+    'Claude Code treats frontmatter as optional, but strict Agent Skills loaders (for example Codex) skip ' +
+    'a skill without `name` and `description`.',
   recommendation: 'Add a frontmatter block with `name` and `description` at the top of the SKILL.md file.',
+  // Optional for Claude Code itself, so a missing block is a portability warning, not a hard break.
+  noFrontmatterSeverity: 'warning',
 };
 
 type ParsedSkill = {
@@ -111,26 +114,56 @@ export function extractFileRefs(content: string): Array<{ ref: string; line: num
  * Repo-relative paths a skill's file reference may resolve to, in lookup order,
  * or `undefined` when the reference should not be checked at all.
  *
- *  - `/Docs/x.md` is repo-root-relative. It is only checked when its first
- *    segment exists at the repo root; otherwise it is an absolute system path
- *    (`/usr/local/bin/tool.sh`) that says nothing about this repository.
+ *  - `/Docs/x.md` is repo-root-relative and is always checked, unless its first
+ *    segment is a well-known OS root (`/usr/local/bin/tool.sh`): an absolute
+ *    system path says nothing about this repository.
  *  - `scripts/x.py` is looked up beside the SKILL.md, then (for a
  *    `…/skills/<name>/` layout) at the plugin root, then at the repo root.
  */
-function resolutionCandidates(repoRoot: string, skillDir: string, ref: string): string[] | undefined {
+function resolutionCandidates(skillDir: string, ref: string): string[] | undefined {
   if (ref.startsWith('/')) {
     const rooted = ref.slice(1);
-    return existsWithinRoot(repoRoot, rooted.split('/')[0]!) ? [rooted] : undefined;
+    return SYSTEM_ROOTS.has(rooted.split('/')[0]!) ? undefined : [rooted];
   }
+  // `.claude/` and `.agents/` are skill containers, not plugin roots.
   const pluginRoot = /^(.*?)\/?skills\/[^/]+$/.exec(skillDir)?.[1];
-  const bases = [skillDir, ...(pluginRoot ? [pluginRoot] : []), '.'];
+  const isPlugin = pluginRoot && pluginRoot !== '.claude' && pluginRoot !== '.agents';
+  const bases = [skillDir, ...(isPlugin ? [pluginRoot] : []), '.'];
   return [...new Set(bases.map((b) => (b === '.' || b === '' ? ref : `${b}/${ref}`)))];
 }
 
 // ── Detector ──────────────────────────────────────────────────────────────────
 
-/** A line telling the reader NOT to touch a file ("never commit `.beads/issues.jsonl`") is not a claim that it exists. */
-const PROHIBITION_RE = /\b(?:do\s+not|don'?t|never|avoid|must\s+not|should\s+not|shouldn'?t)\b/i;
+/** First path segments of absolute OS paths; a leading-slash ref under one is not a repo file. */
+const SYSTEM_ROOTS: ReadonlySet<string> = new Set([
+  'usr', 'var', 'etc', 'opt', 'tmp', 'home', 'Users', 'Library', 'bin', 'sbin', 'dev', 'proc', 'mnt',
+  'private', 'System',
+]);
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * "Never commit `.beads/issues.jsonl`", "do not stage `out/report.html`": a
+ * prohibition on committing a file is not a claim that it exists. Deliberately
+ * narrow — the prohibition must be directly followed by commit/stage/check in/
+ * add/push/track and the ref must be that verb's object (possibly one of a
+ * short list). "Never skip `scripts/validate.sh`" or "don't edit generated
+ * files; run `scripts/regen.py`" still ask the reader to use the file.
+ */
+function isCommitProhibition(lineText: string, ref: string): boolean {
+  const bt = '`';
+  const gap = `[^${bt};\\n]{0,40}`; // a few words, never crossing a backtick or clause boundary
+  const re = new RegExp(
+    `\\b(?:do\\s+not|don'?t|never|must\\s+not|should\\s+not|shouldn'?t)\\s+(?:\\w+\\s+)?` +
+      `(?:commit|stage|check\\s+in|add|push|track)\\b` +
+      // up to a few earlier backticked items of the same list, then the ref itself
+      `(?:${gap}${bt}[^${bt}\\n]{1,100}${bt}){0,4}${gap}${bt}?${escapeRegExp(ref)}`,
+    'i',
+  );
+  return re.test(lineText);
+}
 
 export function detectSkills(context: RepoContext): PromptCiIssue[] {
   const issues: PromptCiIssue[] = [];
@@ -209,13 +242,13 @@ export function detectSkills(context: RepoContext): PromptCiIssue[] {
       // Files that are not part of a checkout by nature: the reader's home
       // directory, git internals, and "never commit `X`"-style prohibitions.
       if (isHomeRooted(ref) || /^\/?\.git\//.test(ref)) continue;
-      if (PROHIBITION_RE.test(bodyLines[line - 1] ?? '')) continue;
-      const candidates = resolutionCandidates(context.repoRoot, skillDir, ref);
+      const candidates = resolutionCandidates(skillDir, ref);
       if (!candidates) continue; // e.g. `/usr/bin/tool.sh` — a system path, not a repo file
       if (candidates.some((candidate) => isFileWithinRoot(context.repoRoot, candidate))) continue;
       // Local/generated state the repo's own ignore rules say is never checked in.
       isIgnored ??= createGitIgnoreChecker(context.repoRoot);
       if (candidates.some((candidate) => isIgnored!(candidate))) continue;
+      if (isCommitProhibition(bodyLines[line - 1] ?? '', ref)) continue;
       const leadingSlash = ref.startsWith('/');
       issues.push(base({
         id: id('dead-ref', filePath, ref),
