@@ -7,7 +7,7 @@ import { loadConfig } from '../config.js';
 /**
  * `promptci score` — the zero-signup, zero-footprint teaser.
  *
- * Scans locally and prints one overall score plus the three highest-confidence
+ * Scans locally and prints one overall score plus the three highest-severity
  * findings. Unlike `promptci scan` it writes NOTHING (no `.promptci/` reports,
  * no history archive) and, in cli.ts, skips the once-a-day npm version probe,
  * so the whole path is offline and read-only. It stores no report and has no
@@ -32,9 +32,9 @@ const SEVERITY_RANK: Record<IssueSeverity, number> = {
 };
 
 /**
- * The `count` highest-confidence findings: confidence descending, then
- * severity descending, then id for a stable, deterministic tie-break.
- * Unlike `scan`'s "Top fixes" this does not dedupe by category, so the list is
+ * The `count` top findings: severity descending, then confidence descending,
+ * then id for a stable, deterministic tie-break. Same leading order as
+ * `scan`'s "Top fixes", but without its one-per-category dedupe, so the list is
  * always exactly min(count, issues.length) long.
  */
 export function selectTopFindings(
@@ -44,8 +44,8 @@ export function selectTopFindings(
   return [...issues]
     .sort(
       (a, b) =>
-        b.confidence - a.confidence ||
         SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity] ||
+        b.confidence - a.confidence ||
         a.id.localeCompare(b.id),
     )
     .slice(0, count);
@@ -92,7 +92,7 @@ export function formatScoreTeaser(report: ScanReport): string {
     const top = selectTopFindings(report.issues);
     lines.push('');
     lines.push(
-      `Top ${top.length} finding${top.length === 1 ? '' : 's'} by confidence (of ${n}):`,
+      `Top ${top.length} finding${top.length === 1 ? '' : 's'} (of ${n}):`,
     );
     top.forEach((issue, i) => {
       const at = locationOf(issue, report.repoPath);

@@ -71,7 +71,7 @@ promptci --help
 ## `score`: the zero-footprint teaser
 
 `promptci score` (and a bare `promptci` / `npx @promptci/cli`) scans the directory and prints one
-overall score plus the three highest-confidence findings, then a single pointer line to the hosted
+overall score plus the three top findings, then a single pointer line to the hosted
 dashboard. Sample output is in the [README quickstart](../README.md#quickstart).
 
 - **No network.** It also skips the once-a-day npm version check that other commands run.
@@ -79,9 +79,9 @@ dashboard. Sample output is in the [README quickstart](../README.md#quickstart).
   an existing `.promptci/config.json` (same `include`, `exclude`, `projectType`, budgets, and
   `targetModel` as `scan`, so the two commands report the same score).
 - **No account or upload.** Nothing is sent anywhere and nothing is stored.
-- **Ranking.** Findings are ordered by confidence, then severity, then id (deterministic), and are
-  not de-duplicated by category. `scan`'s "Top fixes" ranks severity first and keeps one per
-  category, so the two lists can differ.
+- **Ranking.** Findings are ordered by severity, then confidence, then id (deterministic), and are
+  not de-duplicated by category. `scan`'s "Top fixes" uses the same leading order but keeps only
+  one finding per category, so the two lists can differ when a category has several top findings.
 - **Exit codes.** `0` after printing a score, or "nothing to score" when no instruction files are
   found, whatever the findings. `1` for a missing or non-directory `--path`, or an unreadable
   `.promptci/config.json`. To gate CI, use `scan --fail-on <severity>` or `review-diff`.

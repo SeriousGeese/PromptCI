@@ -67,20 +67,31 @@ function snapshot(dir: string): string[] {
 }
 
 describe('selectTopFindings', () => {
-  it('orders by confidence, then severity, then id, and returns exactly 3', () => {
+  it('orders by severity, then confidence, then id, and returns exactly 3', () => {
     const top = selectTopFindings([
+      issue({ id: 'a', confidence: 0.99, severity: 'info' }),
+      issue({ id: 'c', confidence: 0.7, severity: 'high' }),
       issue({ id: 'e', confidence: 0.6, severity: 'critical' }),
-      issue({ id: 'a', confidence: 0.9, severity: 'info' }),
-      issue({ id: 'b', confidence: 0.9, severity: 'high' }),
       issue({ id: 'd', confidence: 0.9, severity: 'high' }),
-      issue({ id: 'c', confidence: 0.7, severity: 'warning' }),
+      issue({ id: 'b', confidence: 0.9, severity: 'high' }),
+      issue({ id: 'w', confidence: 0.95, severity: 'warning' }),
     ]);
-    expect(top.map((i) => i.id)).toEqual(['b', 'd', 'a']);
+    // critical first even at low confidence; ties on high break by confidence, then id.
+    expect(top.map((i) => i.id)).toEqual(['e', 'b', 'd']);
     expect(top).toHaveLength(TOP_FINDINGS_COUNT);
   });
 
+  it('does not dedupe by category', () => {
+    const top = selectTopFindings([
+      issue({ id: '1', category: 'duplicate', severity: 'high' }),
+      issue({ id: '2', category: 'duplicate', severity: 'high' }),
+      issue({ id: '3', category: 'duplicate', severity: 'high' }),
+    ]);
+    expect(top).toHaveLength(3);
+  });
+
   it('does not mutate its input and returns fewer when there are fewer issues', () => {
-    const input = [issue({ id: 'x', confidence: 0.1 }), issue({ id: 'y', confidence: 0.9 })];
+    const input = [issue({ id: 'x', confidence: 0.1 }), issue({ id: 'y', confidence: 0.9 })]; // same severity
     const top = selectTopFindings(input);
     expect(top.map((i) => i.id)).toEqual(['y', 'x']);
     expect(input.map((i) => i.id)).toEqual(['x', 'y']);
@@ -100,7 +111,7 @@ describe('formatScoreTeaser', () => {
     );
     expect(out.match(/health: /g)).toHaveLength(1);
     expect(out).toContain('PromptCI instruction health: 72/100 (Fair)');
-    expect(out).toContain('Top 3 findings by confidence (of 5):');
+    expect(out).toContain('Top 3 findings (of 5):');
     expect(out).toContain('1. [high] Title 1 (CLAUDE.md:4)');
     expect(out).toContain('3. [warning] Title 3');
     expect(out).not.toMatch(/^\s+4\. /m);
@@ -245,11 +256,10 @@ describe('promptci score (compiled binary): zero network, zero writes', () => {
       expect(stderr).not.toContain('GUARD VIOLATION');
       expect(status).toBe(0);
       expect(stdout).toMatch(/^PromptCI instruction health: \d+\/100 \(.+\)$/m);
-      expect(stdout).toContain('Top 3 findings by confidence (of ');
+      expect(stdout).toContain('Top 3 findings (of ');
       expect(stdout.match(/^ {2}\d\. \[/gm)).toHaveLength(3);
       expect(stdout).toContain(DASHBOARD_POINTER);
       expect(snapshot(dir)).toEqual(before);
-      expect(fs.existsSync(path.join(dir, '.promptci'))).toBe(false);
       expect(fs.readdirSync(home)).toEqual([]);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });

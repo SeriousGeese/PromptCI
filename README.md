@@ -48,13 +48,13 @@ npx @promptci/cli
 ```text
 PromptCI instruction health: 80/100 (Fair)
 
-Top 3 findings by confidence (of 9):
-  1. [info] Missing .promptci/ ignore in .gitignore (.gitignore)
-     Fix: Add the following to `.gitignore` so generated reports stay out of git while the shared baseline and config remain committed: # PromptCI: ignore generated repo…
-  2. [warning] Vague guidance detected (AGENTS.md:11)
+Top 3 findings (of 9):
+  1. [warning] Vague guidance detected (AGENTS.md:11)
      Fix: Replace vague guidance with concrete constraints — specific commands, forbidden patterns, or measurable criteria. For example, replace "write clean code" with…
-  3. [warning] No "read before edit" instruction (AGENTS.md)
+  2. [warning] No "read before edit" instruction (AGENTS.md)
      Fix: Add a rule such as: "Always read a file fully before editing it."
+  3. [warning] No "ask when unsure" instruction (AGENTS.md)
+     Fix: Add a rule such as: "If you are uncertain about the correct approach, say so and ask before proceeding rather than guessing."
 
 Full report, score history, and PR reviews: https://promptci.dev (hosted dashboard; optional)
 ```
