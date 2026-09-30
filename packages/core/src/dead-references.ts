@@ -262,6 +262,19 @@ function isGitignored(ref: string): boolean {
   return GITIGNORED_CREDENTIAL_PATTERNS.some((re) => re.test(normalised));
 }
 
+/**
+ * pcic-2b6.12: Paths rooted in the reader's home or profile directory —
+ * `~/.config/x/settings.json`, `$HOME/.claude/settings.json`,
+ * `%USERPROFILE%\.claude.json`. They live outside the repository by definition,
+ * so their absence from the checkout says nothing about the reference.
+ */
+const HOME_ROOTED_RE =
+  /^(?:~(?:[/\\]|$)|\$\{?(?:HOME|USERPROFILE|XDG_CONFIG_HOME|XDG_DATA_HOME)\}?(?:[/\\]|$)|\$env:(?:HOME|USERPROFILE|APPDATA|LOCALAPPDATA)(?:[/\\]|$)|%(?:USERPROFILE|HOMEPATH|APPDATA|LOCALAPPDATA)%(?:[/\\]|$))/i;
+
+export function isHomeRooted(ref: string): boolean {
+  return HOME_ROOTED_RE.test(ref.trim());
+}
+
 function hasCheckableExtension(ref: string): boolean {
   const ext = path.extname(ref.split('#')[0] ?? '').toLowerCase();
   return CHECKABLE_EXTENSIONS.has(ext);
@@ -628,6 +641,9 @@ export function detectDeadReferences(
 
       // BUG-008: Skip intentionally gitignored credential/config files.
       if (isGitignored(ref)) continue;
+
+      // pcic-2b6.12: Skip home-directory paths (`~/…`, `$HOME/…`, `%USERPROFILE%\…`).
+      if (isHomeRooted(ref)) continue;
 
       // Resolve relative to the instruction file first, then repo root.
       const candidates = [
