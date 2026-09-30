@@ -3,7 +3,7 @@ import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import type { FileType, InstructionFile, InstructionSection, ScanInput } from './types.js';
 import { scanFencedLines } from './markdown-fences.js';
-import { isWithinRoot } from './path-containment.js';
+import { isWithinRoot, realPathWithinRoot } from './path-containment.js';
 
 const DEFAULT_PATTERNS = [
   // Core AI instruction files
@@ -264,8 +264,13 @@ export async function scanFiles(input: ScanInput): Promise<InstructionFile[]> {
   for (const relPath of relativePaths) {
     const absPath = path.resolve(repoRoot, relPath);
 
-    // Path traversal guard: skip anything a glob result resolves outside the root.
-    if (!isWithinRoot(repoRoot, absPath)) {
+    // Path traversal guard: skip anything a glob result resolves outside the
+    // root — lexically, or through a symlink. With `followSymbolicLinks: false`
+    // fast-glob lists no symlinked file and never descends into a linked
+    // directory, but it does START its walk at a pattern's base directory even
+    // when that directory is a link (`.cursor/rules -> /elsewhere`), and every
+    // file below it would then be read through.
+    if (!isWithinRoot(repoRoot, absPath) || !realPathWithinRoot(repoRoot, absPath)) {
       continue;
     }
 

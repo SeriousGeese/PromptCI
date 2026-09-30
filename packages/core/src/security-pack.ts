@@ -6,6 +6,7 @@ import type { RepoContext } from './repo-context.js';
 import { matchEvidence } from './evidence.js';
 import { PROMPTCI_GITIGNORE_BLOCK, PROMPTCI_GITIGNORE_LINES } from './promptci-gitignore.js';
 import { fileIdPath } from './finding-id.js';
+import { realPathWithinRoot } from './path-containment.js';
 
 interface SecurityCheck {
   id: string;
@@ -310,7 +311,7 @@ export function detectSecurityPack(context: RepoContext): PromptCiIssue[] {
   const gitignorePath = path.join(/*turbopackIgnore: true*/ repoRoot, '.gitignore');
   let gitignoreContent = '';
   try {
-    if (fs.existsSync(gitignorePath)) {
+    if (fs.existsSync(gitignorePath) && realPathWithinRoot(repoRoot, gitignorePath)) {
       gitignoreContent = fs.readFileSync(gitignorePath, 'utf8');
     }
   } catch {
@@ -397,7 +398,7 @@ export function detectSecurityPack(context: RepoContext): PromptCiIssue[] {
   let hasBroadInclude = false;
   try {
     const configPath = path.join(/*turbopackIgnore: true*/ repoRoot, '.promptci', 'config.json');
-    if (fs.existsSync(configPath)) {
+    if (fs.existsSync(configPath) && realPathWithinRoot(repoRoot, configPath)) {
       const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
       if (Array.isArray(config.include)) {
         const broadPatterns = ['**/*', '**/*.md', '*', '*.*', '**'];

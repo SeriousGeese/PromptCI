@@ -1,6 +1,6 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
-import { discoverAiConfigFiles, listFiles, resolveWithinRoot as safeResolveWithinRoot } from './ai-config.js';
+import { discoverAiConfigFiles, listFiles, resolveReadableWithinRoot } from './ai-config.js';
 import type { AiConfigFiles } from './ai-config.js';
 import { detectProjectType, detectProjectTypeFromContent } from './project-type.js';
 import micromatch from 'micromatch';
@@ -8,7 +8,10 @@ import { MAX_FILE_SIZE, isBinary, parseSections, scanFiles } from './scanner.js'
 import type { ManifestData } from './manifest-consistency.js';
 import { discoverWorkspaceManifests } from './workspace-manifests.js';
 import type { WorkspaceManifest } from './workspace-manifests.js';
+import { readMakefile } from './makefile.js';
+import type { MakefileFacts } from './makefile.js';
 import { isOnDemandFileType } from './types.js';
+import { realPathWithinRoot } from './path-containment.js';
 import type { InstructionFile, ProjectType, ScanInput, ScanMetrics } from './types.js';
 import { budgetForTargetModel } from './model-budgets.js';
 import { loadCustomRules } from './custom-rules.js';
@@ -75,6 +78,13 @@ export type RepoContext = {
    */
   workspacesTruncated?: boolean;
   /**
+   * Targets of the repo-root Makefile (GNUmakefile / makefile / Makefile), for
+   * validating documented `make <target>` commands. Undefined when the root has
+   * no Makefile. Makefiles in subdirectories (`make -C dir`, `cd dir && make`)
+   * are read on demand by the check itself.
+   */
+  makefile?: MakefileFacts;
+  /**
    * Config files for the ai_config detectors, discovered here so they share
    * the scan's include/exclude and size/binary policy instead of re-walking
    * the repo with a policy of their own.
@@ -124,9 +134,11 @@ function emptyPackageJsonFacts(): PackageJsonFacts {
 }
 
 // Throwing wrapper over the shared null-returning guard in ai-config.ts — one
-// implementation of the path-traversal check, two failure styles.
+// implementation of the path-traversal check, two failure styles. Every caller
+// reads what it resolves, so it is the symlink-aware variant: a manifest or
+// skill committed as a link to a file outside the repo is treated as absent.
 function resolveWithinRoot(repoRoot: string, relativePath: string): string {
-  const resolved = safeResolveWithinRoot(repoRoot, relativePath);
+  const resolved = resolveReadableWithinRoot(repoRoot, relativePath);
   if (resolved === null) {
     throw new Error(`Path escapes repo root: ${relativePath}`);
   }
@@ -257,9 +269,10 @@ function extractWorkflowCommands(filePath: string, content: string): WorkflowCom
 }
 
 async function readWorkflowFacts(repoRoot: string, exclude: string[] = []): Promise<WorkflowFacts> {
-  const workflowDir = resolveWithinRoot(repoRoot, path.join('.github', 'workflows'));
+  let workflowDir: string;
   let entries: Array<{ name: string; isFile: () => boolean }>;
   try {
+    workflowDir = resolveWithinRoot(repoRoot, path.join('.github', 'workflows'));
     entries = await fs.readdir(workflowDir, { withFileTypes: true });
   } catch {
     return { files: [], commands: [], sources: await readCompositeActionSources(repoRoot, exclude) };
@@ -273,7 +286,13 @@ async function readWorkflowFacts(repoRoot: string, exclude: string[] = []): Prom
   const sources: WorkflowSource[] = [];
   for (const file of files) {
     const relative = path.relative(repoRoot, file);
-    const content = await fs.readFile(file, 'utf-8');
+    if (!realPathWithinRoot(repoRoot, file)) continue; // symlink leaving the repo
+    let content: string;
+    try {
+      content = await fs.readFile(file, 'utf-8');
+    } catch {
+      continue;
+    }
     commands.push(...extractWorkflowCommands(relative, content));
 
     // Only the YAML-auditing detectors read `sources`, so only they honor
@@ -304,7 +323,7 @@ async function readCompositeActionSources(repoRoot: string, exclude: string[]): 
   const sources: WorkflowSource[] = [];
   for (const rel of listFiles(repoRoot, COMPOSITE_ACTION_GLOBS)) {
     if (isExcludedPath(rel, exclude)) continue;
-    const abs = safeResolveWithinRoot(repoRoot, rel);
+    const abs = resolveReadableWithinRoot(repoRoot, rel);
     if (!abs) continue;
     try {
       const stat = await fs.stat(abs);
@@ -432,6 +451,8 @@ export async function buildRepoContext(input: ScanInput): Promise<RepoContext> {
     (posix) => isExcludedPath(posix, input.exclude ?? []),
   );
 
+  const makefile = readMakefile(repoRoot, '.');
+
   const manifests: ManifestData = {};
   if (packageJson) manifests.packageJson = packageJson;
   if (pyproject) manifests.pyproject = pyproject;
@@ -450,6 +471,7 @@ export async function buildRepoContext(input: ScanInput): Promise<RepoContext> {
     workflows,
     workspaces: workspaceDiscovery.manifests,
     workspacesTruncated: workspaceDiscovery.truncated,
+    ...(makefile ? { makefile } : {}),
     aiConfig,
     metrics: buildMetrics(files, onDemandFiles),
     // A targetModel preset scales the context-bloat thresholds to that model's

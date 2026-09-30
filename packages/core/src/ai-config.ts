@@ -18,7 +18,7 @@ import * as crypto from 'node:crypto';
 import fg from 'fast-glob';
 import micromatch from 'micromatch';
 import { MAX_FILE_SIZE, BINARY_CHECK_BYTES, isBinary } from './scanner.js';
-import { resolveWithinRoot } from './path-containment.js';
+import { resolveReadableWithinRoot, resolveWithinRoot } from './path-containment.js';
 import type { PromptCiIssue, ScanInput } from './types.js';
 
 // ── Path helpers ──────────────────────────────────────────────────────────────
@@ -32,11 +32,11 @@ export function toPosix(p: string): string {
 // import path while the implementation lives in the shared path-containment
 // module. Every filesystem read below routes through it so a hostile config
 // value cannot point the detector at `/etc/passwd`.
-export { resolveWithinRoot };
+export { resolveWithinRoot, resolveReadableWithinRoot };
 
 /** True when a repo-relative path exists and is a regular file. */
 export function isFileWithinRoot(repoRoot: string, relativePath: string): boolean {
-  const abs = resolveWithinRoot(repoRoot, relativePath);
+  const abs = resolveReadableWithinRoot(repoRoot, relativePath);
   if (!abs) return false;
   try {
     return fs.statSync(abs).isFile();
@@ -47,7 +47,8 @@ export function isFileWithinRoot(repoRoot: string, relativePath: string): boolea
 
 /** Read a repo-relative text file, or `undefined` if it is absent/unreadable. */
 export function readTextWithinRoot(repoRoot: string, relativePath: string): string | undefined {
-  const abs = resolveWithinRoot(repoRoot, relativePath);
+  // Symlink-aware: a committed link whose target leaves the repo is not read.
+  const abs = resolveReadableWithinRoot(repoRoot, relativePath);
   if (!abs) return undefined;
   try {
     return fs.readFileSync(abs, 'utf8');
@@ -235,7 +236,7 @@ export function isPriorityBundleFile(rel: string): boolean {
 function listPackageManifests(repoRoot: string, nodeModules: string): string[] {
   const out: string[] = [];
   const read = (rel: string): fs.Dirent[] => {
-    const abs = resolveWithinRoot(repoRoot, rel);
+    const abs = resolveReadableWithinRoot(repoRoot, rel);
     if (!abs) return [];
     try { return fs.readdirSync(abs, { withFileTypes: true }); } catch { return []; }
   };
@@ -300,7 +301,7 @@ function discoverSkillFiles(
     const stack = [dir];
     while (stack.length > 0) {
       const current = stack.pop()!;
-      const abs = resolveWithinRoot(repoRoot, current);
+      const abs = resolveReadableWithinRoot(repoRoot, current);
       if (!abs) continue;
       let entries: fs.Dirent[];
       try {
@@ -350,7 +351,7 @@ function discoverSkillFiles(
  * leading BINARY_CHECK_BYTES.
  */
 function passesScanGuards(repoRoot: string, relativePath: string): boolean {
-  const abs = resolveWithinRoot(repoRoot, relativePath);
+  const abs = resolveReadableWithinRoot(repoRoot, relativePath);
   if (!abs) return false;
   try {
     const stat = fs.statSync(abs);

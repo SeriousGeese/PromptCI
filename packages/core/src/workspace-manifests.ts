@@ -20,7 +20,7 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import micromatch from 'micromatch';
-import { listFiles, resolveWithinRoot } from './ai-config.js';
+import { listFiles, resolveReadableWithinRoot, resolveWithinRoot } from './ai-config.js';
 import { MAX_FILE_SIZE } from './scanner.js';
 import type { RepoContext } from './repo-context.js';
 
@@ -244,7 +244,8 @@ export async function discoverWorkspaceManifests(
 ): Promise<WorkspaceDiscovery> {
   let pnpmYaml: string | undefined;
   try {
-    pnpmYaml = await fs.readFile(path.join(repoRoot, 'pnpm-workspace.yaml'), 'utf-8');
+    const abs = resolveReadableWithinRoot(repoRoot, 'pnpm-workspace.yaml');
+    pnpmYaml = abs ? await fs.readFile(abs, 'utf-8') : undefined;
   } catch {
     pnpmYaml = undefined;
   }
@@ -268,7 +269,7 @@ export async function discoverWorkspaceManifests(
   for (const rel of matched.slice(0, MAX_WORKSPACE_MANIFESTS)) {
     if (rel === 'package.json') continue;
     try {
-      const abs = resolveWithinRoot(repoRoot, rel);
+      const abs = resolveReadableWithinRoot(repoRoot, rel);
       if (!abs) continue;
       const stat = await fs.stat(abs);
       if (!stat.isFile() || stat.size > MAX_FILE_SIZE) continue;

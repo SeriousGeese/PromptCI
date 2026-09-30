@@ -1,7 +1,7 @@
 import type { RepoContext } from '../repo-context.js';
 import type { PromptCiIssue } from '../types.js';
-import * as path from 'node:path';
 import * as fs from 'node:fs';
+import { readTextWithinRoot } from '../ai-config.js';
 
 export function detectDotnet(context: RepoContext): PromptCiIssue[] {
   const issues: PromptCiIssue[] = [];
@@ -51,7 +51,7 @@ export function detectDotnet(context: RepoContext): PromptCiIssue[] {
     const rootFiles = fs.readdirSync(repoRoot);
     const csprojFile = rootFiles.find(f => f.endsWith('.csproj'));
     if (csprojFile) {
-      const csprojContent = fs.readFileSync(path.join(repoRoot, csprojFile), 'utf-8');
+      const csprojContent = readTextWithinRoot(repoRoot, csprojFile) ?? '';
       const match = /<TargetFramework>(.*?)<\/TargetFramework>/.exec(csprojContent);
       if (match) {
         targetFramework = match[1]?.trim();

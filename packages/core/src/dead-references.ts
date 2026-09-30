@@ -7,9 +7,14 @@
  *   - Reference-style links: [text][ref] with a `[ref]: path` definition
  *   - @-file refs:     @AGENTS.md  |  @docs/guide.md
  *
+ *   - Directory / extension-less paths (pcic-2b6.8): links like
+ *     [api](./src/api/) and code spans like `apps/admin/` or `src/payments`
+ *
  * External URLs (http/https), anchor-only links (#section), and mailto:
- * are always skipped. Only paths with a recognisable file extension are
- * checked to avoid false-positiving on badge shields, npm package names, etc.
+ * are always skipped. File paths need a recognisable extension; a directory or
+ * extension-less path in a code span is only checked when its FIRST segment
+ * exists in the repository (so `owner/repo`, `origin/main`, `@scope/pkg` and
+ * paths describing some other project stay silent).
  *
  * Findings are heuristic — wording is intentionally cautious.
  */
@@ -17,8 +22,11 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as crypto from 'node:crypto';
+import fg from 'fast-glob';
 import type { InstructionFile, PromptCiIssue } from './types.js';
-import { fencedBlocks } from './markdown-fences.js';
+import { fencedBlocks, scanFencedLines } from './markdown-fences.js';
+import { createGitIgnoreChecker } from './gitignore.js';
+import { isWithinRoot } from './path-containment.js';
 
 // ── Patterns ──────────────────────────────────────────────────────────────────
 
@@ -51,6 +59,54 @@ const AT_FILE_RE =
  */
 const BACKTICK_PATH_RE =
   /`([^\s`\n]+\.(?:md|sh|py|ts|js|tsx|jsx|mjs|cjs|json|yml|yaml|toml|cs|go|rs|txt|lock|env|png|jpg|jpeg|gif|svg|webp|pdf))(?::\d+(?::\d+)?)?`/g;
+
+/**
+ * pcic-2b6.8: code spans holding a directory or extension-less repo path —
+ * `src/payments/`, `apps/admin`, `./src/api/`. Path characters only (Next.js
+ * route segments like `(auth)` and `[id]` included); anything with a space,
+ * colon, `$`, `*`, `~` or `<…>` is a command, URL, variable, glob or
+ * placeholder and never matches. At least two segments are required: a lone
+ * `docs/` or `./scripts` names no location specific enough to call stale.
+ */
+const BACKTICK_DIR_RE = /`((?:\.\/)?[\w@.()[\]-]+(?:\/[\w@.()[\]-]+)+\/?)`/g;
+
+/**
+ * A line talking about git branches, HTTP routes or URLs: its slash-shaped
+ * code spans (`docs/update-readme`, `api/v1/users`) are names, not paths.
+ */
+const NON_PATH_CONTEXT_RE =
+  /\b(?:branch(?:es)?|checkout|rebase|merge|cherry-pick|route[sd]?|routing|endpoints?|urls?|uris?|http\s+(?:get|post|put|patch|delete))\b/i;
+
+/**
+ * Conventional git branch prefixes. A span starting with one of these that has
+ * no trailing slash (`docs/update-readme`, `test/flaky-fix`) is more likely a
+ * branch than a directory, so only the explicit directory form (`docs/guides/`)
+ * is checked.
+ */
+const BRANCH_PREFIXES: ReadonlySet<string> = new Set([
+  'feat', 'feature', 'features', 'fix', 'bugfix', 'hotfix', 'chore', 'docs', 'doc', 'refactor',
+  'test', 'tests', 'ci', 'perf', 'build', 'release', 'releases', 'style', 'wip', 'dependabot',
+]);
+
+/**
+ * Generated output and dependency directories: never committed, so a path
+ * under one says nothing about the repository's current layout.
+ */
+const OUTPUT_DIRS: ReadonlySet<string> = new Set([
+  'dist', 'build', 'out', '.next', 'coverage', 'target', 'bin', 'obj', 'node_modules', '.turbo',
+]);
+
+/**
+ * How a reference is checked:
+ *  - `file`          a path with a checkable extension (links, @refs, code spans, layouts)
+ *  - `rootedSource`  a compiled-source file in a code span (`.ts`, `.go`, `.cs`, …) —
+ *                    checked only when its first segment exists (pcic-2b6.8)
+ *  - `rootedPath`    a directory / extension-less path in a code span — same rule
+ *  - `linkPath`      a directory / extension-less markdown link target
+ */
+type RefKind = 'file' | 'rootedSource' | 'rootedPath' | 'linkPath';
+
+type CollectedRef = { ref: string; evidence: string; line: number; kind: RefKind };
 
 /**
  * BUG-004: Bullet-list bare file paths in Repository Layout / Project Structure sections.
@@ -280,6 +336,23 @@ function hasCheckableExtension(ref: string): boolean {
   return CHECKABLE_EXTENSIONS.has(ext);
 }
 
+/**
+ * pcic-2b6.8: a markdown link target naming a directory or an extension-less
+ * file (`./src/api/`, `docs/`, `LICENSE`). Site-absolute (`/pricing`) and
+ * scheme-qualified targets, and anything with characters a repo path would not
+ * carry, are left alone.
+ */
+function isExtensionlessPathRef(ref: string): boolean {
+  if (!ref || /^[a-z][a-z0-9+.-]*:/i.test(ref) || ref.startsWith('/')) return false;
+  if (/[\s*?$%<>{}|"'`~\\]/.test(ref)) return false;
+  if (!/[A-Za-z]/.test(ref)) return false; // `./`, `../`, `..`
+  // Path-shaped only: a separator or a leading dot (`./x`, `.github`). A bare
+  // word (`[WARNING]: Never …`, `[x](payload)`) is too ambiguous to judge.
+  if (!ref.includes('/') && !ref.startsWith('.')) return false;
+  const last = ref.replace(/\/+$/, '').split('/').pop() ?? '';
+  return ref.endsWith('/') || path.extname(last) === '';
+}
+
 /** Strip query strings and anchor fragments from a path reference. */
 function stripFragment(ref: string): string {
   return ref.split('#')[0].split('?')[0].trim();
@@ -304,14 +377,16 @@ const SOURCE_CODE_EXTENSIONS = new Set([
 ]);
 
 /**
- * BUG-002: Compiled/native source extensions that, when encountered as backtick
- * inline spans (NOT markdown links or @-refs) in any instruction file type,
- * should be skipped. These are almost always architecture documentation, not real
- * file references — e.g. `internal/client/errors.go`, `src/components/Button.tsx`,
- * `pkg/registry/`, `PlayerController.cs`.
+ * BUG-002 / pcic-2b6.8: Compiled/native source extensions that, as backtick
+ * inline spans (NOT markdown links or @-refs), are often architecture
+ * documentation — `internal/client/errors.go`, `PlayerController.cs` — or
+ * examples from some other project. They are no longer skipped outright: a
+ * missing one is reported (at reduced confidence) only when its first path
+ * segment exists in this repository, i.e. it names a real part of THIS tree.
  *
  * NOTE: .sh, .py, .js are intentionally excluded — shell/Python/JS scripts are often
- * legitimately referenced by name in instruction files (e.g. `scripts/setup-dev.sh`).
+ * legitimately referenced by name in instruction files (e.g. `scripts/setup-dev.sh`)
+ * and are checked like any other file.
  */
 const BACKTICK_SKIP_SOURCE_EXTENSIONS = new Set([
   '.go', '.rs', '.cs', '.java', '.kt', '.swift',
@@ -326,16 +401,11 @@ const BACKTICK_SKIP_SOURCE_EXTENSIONS = new Set([
 const STALE_SOURCE_REF_RE = /(?:^|[/\\])(?:legacy|old|deprecated|archive|archived)(?:[/\\]|[-_.])/i;
 
 /**
- * File types for which backtick-enclosed compiled/native source paths should be
- * skipped. All instruction file types are included because architecture
- * descriptions appear in all of them.
+ * File types whose backtick-enclosed compiled/native source paths and
+ * directory paths get the first-segment rule above. All instruction file types
+ * are included because architecture descriptions appear in all of them.
  *
  * BUG-002: Expanded from readme-only to all instruction file types.
- *
- * NOTE: this covers every FileType value, which also means backtick-quoted bare
- * *directory* paths (no extension, e.g. `pkg/registry/`) are always treated as
- * architecture descriptions rather than checked — that is intentional per
- * BUG-002, not an oversight.
  */
 const SKIP_SOURCE_BACKTICK_FILE_TYPES = new Set([
   'readme', 'claude', 'agents', 'cursor', 'windsurf', 'copilot', 'gemini', 'cline', 'persona',
@@ -494,9 +564,25 @@ function extractLayoutTreePaths(
 function collectRefs(
   content: string,
   opts: { skipSourceBackticks?: boolean } = {},
-): Array<{ ref: string; evidence: string; line: number }> {
-  const found: Array<{ ref: string; evidence: string; line: number }> = [];
+): CollectedRef[] {
+  const found: CollectedRef[] = [];
   const lineOffsets = buildLineOffsets(content);
+  const fenceLines = scanFencedLines(content);
+  // `handlers[type](payload)` in a code fence or `a[i](b)` in a code span has
+  // the shape of a link without being one. Checkable-extension targets keep
+  // their historical behavior; the extension-less check only reads real prose.
+  const inCode = (index: number): boolean => {
+    const line = lineForOffset(lineOffsets, index);
+    if (fenceLines[line - 1]?.inFence) return true;
+    const before = content.slice(lineOffsets[line - 1] ?? 0, index);
+    return (before.match(/`/g)?.length ?? 0) % 2 === 1;
+  };
+  const pushLink = (ref: string, evidence: string, index: number): void => {
+    if (!ref || isExternalRef(ref)) return;
+    const line = lineForOffset(lineOffsets, index);
+    if (hasCheckableExtension(ref)) found.push({ ref, evidence, line, kind: 'file' });
+    else if (isExtensionlessPathRef(ref) && !inCode(index)) found.push({ ref, evidence, line, kind: 'linkPath' });
+  };
 
   // Markdown links: [label](target) or [label](target "Title")
   let m: RegExpExecArray | null;
@@ -504,10 +590,7 @@ function collectRefs(
   while ((m = linkRe.exec(content)) !== null) {
     if (m.index >= 2 && content[m.index - 2] === '[' && content[m.index - 1] === '!') continue;
     const raw = m[1] ?? '';
-    const ref = stripFragment(stripLinkTitle(raw));
-    if (ref && !isExternalRef(ref) && hasCheckableExtension(ref)) {
-      found.push({ ref, evidence: `[...](${raw})`, line: lineForOffset(lineOffsets, m.index) });
-    }
+    pushLink(stripFragment(stripLinkTitle(raw)), `[...](${raw})`, m.index);
   }
 
   const nestedLinkRe = new RegExp(NESTED_MD_LINK_RE.source, NESTED_MD_LINK_RE.flags);
@@ -515,20 +598,16 @@ function collectRefs(
     const labelPart = m[0].slice(0, m[0].lastIndexOf(']('));
     if (!labelPart.includes('](')) continue;
     const raw = m[1] ?? '';
-    const ref = stripFragment(stripLinkTitle(raw));
-    if (ref && !isExternalRef(ref) && hasCheckableExtension(ref)) {
-      found.push({ ref, evidence: `[...](${raw})`, line: lineForOffset(lineOffsets, m.index) });
-    }
+    pushLink(stripFragment(stripLinkTitle(raw)), `[...](${raw})`, m.index);
   }
 
   // Reference-style link definitions: [ref]: docs/missing.md "Title"
   const linkDefRe = new RegExp(LINK_REF_DEF_RE.source, LINK_REF_DEF_RE.flags);
   while ((m = linkDefRe.exec(content)) !== null) {
     const raw = m[1] ?? '';
-    const ref = stripFragment(raw);
-    if (ref && !isExternalRef(ref) && hasCheckableExtension(ref)) {
-      found.push({ ref, evidence: m[0].trim(), line: lineForOffset(lineOffsets, m.index) });
-    }
+    // `[^1]: Footnote text` is a footnote, not a link definition.
+    if (/^[ \t]*\[\^/.test(m[0])) continue;
+    pushLink(stripFragment(raw), m[0].trim(), m.index);
   }
 
   // @-file refs
@@ -536,27 +615,45 @@ function collectRefs(
   while ((m = atRe.exec(content)) !== null) {
     const ref = m[1] ?? '';
     if (ref && !isExternalRef(ref)) {
-      found.push({ ref, evidence: `@${ref}`, line: lineForOffset(lineOffsets, m.index) });
+      found.push({ ref, evidence: `@${ref}`, line: lineForOffset(lineOffsets, m.index), kind: 'file' });
     }
   }
 
   // Backtick file paths: `scripts/setup-dev.sh`, `Assets/Scripts/Foo.cs`
   // No spaces = file path not a command; must have a recognisable extension.
   // Skip glob patterns (contain * or ?) — those are pattern documentation, not file refs.
-  // BUG-002: In all instruction file types (CLAUDE.md, AGENTS.md, .cursorrules, copilot, etc.)
-  // skip backtick-quoted compiled/native source files — they are almost always architecture
-  // descriptions (e.g. `internal/client/errors.go`), not references to committed files.
-  // Shell (.sh), Python (.py), and JS files are kept because they CAN be real script refs.
+  // BUG-002 / pcic-2b6.8: In all instruction file types (CLAUDE.md, AGENTS.md, .cursorrules,
+  // copilot, etc.) backtick-quoted compiled/native source files are often architecture
+  // descriptions or examples from another project, so they are checked under the
+  // first-segment rule (`rootedSource`). Shell (.sh), Python (.py), and JS files are
+  // checked like any other file because they are usually real script refs.
   const btRe = new RegExp(BACKTICK_PATH_RE.source, BACKTICK_PATH_RE.flags);
   while ((m = btRe.exec(content)) !== null) {
     const ref = m[1] ?? '';
     if (ref && !isExternalRef(ref) && !ref.includes('*') && !ref.includes('?')) {
-      if (opts.skipSourceBackticks) {
-        const ext = path.extname(ref).toLowerCase();
-        if (BACKTICK_SKIP_SOURCE_EXTENSIONS.has(ext) && !STALE_SOURCE_REF_RE.test(ref)) continue;
-      }
-      found.push({ ref, evidence: `\`${ref}\``, line: lineForOffset(lineOffsets, m.index) });
+      const ext = path.extname(ref).toLowerCase();
+      const rooted =
+        opts.skipSourceBackticks && BACKTICK_SKIP_SOURCE_EXTENSIONS.has(ext) && !STALE_SOURCE_REF_RE.test(ref);
+      found.push({
+        ref,
+        evidence: `\`${ref}\``,
+        line: lineForOffset(lineOffsets, m.index),
+        kind: rooted ? 'rootedSource' : 'file',
+      });
     }
+  }
+
+  // pcic-2b6.8: backtick directory / extension-less paths: `src/payments/`, `apps/admin`.
+  const btDirRe = new RegExp(BACKTICK_DIR_RE.source, BACKTICK_DIR_RE.flags);
+  while ((m = btDirRe.exec(content)) !== null) {
+    const ref = m[1] ?? '';
+    const last = ref.replace(/\/+$/, '').split('/').pop() ?? '';
+    if (!ref.endsWith('/') && path.extname(last) !== '') continue; // a file: BACKTICK_PATH_RE's job
+    // Slash-shaped names that are not paths: git branches, HTTP routes, URLs.
+    const lineNo = lineForOffset(lineOffsets, m.index);
+    const lineText = content.slice(lineOffsets[lineNo - 1] ?? 0, lineOffsets[lineNo] ?? content.length);
+    if (NON_PATH_CONTEXT_RE.test(lineText)) continue;
+    found.push({ ref, evidence: `\`${ref}\``, line: lineForOffset(lineOffsets, m.index), kind: 'rootedPath' });
   }
 
   // BUG-004: Bare paths in Repository Layout / Project Structure sections.
@@ -566,16 +663,18 @@ function collectRefs(
     while ((m = bulletRe.exec(content)) !== null) {
       const ref = m[1] ?? '';
       if (ref && !isExternalRef(ref)) {
-        found.push({ ref, evidence: m[0].trim(), line: lineForOffset(lineOffsets, m.index) });
+        found.push({ ref, evidence: m[0].trim(), line: lineForOffset(lineOffsets, m.index), kind: 'file' });
       }
     }
 
-    found.push(...extractLayoutTreePaths(content, lineOffsets));
+    for (const item of extractLayoutTreePaths(content, lineOffsets)) {
+      found.push({ ...item, kind: 'file' });
+    }
 
     // BUG-002 (eval): Fenced code blocks in layout sections may list documentation
     // files as indented children under a parent directory line ("docs/\n  runbook.md").
     for (const item of extractCodeBlockLayoutPaths(content, lineOffsets)) {
-      found.push(item);
+      found.push({ ...item, kind: 'file' });
     }
   }
 
@@ -597,6 +696,148 @@ function collectRefs(
       target.endsWith(`/${refNorm}`);
     return !isTarget;
   });
+}
+
+// ── Resolution ───────────────────────────────────────────────────────────────
+
+/** Path segments of a reference, without `.` / empty segments. */
+function segmentsOf(ref: string): string[] {
+  return stripFragment(ref).replace(/\\/g, '/').split('/').filter((s) => s !== '' && s !== '.');
+}
+
+function underOutputDir(ref: string): boolean {
+  return segmentsOf(ref).some((s) => OUTPUT_DIRS.has(s.toLowerCase()));
+}
+
+/**
+ * An extension-less module path names the file that carries the extension:
+ * `src/lib/db` is `src/lib/db.ts`. True when the directory holds `<name>.*`.
+ */
+function stemSiblingExists(abs: string): boolean {
+  try {
+    const base = path.basename(abs);
+    return fs.readdirSync(path.dirname(abs)).some((entry) => entry.startsWith(`${base}.`));
+  } catch {
+    return false;
+  }
+}
+
+/** Trees never searched for an abbreviated path (dependencies, VCS, worktrees, engine caches). */
+const SUFFIX_SEARCH_IGNORE = [
+  ...[
+    ...OUTPUT_DIRS, '.git', 'worktrees', '.worktrees', 'Library', 'Temp', 'Logs', 'vendor',
+    '.venv', 'venv', '__pycache__', 'Pods', '.gradle', '.cache', '.idea',
+  ].map((d) => `**/${d}/**`),
+];
+
+/**
+ * True when the path exists somewhere below the repo root as a suffix — an
+ * abbreviated reference such as `Scripts/Interfaces/` for Unity's
+ * `Assets/Scripts/Interfaces/`, or a package-relative `src/lib/db.ts` in a
+ * monorepo's root instructions. Such a path is imprecise, not stale.
+ */
+function existsAsSuffix(repoRoot: string, segments: string[], moduleStyle: boolean, cache: Map<string, boolean>): boolean {
+  const rel = segments.join('/');
+  const key = `${moduleStyle ? 'm' : 'x'}:${rel}`;
+  const cached = cache.get(key);
+  if (cached !== undefined) return cached;
+  const escaped = fg.escapePath(rel);
+  const patterns = [`**/${escaped}`];
+  if (moduleStyle) patterns.push(`**/${escaped}.*`);
+  let found: boolean;
+  try {
+    found = fg.sync(patterns, {
+      cwd: repoRoot,
+      dot: true,
+      onlyFiles: false,
+      followSymbolicLinks: false,
+      suppressErrors: true,
+      ignore: SUFFIX_SEARCH_IGNORE,
+    }).length > 0;
+  } catch {
+    found = false;
+  }
+  cache.set(key, found);
+  return found;
+}
+
+/** Probe name used to ask the gitignore matcher whether a DIRECTORY is ignored. */
+const DIR_PROBE = '__promptci_dir_probe__';
+
+/**
+ * Confidence that `ref` is a dead reference, or `null` when it resolves, is
+ * expected to be absent (gitignored, generated output), or is not specific
+ * enough to judge.
+ */
+function judgeReference(
+  ref: string,
+  kind: RefKind,
+  fileDir: string,
+  repoRoot: string,
+  isIgnored: (repoRelativePath: string) => boolean,
+  suffixCache: Map<string, boolean>,
+): number | null {
+  // `.git/…` is a directory in one checkout and a file in a worktree.
+  if (segmentsOf(ref)[0] === '.git') return null;
+  // pcic-2b6.8 kinds: generated output / dependency trees are never committed.
+  // (File references keep their historical behavior: a committed `bin/setup.sh`
+  // or `scripts/build/x.sh` is still checked.)
+  if (kind !== 'file' && underOutputDir(ref)) return null;
+
+  const pathLike = kind === 'rootedPath' || kind === 'linkPath';
+  const target = pathLike ? stripFragment(ref) : ref;
+  const candidates = [...new Set([path.resolve(fileDir, target), path.resolve(repoRoot, target)])];
+  const inRoot = candidates.filter((c) => isWithinRoot(repoRoot, c));
+
+  // The repository's own ignore rules say the path is local state (pcic-2b6.8,
+  // same matcher the skills detector uses).
+  for (const candidate of inRoot) {
+    const rel = path.relative(repoRoot, candidate).replace(/\\/g, '/');
+    if (!rel) continue;
+    if (isIgnored(rel) || (pathLike && isIgnored(`${rel}/${DIR_PROBE}`))) return null;
+  }
+
+  if (kind === 'file') {
+    if (candidates.some(fileExists)) return null;
+    // BUG-C1: Source-code paths whose parent directory exists → lower confidence
+    // (likely documentation references, not broken links).
+    const ext = path.extname(ref.split('#')[0] ?? '').toLowerCase();
+    const isSourceCodeRef = SOURCE_CODE_EXTENSIONS.has(ext);
+    const anyParentExists = candidates.some(parentDirExists);
+    return isSourceCodeRef && anyParentExists ? 0.5 : 0.85;
+  }
+
+  // pcic-2b6.8 kinds: only paths that stay inside the repository are judged.
+  if (inRoot.length === 0) return null;
+  const moduleStyle = pathLike && !target.endsWith('/');
+  if (inRoot.some((c) => fileExists(c) || (moduleStyle && stemSiblingExists(c)))) return null;
+
+  if (kind === 'linkPath') return 0.8;
+
+  // Code-span paths: report only when the path's FIRST segment exists here, so
+  // the reference demonstrably names part of THIS repository — `owner/repo`,
+  // `origin/main`, `@scope/pkg` and another project's `internal/x/y.go` stay silent.
+  const segments = segmentsOf(ref);
+  if (segments.length < 2 || segments[0] === '..') return null;
+  // The first segment must be a DIRECTORY here (`package.json/scripts` is not a path).
+  const anchorBases = [fileDir, repoRoot].filter((base) => dirExists(path.join(base, segments[0]!)));
+  if (anchorBases.length === 0) return null;
+  if (kind === 'rootedPath') {
+    // `docs/update-readme`, `test/flaky-fix`: a branch name unless written as a directory.
+    if (BRANCH_PREFIXES.has(segments[0]!.toLowerCase()) && !target.endsWith('/')) return null;
+    // `client/server`, `public/private`: alternatives when both halves exist side by side.
+    if (segments.length === 2 && anchorBases.some((base) => fileExists(path.join(base, segments[1]!)))) return null;
+  }
+  if (existsAsSuffix(repoRoot, segments, moduleStyle, suffixCache)) return null;
+  return 0.6;
+}
+
+function dirExists(p: string): boolean {
+  try {
+    return fs.statSync(p).isDirectory();
+  } catch {
+    return false;
+  }
 }
 
 // ── Detector ─────────────────────────────────────────────────────────────────
@@ -623,11 +864,15 @@ export function detectDeadReferences(
   // normRef → { displayRef, filePaths, fileLines, evidenceLines, minConfidence }
   const byRef = new Map<string, {
     displayRef: string;
+    kind: RefKind;
     filePaths: Set<string>;
     fileLines: Map<string, number>;
     evidenceLines: string[];
     minConfidence: number;
   }>();
+
+  let isIgnored: ((repoRelativePath: string) => boolean) | undefined;
+  const suffixCache = new Map<string, boolean>();
 
   for (const file of files) {
     const fileDir = path.dirname(file.path);
@@ -635,7 +880,7 @@ export function detectDeadReferences(
       skipSourceBackticks: SKIP_SOURCE_BACKTICK_FILE_TYPES.has(file.fileType),
     });
 
-    for (const { ref, evidence, line } of refs) {
+    for (const { ref, evidence, line, kind } of refs) {
       // BUG-009: Skip obvious placeholder/example filenames (foo.ts, bar.go, etc.)
       if (isPlaceholderRef(ref)) continue;
 
@@ -646,27 +891,23 @@ export function detectDeadReferences(
       if (isHomeRooted(ref)) continue;
 
       // Resolve relative to the instruction file first, then repo root.
-      const candidates = [
-        path.resolve(fileDir, ref),
-        path.resolve(repoRoot, ref),
-      ];
+      isIgnored ??= createGitIgnoreChecker(repoRoot);
+      const confidence = judgeReference(ref, kind, fileDir, repoRoot, isIgnored, suffixCache);
+      if (confidence === null) continue;
 
-      if (candidates.some(fileExists)) continue;
-
-      // BUG-C1: Source-code paths whose parent directory exists → lower confidence
-      // (likely documentation references, not broken links).
-      const ext = path.extname(ref.split('#')[0] ?? '').toLowerCase();
-      const isSourceCodeRef = SOURCE_CODE_EXTENSIONS.has(ext);
-      const anyParentExists = candidates.some(parentDirExists);
-      const confidence = isSourceCodeRef && anyParentExists ? 0.5 : 0.85;
-
-      // Normalise for deduplication (case-insensitive, forward slashes)
-      const normRef = ref.toLowerCase().replace(/\\/g, '/');
+      // Normalise for deduplication (case-insensitive, forward slashes). Directory
+      // forms also drop `./` and the trailing slash, so `src/api/`, `./src/api`
+      // and a link to `./src/api/` are one finding.
+      const normalized = ref.toLowerCase().replace(/\\/g, '/');
+      const normRef = kind === 'rootedPath' || kind === 'linkPath'
+        ? normalized.replace(/^\.\//, '').replace(/\/+$/, '')
+        : normalized;
       const evidenceLine = `Reference: ${evidence}`;
 
       if (!byRef.has(normRef)) {
         byRef.set(normRef, {
           displayRef: ref,
+          kind,
           filePaths: new Set(),
           fileLines: new Map(),
           evidenceLines: [],
@@ -689,21 +930,25 @@ export function detectDeadReferences(
   const issues: PromptCiIssue[] = [];
   const MIN_CONFIDENCE_THRESHOLD = MIN_CONFIDENCE;
 
-  for (const [normRef, { displayRef, filePaths, fileLines, evidenceLines, minConfidence }] of byRef) {
+  for (const [normRef, { displayRef, kind, filePaths, fileLines, evidenceLines, minConfidence }] of byRef) {
     // BUG-002: Skip findings below the minimum confidence threshold.
     // Low-confidence source-code path references are almost certainly architecture docs.
     if (minConfidence < MIN_CONFIDENCE_THRESHOLD) continue;
 
     const allFilePaths = [...filePaths];
+    const pathLike = kind === 'rootedPath' || kind === 'linkPath';
+    const isDir = pathLike && stripFragment(displayRef).endsWith('/');
+    const noun = isDir ? 'directory' : pathLike ? 'path' : 'file';
+    const name = path.basename(stripFragment(displayRef).replace(/\/+$/, ''));
 
     issues.push({
       id: issueId(normRef),
       severity: 'warning',
       category: 'structure',
-      title: `Broken file reference: ${path.basename(stripFragment(displayRef))}`,
+      title: `Broken ${noun} reference: ${name}${isDir ? '/' : ''}`,
       summary:
         `This instruction file references "${displayRef}" which does not appear to exist. ` +
-        `The file may have been renamed, moved, or deleted.`,
+        `The ${noun} may have been renamed, moved, or deleted.`,
       filePaths: allFilePaths,
       locations: allFilePaths.map((fp) => {
         const startLine = fileLines.get(fp);

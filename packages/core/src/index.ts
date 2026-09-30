@@ -15,6 +15,7 @@ export { detectManifestConsistency } from './manifest-consistency.js';
 export type { ManifestData } from './manifest-consistency.js';
 export { buildRepoContext, parsePackageJsonFacts } from './repo-context.js';
 export type { RepoContext, PackageJsonFacts, WorkflowFacts, WorkflowCommand, WorkflowSource } from './repo-context.js';
+export type { MakefileFacts } from './makefile.js';
 export { detectActionPinning, extractActionUses } from './action-pinning.js';export { runDetectors } from './detectors.js';
 export type { DetectorDefinition } from './detectors.js';
 export { detectSkills } from './skills-detector.js';
