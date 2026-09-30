@@ -11,6 +11,23 @@ const DEFAULT_PATTERNS = [
   'AGENTS.md',
   '.cursorrules',
   '.windsurfrules',
+  // Gemini CLI. Root only, like CLAUDE.md/AGENTS.md above.
+  'GEMINI.md',
+  // Cline: a single `.clinerules` file OR a `.clinerules/` directory of
+  // markdown rule files (fast-glob's onlyFiles default means the bare pattern
+  // matches only the file form; defaultPatterns() drops the directory globs
+  // when `.clinerules` is a file). `.clinerules/workflows/` holds on-demand
+  // slash-command workflows, not always-loaded rules, so it is left out.
+  '.clinerules',
+  '.clinerules/**/*.md',
+  '!.clinerules/workflows/**',
+  // Agent persona files (SOUL.md, USER.md, TOOLS.md). Repo ROOT only: the
+  // names are generic enough that a nested `docs/USER.md` is far more likely a
+  // user guide than an agent persona. deriveFileType enforces the same rule
+  // when an explicit `include` pattern pulls a nested copy in.
+  'SOUL.md',
+  'USER.md',
+  'TOOLS.md',
   // Cursor IDE rules
   '.cursor/rules/**',
   // GitHub Copilot instructions (legacy + new per-file format)
@@ -51,6 +68,8 @@ const IGNORE_DIRS = ['.git', 'node_modules', 'Library', 'Temp', 'bin', 'obj', 'd
 export const MAX_FILE_SIZE = 500 * 1024;
 export const BINARY_CHECK_BYTES = 512;
 
+const PERSONA_ROOT_PATHS: ReadonlySet<string> = new Set(['/SOUL.md', '/USER.md', '/TOOLS.md']);
+
 // Takes the repo-root-relative path (not the absolute path): classification must
 // depend only on where a file sits INSIDE the scanned repo. Using the absolute
 // path let the checkout location leak in — a repo checked out under an external
@@ -72,6 +91,14 @@ function deriveFileType(relPath: string): FileType {
   // The file was scanned and then silently ignored by ~6 detectors.
   if (base === '.windsurfrules') return 'windsurf';
   if (base === 'copilot-instructions.md' || norm.includes('/.github/instructions/')) return 'copilot';
+  // Gemini/Cline/persona files are matched anchored at the scan ROOT (`norm` is
+  // leading-slash root-relative), never by basename or directory substring.
+  // That is what they are discovered as, and it guarantees no file an earlier
+  // release already discovered changes type: `.claude/skills/x/GEMINI.md` stays
+  // an on-demand 'skill', `prompts/USER.md` stays 'prompt'.
+  if (norm === '/GEMINI.md') return 'gemini';
+  if (norm === '/.clinerules' || norm.startsWith('/.clinerules/')) return 'cline';
+  if (PERSONA_ROOT_PATHS.has(norm)) return 'persona';
   // Load-on-demand Claude Code config surfaces. Classified before the generic
   // '/.claude/' → 'claude' rule below so a skill's SKILL.md and its reference
   // files (and every agent definition) are treated as on-demand, not as
@@ -112,7 +139,11 @@ function splitLines(content: string): string[] {
  * ``` runs desynchronised it) — and that copy decided which sections get moved
  * out of a user's instruction files.
  */
-export function parseSections(content: string, filePath: string): InstructionSection[] {
+export function parseSections(
+  content: string,
+  filePath: string,
+  relativePath?: string,
+): InstructionSection[] {
   const lines = splitLines(content);
   const sections: InstructionSection[] = [];
 
@@ -126,6 +157,7 @@ export function parseSections(content: string, filePath: string): InstructionSec
     sections.push({
       id,
       filePath,
+      ...(relativePath !== undefined ? { relativePath } : {}),
       heading: currentHeading,
       startLine: currentStartLine,
       endLine,
@@ -176,9 +208,34 @@ export function isBinary(buffer: Buffer): boolean {
   return false;
 }
 
+const CLINE_DIR_PATTERNS: ReadonlySet<string> = new Set([
+  '.clinerules/**/*.md',
+  '!.clinerules/workflows/**',
+]);
+
+/**
+ * DEFAULT_PATTERNS, minus the `.clinerules/` directory globs unless
+ * `.clinerules` really is a directory. fast-glob scandirs `.clinerules` to
+ * expand them, and a FILE of that name (Cline's single-file form) makes it
+ * throw ENOTDIR — which scanFiles' catch turned into an empty scan of the
+ * WHOLE repo. `suppressErrors` now contains that too; dropping the globs
+ * keeps the default scan from relying on it.
+ */
+async function defaultPatterns(repoRoot: string): Promise<string[]> {
+  let clineIsDir = false;
+  try {
+    clineIsDir = (await fs.stat(path.join(repoRoot, '.clinerules'))).isDirectory();
+  } catch {
+    // absent — the directory globs would match nothing anyway
+  }
+  return clineIsDir ? DEFAULT_PATTERNS : DEFAULT_PATTERNS.filter((p) => !CLINE_DIR_PATTERNS.has(p));
+}
+
 export async function scanFiles(input: ScanInput): Promise<InstructionFile[]> {
   const repoRoot = path.resolve(input.repoPath);
-  const patterns = (input.include && input.include.length > 0) ? input.include : DEFAULT_PATTERNS;
+  const patterns = (input.include && input.include.length > 0)
+    ? input.include
+    : await defaultPatterns(repoRoot);
   const ignorePatterns = [
     ...IGNORE_DIRS.map((d) => `**/${d}/**`),
     ...(input.exclude ?? []),
@@ -192,6 +249,11 @@ export async function scanFiles(input: ScanInput): Promise<InstructionFile[]> {
       dot: true,
       absolute: false,
       followSymbolicLinks: false,
+      // Skip unreadable entries instead of failing the whole glob: an explicit
+      // `include: [".clinerules/**"]` with a `.clinerules` FILE (ENOTDIR), or
+      // one permission-denied directory, used to empty the entire scan via the
+      // catch below.
+      suppressErrors: true,
     });
   } catch {
     return [];
@@ -216,12 +278,16 @@ export async function scanFiles(input: ScanInput): Promise<InstructionFile[]> {
       if (isBinary(buffer)) continue;
 
       const content = buffer.toString('utf-8');
-      const sections = parseSections(content, absPath);
+      // Root-relative, forward slashes: the location-independent form finding
+      // ids hash (finding-id.ts), identical on every OS and checkout path.
+      const relativePath = path.relative(repoRoot, absPath).replace(/\\/g, '/');
+      const sections = parseSections(content, absPath, relativePath);
       const lineCount = splitLines(content).length;
       const charCount = content.length;
 
       results.push({
         path: absPath,
+        relativePath,
         fileType: deriveFileType(relPath),
         content,
         sections,

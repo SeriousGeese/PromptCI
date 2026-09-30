@@ -14,17 +14,12 @@
 
 import * as crypto from 'node:crypto';
 import type { InstructionFile, InstructionSection, PromptCiIssue } from './types.js';
+import { INSTRUCTION_FILE_TYPES } from './types.js';
 import { snippet } from './evidence.js';
+import { fileIdPath } from './finding-id.js';
 
 /** Persistent, always-loaded instruction files this detector applies to. */
-const TARGET_FILE_TYPES: ReadonlySet<InstructionFile['fileType']> = new Set([
-  'claude',
-  'agents',
-  'cursor',
-  'windsurf',
-  'copilot',
-  'prompt',
-]);
+const TARGET_FILE_TYPES = INSTRUCTION_FILE_TYPES;
 
 const MIN_PARAGRAPHS = 6; // "> 5 paragraphs"
 const PARAGRAPH_JACCARD_THRESHOLD = 0.65;
@@ -144,7 +139,7 @@ export function detectWithinSectionDedup(files: InstructionFile[]): PromptCiIssu
       const morePairs = pairCount > 1 ? ` (${pairCount} similar pairs in total)` : '';
 
       issues.push({
-        id: issueId(file.path, section.startLine),
+        id: issueId(fileIdPath(file), section.startLine),
         severity: 'info',
         category: 'duplicate',
         title: `Possible repetition within section: ${heading}`,

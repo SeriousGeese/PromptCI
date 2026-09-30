@@ -5,6 +5,7 @@ import type { PromptCiIssue } from './types.js';
 import type { RepoContext } from './repo-context.js';
 import { matchEvidence } from './evidence.js';
 import { PROMPTCI_GITIGNORE_BLOCK, PROMPTCI_GITIGNORE_LINES } from './promptci-gitignore.js';
+import { fileIdPath } from './finding-id.js';
 
 interface SecurityCheck {
   id: string;
@@ -285,7 +286,7 @@ export function detectSecurityPack(context: RepoContext): PromptCiIssue[] {
 
         if (!matchesAny(file.content, safetyPatterns)) {
           issues.push({
-            id: destructiveCommandIssueId(file.path, cmd.name),
+            id: destructiveCommandIssueId(fileIdPath(file), cmd.name),
             severity: 'warning',
             category: 'security',
             title: `Destructive command "${cmd.name}" without safety language`,
@@ -454,7 +455,7 @@ export function detectSecurityPack(context: RepoContext): PromptCiIssue[] {
           // SP1 / B3: was a constant id inside this per-file loop — the
           // `break` below only exits the pattern loop, not the file loop, so
           // two matching files produced two issues sharing ONE id.
-          id: inspectReportsFirstIssueId(file.path),
+          id: inspectReportsFirstIssueId(fileIdPath(file)),
           severity: 'info',
           category: 'context_bloat',
           title: 'Instruction prioritizing generated reports over source docs',

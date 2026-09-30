@@ -24,6 +24,7 @@ import * as crypto from 'node:crypto';
 import * as path from 'node:path';
 import type { InstructionFile, PromptCiIssue } from './types.js';
 import { stripCodeBlocks } from './markdown-fences.js';
+import { fileIdPath } from './finding-id.js';
 
 // ── Practice checks ──────────────────────────────────────────────────────────
 
@@ -266,6 +267,14 @@ const CLAUDE_XML_TAG_RE = /<\/?claude:[\w-]+|<instructions-for-claude[\s>]/i;
 const FORWARDING_RE =
   /(?:follow|use|see|refer\s+to|canonical\s+(?:source|instructions?)|pointer\s+to)\s+[`'"*]*(?:\.?\/)?(?:\.github\/)?(?:AGENTS|CLAUDE)\.md\b/i;
 
+// The same delegation phrased subject-first: "`AGENTS.md` is the single source
+// of truth for all agents" / "AGENTS.md is canonical". Common in the tool stubs
+// (GEMINI.md, .clinerules) that rule-sync setups generate next to AGENTS.md.
+// Same-line only, so an unrelated "canonical" further down cannot pair up; and
+// a file naming ITSELF as the source of truth is not delegating (see caller).
+const SOURCE_OF_TRUTH_RE =
+  /\b(AGENTS|CLAUDE)\.md\b[^\n]{0,60}?\b(?:single\s+source\s+of\s+truth|canonical)\b/i;
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function issueId(checkId: string): string {
@@ -372,6 +381,20 @@ function perFileBehaviorTarget(file: InstructionFile): { label: string; agent: s
     return { label: '.github/copilot-instructions.md', agent: 'GitHub Copilot' };
   }
 
+  // GEMINI.md and a single-file `.clinerules` are read standalone by their
+  // tool, exactly like the files above — the same BUG-19 reasoning as
+  // `.windsurfrules`. Files inside a `.clinerules/` DIRECTORY are not targets:
+  // Cline concatenates the whole directory, so one rule file lacking guidance
+  // that a sibling provides is not a gap. Persona files (SOUL.md etc.) are not
+  // tool-specific rule files, so they are not per-agent targets either.
+  if (file.fileType === 'gemini') {
+    return { label: 'GEMINI.md', agent: 'Gemini CLI' };
+  }
+
+  if (file.fileType === 'cline' && path.basename(file.path) === '.clinerules') {
+    return { label: '.clinerules', agent: 'Cline' };
+  }
+
   return undefined;
 }
 
@@ -383,6 +406,10 @@ function isForwardingFile(file: InstructionFile): boolean {
   // be flagged for "missing" guidance it forwards to.
   const head = file.content.split(/\r?\n/).slice(0, 12).join('\n');
   if (FORWARDING_RE.test(head)) return true;
+  const sourceOfTruth = SOURCE_OF_TRUTH_RE.exec(head);
+  if (sourceOfTruth && `${sourceOfTruth[1]!.toLowerCase()}.md` !== path.basename(file.path).toLowerCase()) {
+    return true;
+  }
   // Legacy: a short file with a forwarding pointer anywhere.
   return file.lineCount < 20 && FORWARDING_RE.test(file.content);
 }
@@ -464,7 +491,7 @@ export function detectAgentPractices(files: InstructionFile[]): PromptCiIssue[] 
 
     filesWithNoGuidanceFinding.add(file.path);
     issues.push({
-      id: perFileBehaviorIssueId(file.path),
+      id: perFileBehaviorIssueId(fileIdPath(file)),
       severity: 'warning',
       category: 'agent_practices',
       title: `No behavioral guidance in ${target.label}`,
@@ -507,7 +534,7 @@ export function detectAgentPractices(files: InstructionFile[]): PromptCiIssue[] 
       const hasThisGuidance = matchesAny(stripChecklistLines(file.content), check.patterns);
       if (!hasThisGuidance) {
         const checkName = check.title.toLowerCase().replace('no ', '').replace(' instruction', '');
-        const hash = crypto.createHash('sha1').update(`behavior-gap:${file.path}:${check.id}`).digest('hex').slice(0, 12);
+        const hash = crypto.createHash('sha1').update(`behavior-gap:${fileIdPath(file)}:${check.id}`).digest('hex').slice(0, 12);
         issues.push({
           id: `per-file-behavioral-gap-${hash}`,
           severity: 'warning',
@@ -563,7 +590,7 @@ export function detectAgentPractices(files: InstructionFile[]): PromptCiIssue[] 
   if (hasGeneralBehaviorOnlyInCopilot()) {
     const copilotFile = files.find(isCopilotInstructionsFile)!;
     issues.push({
-      id: copilotAgentBehaviorId(copilotFile.path),
+      id: copilotAgentBehaviorId(fileIdPath(copilotFile)),
       severity: 'warning',
       category: 'structure',
       title: 'General behavioral guidance placed only in Copilot instructions',
@@ -587,10 +614,10 @@ export function detectAgentPractices(files: InstructionFile[]): PromptCiIssue[] 
     if (!matchesAny(file.content, KEY_BEHAVIORAL_PATTERNS)) continue;
 
     // Check if we already flagged this via general-behavior-only check
-    if (issues.some(i => i.id === copilotAgentBehaviorId(file.path))) continue;
+    if (issues.some(i => i.id === copilotAgentBehaviorId(fileIdPath(file)))) continue;
 
     issues.push({
-      id: copilotAgentBehaviorId(file.path),
+      id: copilotAgentBehaviorId(fileIdPath(file)),
       severity: 'warning',
       category: 'structure',
       title: 'Agent-behavior section in copilot-instructions.md',
@@ -625,7 +652,7 @@ export function detectAgentPractices(files: InstructionFile[]): PromptCiIssue[] 
     if (hasDoNotEdit && !hasGeneratorNote) {
       // Case 1 (original): "do not edit" present but NO generator note.
       issues.push({
-        id: doNotEditIssueId(file.path),
+        id: doNotEditIssueId(fileIdPath(file)),
         severity: 'warning',
         category: 'agent_practices',
         title: '"Do not edit" header in human-maintained instruction file',
@@ -649,7 +676,7 @@ export function detectAgentPractices(files: InstructionFile[]): PromptCiIssue[] 
         return `auto-gen-header-${hash}`;
       };
       issues.push({
-        id: autoGenId(file.path),
+        id: autoGenId(fileIdPath(file)),
         severity: 'warning',
         category: 'agent_practices',
         title: 'Misleading auto-generated header on human-maintained instruction file',
@@ -685,7 +712,7 @@ export function detectAgentPractices(files: InstructionFile[]): PromptCiIssue[] 
       // actually made the gate fire.
       const firstTag = (/<\/?claude:[\w-]+/i).exec(contentOutsideCode)?.[0] ?? '<claude:...>';
       issues.push({
-        id: claudeTagId(file.path),
+        id: claudeTagId(fileIdPath(file)),
         severity: 'warning',
         category: 'structure',
         title: 'Claude-specific XML tag in non-Claude instruction file',

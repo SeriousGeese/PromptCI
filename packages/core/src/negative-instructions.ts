@@ -18,17 +18,12 @@
 import * as crypto from 'node:crypto';
 import * as path from 'node:path';
 import type { InstructionFile, PromptCiIssue } from './types.js';
+import { INSTRUCTION_FILE_TYPES } from './types.js';
 import { snippet } from './evidence.js';
+import { fileIdPath } from './finding-id.js';
 
 /** Persistent, always-loaded instruction files this detector applies to. */
-const TARGET_FILE_TYPES: ReadonlySet<InstructionFile['fileType']> = new Set([
-  'claude',
-  'agents',
-  'cursor',
-  'windsurf',
-  'copilot',
-  'prompt',
-]);
+const TARGET_FILE_TYPES = INSTRUCTION_FILE_TYPES;
 
 /**
  * A sentence is a NEGATIVE directive when it contains one of these prohibition
@@ -168,7 +163,7 @@ export function detectNegativeInstructionOverload(files: InstructionFile[]): Pro
     const examples = negatives.slice(0, 3).map((s) => snippet(s, 100));
 
     issues.push({
-      id: issueId(file.path),
+      id: issueId(fileIdPath(file)),
       severity: 'info',
       category: 'agent_practices',
       title: 'High proportion of negative instructions',

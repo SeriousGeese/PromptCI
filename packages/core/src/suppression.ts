@@ -52,6 +52,8 @@ const VALID_SUPPRESSION_CATEGORIES = new Set<string>([
 
 export type SuppressionAnnotation = {
   filePath: string;
+  /** Repo-relative `filePath` (forward slashes), when the file came from the scanner. */
+  relativePath?: string;
   category: IssueCategory | 'all';
   reason: string;
   startLine: number;
@@ -280,7 +282,10 @@ function parseFileSuppressions(file: InstructionFile): SuppressionAnnotation[] {
   }
   if (openStart) pushUnpairedStart(openStart);
 
-  return annotations;
+  // Carried only for the invalid-annotation finding id (pcic-whm): matching
+  // against issues still uses the absolute `filePath`.
+  const { relativePath } = file;
+  return relativePath === undefined ? annotations : annotations.map((a) => ({ ...a, relativePath }));
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -305,7 +310,7 @@ export function buildValidationIssues(
   return annotations
     .filter((ann) => !ann.valid)
     .map((ann) => ({
-      id: annotationIssueId(ann.filePath, ann.startLine, ann.validationMessage ?? ''),
+      id: annotationIssueId(ann.relativePath ?? ann.filePath, ann.startLine, ann.validationMessage ?? ''),
       severity: 'warning' as const,
       category: 'structure' as const,
       title: 'Invalid promptci-ignore annotation',

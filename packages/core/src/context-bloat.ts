@@ -13,6 +13,7 @@
 
 import * as crypto from 'node:crypto';
 import type { InstructionFile, PromptCiIssue } from './types.js';
+import { fileIdPath } from './finding-id.js';
 
 export type ContextBloatThresholds = {
   fileWarning: number;
@@ -132,7 +133,7 @@ export function detectContextBloat(
 
     if (charCount >= highThreshold) {
       issues.push({
-        id: fileIssueId(filePath),
+        id: fileIssueId(fileIdPath(file)),
         severity: 'high',
         category: 'context_bloat',
         title: isWindsurf ? '.windsurfrules is past the Windsurf size limit' : 'Instruction file is very large',
@@ -151,7 +152,7 @@ export function detectContextBloat(
       });
     } else if (charCount >= warnThreshold) {
       issues.push({
-        id: fileIssueId(filePath),
+        id: fileIssueId(fileIdPath(file)),
         severity: 'warning',
         category: 'context_bloat',
         title: isWindsurf ? '.windsurfrules may exceed the Windsurf size limit' : 'Instruction file may be too large',
@@ -175,7 +176,7 @@ export function detectContextBloat(
   for (const file of files) {
     if (file.fileType === 'copilot' && file.lineCount > t.copilotLineWarning) {
       issues.push({
-        id: fileIssueId(file.path + ':copilot-lines'),
+        id: fileIssueId(fileIdPath(file) + ':copilot-lines'),
         severity: 'warning',
         category: 'context_bloat',
         title: 'Copilot instructions file exceeds recommended line limit',
@@ -248,7 +249,7 @@ export function detectContextBloat(
   ) {
     const share = Math.round((readme.estimatedTokens / totalTokens) * 100);
     issues.push({
-      id: fileIssueId(`${readme.path}:readme-dominates`),
+      id: fileIssueId(`${fileIdPath(readme)}:readme-dominates`),
       severity: 'info',
       category: 'context_bloat',
       title: 'README dominates scanned instruction context',

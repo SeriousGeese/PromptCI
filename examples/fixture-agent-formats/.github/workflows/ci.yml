@@ -1,0 +1,30 @@
+# Fixture for the action-pinning detector. Not a live workflow: GitHub only
+# runs workflows from the repository root's .github/workflows.
+name: CI
+on: [push]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      # Unpinned first-party action (tag) -> info finding.
+      - uses: actions/checkout@v4
+      # Pinned to a full commit SHA -> clean.
+      - uses: actions/setup-node@0123456789abcdef0123456789abcdef01234567 # v4.1.0
+        with:
+          node-version: 22
+      # Unpinned third-party action (quoted, trailing comment) -> warning finding.
+      - name: Set up pnpm
+        uses: "pnpm/action-setup@v4" # pnpm
+      # Local and container actions have no git ref to pin -> exempt.
+      - uses: ./.github/actions/setup-cache
+      - uses: docker://alpine:3.20
+      # A script that merely prints a `uses:` line is not a step.
+      - run: |
+          echo "example:"
+          uses: fake/not-a-step@v1
+      - run: npm test
+
+  shared:
+    # Reusable workflow on a branch -> warning finding.
+    uses: example-org/shared-workflows/.github/workflows/lint.yml@main

@@ -23,6 +23,7 @@ import * as path from 'node:path';
 import micromatch from 'micromatch';
 import type { InstructionFile, IssueSeverity, PromptCiIssue } from './types.js';
 import { snippet } from './evidence.js';
+import { fileIdPath } from './finding-id.js';
 
 export const CUSTOM_RULES_FILE = path.join('.promptci', 'custom-rules.json');
 
@@ -231,7 +232,7 @@ function runForbiddenPattern(files: InstructionFile[], rule: CustomRule): Prompt
     if (!match) continue;
     const line = lineOfOffset(file.content, match.index);
     issues.push({
-      id: `custom:${rule.id}:${shortHash(file.path)}`,
+      id: `custom:${rule.id}:${shortHash(fileIdPath(file))}`,
       ...baseIssue(rule),
       title: rule.message,
       summary: `Custom rule "${rule.id}": a forbidden pattern was found in this file.`,

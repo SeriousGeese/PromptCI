@@ -71,6 +71,19 @@ describe('CLI meta commands', () => {
     expect(stdout).toContain('--fail-on');
   });
 
+  it('badge --help exits 0 and lists its options', () => {
+    const { status, stdout } = cli(['badge', '--help']);
+    expect(status).toBe(0);
+    expect(stdout).toContain('--report');
+    expect(stdout).toContain('--output');
+  });
+
+  it('badge exits 1 with an error for a report file that does not exist', () => {
+    const { status, stderr } = cli(['badge', '--path', BASIC_FIXTURE, '--report', 'no-such-report.json']);
+    expect(status).toBe(1);
+    expect(stderr).toContain('report file not found');
+  });
+
   it('context analyze --help exits 0', () => {
     const { status, stdout } = cli(['context', 'analyze', '--help']);
     expect(status).toBe(0);

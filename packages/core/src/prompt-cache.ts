@@ -1,7 +1,9 @@
 import type { InstructionFile, PromptCiIssue } from './types.js';
+import { INSTRUCTION_FILE_TYPES } from './types.js';
 import { matchEvidence } from './evidence.js';
 import * as path from 'node:path';
 import * as crypto from 'node:crypto';
+import { fileIdPath } from './finding-id.js';
 
 /**
  * B4: every id in this file was keyed by `${file.fileType}` — two files
@@ -54,7 +56,7 @@ export function detectPromptCacheFriendliness(files: InstructionFile[]): PromptC
 
   // Focus only on persistent, always-loaded instruction files
   const targetFiles = files.filter((f) =>
-    ['claude', 'agents', 'cursor', 'windsurf', 'copilot', 'prompt'].includes(f.fileType)
+    INSTRUCTION_FILE_TYPES.has(f.fileType)
   );
 
   for (const file of targetFiles) {
@@ -64,7 +66,7 @@ export function detectPromptCacheFriendliness(files: InstructionFile[]): PromptC
     for (const pat of DATE_PATTERNS) {
       if (pat.re.test(file.content)) {
         issues.push({
-          id: promptCacheIssueId('volatile-timestamp', file.path),
+          id: promptCacheIssueId('volatile-timestamp', fileIdPath(file)),
           severity: 'warning',
           category: 'context_bloat',
           title: 'Volatile timestamp in instruction file',
@@ -84,7 +86,7 @@ export function detectPromptCacheFriendliness(files: InstructionFile[]): PromptC
     for (const pat of SCAN_REPORT_PATTERNS) {
       if (pat.re.test(file.content)) {
         issues.push({
-          id: promptCacheIssueId('pasted-report', file.path),
+          id: promptCacheIssueId('pasted-report', fileIdPath(file)),
           severity: 'warning',
           category: 'context_bloat',
           title: 'Pasted scan report or summary in instructions',
@@ -104,7 +106,7 @@ export function detectPromptCacheFriendliness(files: InstructionFile[]): PromptC
     for (const pat of BRANCH_TASK_PATTERNS) {
       if (pat.re.test(file.content)) {
         issues.push({
-          id: promptCacheIssueId('volatile-branch-task', file.path),
+          id: promptCacheIssueId('volatile-branch-task', fileIdPath(file)),
           severity: 'warning',
           category: 'context_bloat',
           title: 'Volatile branch or task status in instructions',
@@ -124,7 +126,7 @@ export function detectPromptCacheFriendliness(files: InstructionFile[]): PromptC
     if (LOCAL_PATH_PATTERN.test(file.content)) {
       const match = file.content.match(LOCAL_PATH_PATTERN)?.[0] ?? '';
       issues.push({
-        id: promptCacheIssueId('local-paths', file.path),
+        id: promptCacheIssueId('local-paths', fileIdPath(file)),
         severity: 'warning',
         category: 'context_bloat',
         title: 'Local machine paths in instructions',
@@ -162,7 +164,7 @@ export function detectPromptCacheFriendliness(files: InstructionFile[]): PromptC
 
     if (maxTableRows > 15) {
       issues.push({
-        id: promptCacheIssueId('large-table', file.path),
+        id: promptCacheIssueId('large-table', fileIdPath(file)),
         severity: 'warning',
         category: 'context_bloat',
         title: 'Large table in instruction file',

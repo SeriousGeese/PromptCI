@@ -15,6 +15,7 @@ import * as crypto from 'node:crypto';
 import type { InstructionFile, InstructionSection, PromptCiIssue } from './types.js';
 import { stripCodeBlocks } from './markdown-fences.js';
 import { snippet } from './evidence.js';
+import { sectionIdPath } from './finding-id.js';
 
 // ─── Pattern definitions ──────────────────────────────────────────────────────
 
@@ -132,7 +133,7 @@ const OLD_VERSION_PATTERNS: Array<{ re: RegExp; label: string }> = [
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function issueId(section: InstructionSection, tag: string): string {
-  const key = `${section.filePath}:${section.startLine}:${tag}`;
+  const key = `${sectionIdPath(section)}:${section.startLine}:${tag}`;
   const hash = crypto.createHash('sha1').update(key).digest('hex').slice(0, 12);
   return `stale-${hash}`;
 }

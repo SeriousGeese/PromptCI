@@ -82,6 +82,21 @@ describe('optimizeContext', () => {
     expect(origFileChange?.newContent).not.toContain(body);
   });
 
+  it('never rewrites persona files (SOUL.md etc.), but does rewrite GEMINI.md / Cline rules', async () => {
+    const content = [
+      '# Rules',
+      '## Current Tasks',
+      'Current Branch: feat/caching',
+      'Active Task: implement cache checks',
+      '## Stable Section',
+      'This section contains no volatile info.',
+    ].join('\n');
+    const persona = await optimizeContext([makeFile(content, 'persona', '/repo/SOUL.md')], { repoRoot: '/repo' });
+    expect(persona.changes).toEqual([]);
+    const gemini = await optimizeContext([makeFile(content, 'gemini', '/repo/GEMINI.md')], { repoRoot: '/repo' });
+    expect(gemini.changes.length).toBe(2);
+  });
+
   it('splits sections containing volatile information even if under size threshold', async () => {
     const content = [
       '# Rules',
