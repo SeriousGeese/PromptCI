@@ -5,6 +5,7 @@ import { detectCiAlignment } from './ci-alignment.js';
 import { detectCompetingTechConflicts, detectConflicts, detectVersionConflicts } from './conflicts.js';
 import { detectCommandValidity } from './command-validity.js';
 import { detectContextBloat } from './context-bloat.js';
+import { detectDependencyStaleness } from './dependency-staleness.js';
 import { detectDeadReferences } from './dead-references.js';
 import { detectDuplicates, detectDuplicateHeadings } from './duplicates.js';
 import { detectManifestConsistency } from './manifest-consistency.js';
@@ -83,6 +84,10 @@ export const DETECTORS: DetectorDefinition[] = [
   {
     id: 'manifest-consistency',
     run: (context) => detectManifestConsistency(context),
+  },
+  {
+    id: 'dependency-staleness',
+    run: (context) => detectDependencyStaleness(context),
   },
   {
     id: 'vague-guidance',

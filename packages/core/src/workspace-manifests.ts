@@ -35,6 +35,12 @@ export type WorkspaceManifest = {
    * are packages of this repo, not installed tools).
    */
   dependencies: string[];
+  /**
+   * Version spec per dependency named in `dependencies` (first block wins:
+   * dependencies, devDependencies, peerDependencies, optionalDependencies).
+   * Optional so hand-built manifests keep type-checking.
+   */
+  versions?: Record<string, string>;
   /** Binary names the package itself exposes (`bin`). */
   bins: string[];
 };
@@ -133,10 +139,13 @@ export function parseWorkspaceManifest(dir: string, raw: string): WorkspaceManif
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return undefined;
   const obj = parsed as Record<string, unknown>;
   const dependencies = new Set<string>();
+  const versions: Record<string, string> = {};
   for (const block of DEPENDENCY_BLOCKS) {
     const specs = stringRecord(obj[block]);
     for (const dep of Object.keys(specs)) {
-      if (!specs[dep]!.startsWith('workspace:')) dependencies.add(dep);
+      if (specs[dep]!.startsWith('workspace:')) continue;
+      dependencies.add(dep);
+      if (!(dep in versions)) versions[dep] = specs[dep]!;
     }
   }
   return {
@@ -144,6 +153,7 @@ export function parseWorkspaceManifest(dir: string, raw: string): WorkspaceManif
     name: typeof obj.name === 'string' ? obj.name : undefined,
     scripts: stringRecord(obj.scripts),
     dependencies: [...dependencies].sort(),
+    versions,
     bins: binNames(obj),
   };
 }

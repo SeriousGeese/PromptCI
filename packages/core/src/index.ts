@@ -12,6 +12,7 @@ export { computeHealthScore, selectTopFixes } from './health-score.js';
 export { generateMarkdownReport, generateJsonReport, writeReport, readHistoryIndex, archiveExistingReport, historyIndexPath, scoreLabel } from './report.js';
 export type { WriteReportOptions, HistoryEntry } from './report.js';
 export { detectManifestConsistency } from './manifest-consistency.js';
+export { detectDependencyStaleness } from './dependency-staleness.js';
 export type { ManifestData } from './manifest-consistency.js';
 export { buildRepoContext, parsePackageJsonFacts } from './repo-context.js';
 export type { RepoContext, PackageJsonFacts, WorkflowFacts, WorkflowCommand, WorkflowSource } from './repo-context.js';
