@@ -27,8 +27,19 @@ import { detectNegativeInstructionOverload } from './negative-instructions.js';
 import { detectBuriedCriticalInstructions } from './buried-critical.js';
 import { detectWithinSectionDedup } from './within-section-dedup.js';
 import { runCustomRules } from './custom-rules.js';
-import type { PromptCiIssue } from './types.js';
+import { withTypeAliases } from './alias-files.js';
+import { INSTRUCTION_FILE_TYPES } from './types.js';
+import type { FileType, PromptCiIssue } from './types.js';
 import type { RepoContext } from './repo-context.js';
+
+/**
+ * The detectors gated by `INSTRUCTION_FILE_TYPES` read each file on its own, so a
+ * symlink alias is scanned for them when its own type is in the set and the
+ * real file's is not (`CLAUDE.md -> README.md`). Aliases of a file that is
+ * already in the set add nothing: the content is checked once, as the real file.
+ */
+const isInstructionType = (type: FileType): boolean => INSTRUCTION_FILE_TYPES.has(type);
+const instructionFiles = (context: RepoContext) => withTypeAliases(context.files, context.aliasFiles, isInstructionType);
 
 export type DetectorDefinition = {
   id: string;
@@ -46,7 +57,7 @@ export const DETECTORS: DetectorDefinition[] = [
   },
   {
     id: 'within-section-dedup',
-    run: (context) => detectWithinSectionDedup(context.files),
+    run: (context) => detectWithinSectionDedup(instructionFiles(context)),
   },
   {
     id: 'conflicts',
@@ -87,7 +98,7 @@ export const DETECTORS: DetectorDefinition[] = [
   },
   {
     id: 'dependency-staleness',
-    run: (context) => detectDependencyStaleness(context),
+    run: (context) => detectDependencyStaleness({ ...context, files: instructionFiles(context) }),
   },
   {
     id: 'vague-guidance',
@@ -124,7 +135,7 @@ export const DETECTORS: DetectorDefinition[] = [
   },
   {
     id: 'prompt-cache-friendliness',
-    run: (context) => detectPromptCacheFriendliness(context.files),
+    run: (context) => detectPromptCacheFriendliness(instructionFiles(context)),
   },
   {
     id: 'ai-config-skills',
@@ -160,11 +171,11 @@ export const DETECTORS: DetectorDefinition[] = [
   },
   {
     id: 'negative-instructions',
-    run: (context) => detectNegativeInstructionOverload(context.files),
+    run: (context) => detectNegativeInstructionOverload(instructionFiles(context)),
   },
   {
     id: 'buried-critical',
-    run: (context) => detectBuriedCriticalInstructions(context.files),
+    run: (context) => detectBuriedCriticalInstructions(instructionFiles(context)),
   },
   {
     id: 'custom-rules',

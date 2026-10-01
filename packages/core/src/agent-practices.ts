@@ -25,6 +25,7 @@ import * as path from 'node:path';
 import type { InstructionFile, PromptCiIssue } from './types.js';
 import { stripCodeBlocks } from './markdown-fences.js';
 import { fileIdPath } from './finding-id.js';
+import { aliasesWithNewType, groupAliasesByTarget } from './alias-files.js';
 
 // ── Practice checks ──────────────────────────────────────────────────────────
 
@@ -431,6 +432,50 @@ function aliasesWithNewTarget(files: InstructionFile[], aliases: InstructionFile
   });
 }
 
+/** A Claude XML tag is only meaningful in a CLAUDE.md; README files document the tags as examples. */
+function isClaudeTagTarget(fileType: InstructionFile['fileType']): boolean {
+  return fileType !== 'claude' && fileType !== 'readme';
+}
+
+/**
+ * BUG-007: Claude-specific XML tags in a non-Claude instruction file.
+ * <claude:thinking> and similar tags are Claude-specific features; embedding them
+ * in .cursorrules or AGENTS.md is tool-specific syntax in the wrong file type.
+ * Skip README files — they often document Claude XML tags as examples rather than using them
+ * Skip if the tag only appears inside fenced code blocks (documentation, not real usage)
+ */
+function claudeXmlTagIssue(names: InstructionFile[]): PromptCiIssue | undefined {
+  // `names` is one real file, or every link to one real file (one finding listing them all, id from the first).
+  const file = names[0]!;
+  if (!isClaudeTagTarget(file.fileType)) return undefined;
+  const contentOutsideCode = stripCodeBlocks(file.content).replace(/`[^`\n]+`/g, '');
+  if (!CLAUDE_XML_TAG_RE.test(contentOutsideCode)) return undefined;
+  const hash = crypto.createHash('sha1').update(`claude-xml-tag:${fileIdPath(file)}`).digest('hex').slice(0, 12);
+  // AP3: search contentOutsideCode (the same text the gate above tested),
+  // not the raw file.content — otherwise an earlier occurrence of the
+  // tag that exists ONLY inside a code fence (documentation, not real
+  // usage) could be picked as evidence instead of the real match that
+  // actually made the gate fire.
+  const firstTag = (/<\/?claude:[\w-]+/i).exec(contentOutsideCode)?.[0] ?? '<claude:...>';
+  return {
+    id: `claude-xml-tag-${hash}`,
+    severity: 'warning',
+    category: 'structure',
+    title: 'Claude-specific XML tag in non-Claude instruction file',
+    summary:
+      `This file contains a Claude-specific XML tag (${firstTag}) but is not a CLAUDE.md file. ` +
+      `Claude XML tags are only interpreted by Claude; other AI tools (Cursor, Copilot, etc.) ` +
+      `will treat them as literal text or ignore them.`,
+    filePaths: names.map((f) => f.path),
+    locations: names.map((f) => ({ filePath: f.path })),
+    evidence: [`Found: ${firstTag} in ${[...new Set(names.map((f) => f.fileType))].join(', ')} file`],
+    recommendation:
+      'Move Claude-specific directives to CLAUDE.md, or replace this tag with a plain-text ' +
+      'instruction that all tools can understand.',
+    confidence: 0.85,
+  };
+}
+
 export function detectAgentPractices(files: InstructionFile[], aliases: InstructionFile[] = []): PromptCiIssue[] {
   if (files.length === 0) return [];
   // Files the per-agent checks run over: every scanned file plus the symlink aliases that are a different tool's file.
@@ -711,41 +756,19 @@ export function detectAgentPractices(files: InstructionFile[], aliases: Instruct
       });
     }
 
-    // BUG-007: Detect Claude-specific XML tags in non-Claude instruction files.
-    // <claude:thinking> and similar tags are Claude-specific features; embedding them
-    // in .cursorrules or AGENTS.md is tool-specific syntax in the wrong file type.
-    // Skip README files — they often document Claude XML tags as examples rather than using them
-    // Skip if the tag only appears inside fenced code blocks (documentation, not real usage)
-    const contentOutsideCode = stripCodeBlocks(file.content).replace(/`[^`\n]+`/g, '');
-    if (file.fileType !== 'claude' && file.fileType !== 'readme' && CLAUDE_XML_TAG_RE.test(contentOutsideCode)) {
-      const claudeTagId = (p: string) => {
-        const hash = crypto.createHash('sha1').update(`claude-xml-tag:${p}`).digest('hex').slice(0, 12);
-        return `claude-xml-tag-${hash}`;
-      };
-      // AP3: search contentOutsideCode (the same text the gate above tested),
-      // not the raw file.content — otherwise an earlier occurrence of the
-      // tag that exists ONLY inside a code fence (documentation, not real
-      // usage) could be picked as evidence instead of the real match that
-      // actually made the gate fire.
-      const firstTag = (/<\/?claude:[\w-]+/i).exec(contentOutsideCode)?.[0] ?? '<claude:...>';
-      issues.push({
-        id: claudeTagId(fileIdPath(file)),
-        severity: 'warning',
-        category: 'structure',
-        title: 'Claude-specific XML tag in non-Claude instruction file',
-        summary:
-          `This file contains a Claude-specific XML tag (${firstTag}) but is not a CLAUDE.md file. ` +
-          `Claude XML tags are only interpreted by Claude; other AI tools (Cursor, Copilot, etc.) ` +
-          `will treat them as literal text or ignore them.`,
-        filePaths: [file.path],
-        locations: [{ filePath: file.path }],
-        evidence: [`Found: ${firstTag} in ${file.fileType} file`],
-        recommendation:
-          'Move Claude-specific directives to CLAUDE.md, or replace this tag with a plain-text ' +
-          'instruction that all tools can understand.',
-        confidence: 0.85,
-      });
-    }
+    const claudeTag = claudeXmlTagIssue([file]);
+    if (claudeTag) issues.push(claudeTag);
+  }
+
+  // The Claude-tag check is gated by file type, and `AGENTS.md -> CLAUDE.md` is an AGENTS.md to every
+  // tool that reads that name: run it for such an alias, against the real content. (An alias of a file
+  // that is already "not Claude" would only repeat the real file's finding, so it is left out.) The
+  // other per-type content checks above are not repeated for aliases: "do not edit" is type-independent,
+  // and the Copilot agent-behavior check assumes copilot-instructions.md is Copilot-only, which a link
+  // to AGENTS.md is not. Several links to one file give ONE finding that lists every link.
+  for (const group of groupAliasesByTarget(aliasesWithNewType(files, aliases, isClaudeTagTarget))) {
+    const claudeTag = claudeXmlTagIssue(group);
+    if (claudeTag) issues.push(claudeTag);
   }
 
   return issues;
