@@ -416,8 +416,25 @@ function isForwardingFile(file: InstructionFile): boolean {
 
 // ── Detector ─────────────────────────────────────────────────────────────────
 
-export function detectAgentPractices(files: InstructionFile[]): PromptCiIssue[] {
+/**
+ * Symlink aliases whose OWN tool-specific name adds a per-agent target the real
+ * file does not have: `CLAUDE.md -> AGENTS.md` means Claude reads AGENTS.md's
+ * content, so the per-file behavior checks apply to it as the CLAUDE.md it is.
+ * An alias whose target is the same kind of file as the real one adds nothing.
+ */
+function aliasesWithNewTarget(files: InstructionFile[], aliases: InstructionFile[]): InstructionFile[] {
+  return aliases.filter((alias) => {
+    const target = perFileBehaviorTarget(alias);
+    if (!target) return false;
+    const canonical = files.find((f) => f.relativePath === alias.aliasOf);
+    return canonical === undefined || perFileBehaviorTarget(canonical)?.label !== target.label;
+  });
+}
+
+export function detectAgentPractices(files: InstructionFile[], aliases: InstructionFile[] = []): PromptCiIssue[] {
   if (files.length === 0) return [];
+  // Files the per-agent checks run over: every scanned file plus the symlink aliases that are a different tool's file.
+  const targetFiles = [...files, ...aliasesWithNewTarget(files, aliases)];
 
   const issues: PromptCiIssue[] = [];
   const combinedContent = files.map((f) => f.content).join('\n');
@@ -473,7 +490,7 @@ export function detectAgentPractices(files: InstructionFile[]): PromptCiIssue[] 
   // inflating the health-score penalty ~6x for a single underlying gap.
   const filesWithNoGuidanceFinding = new Set<string>();
 
-  for (const file of files) {
+  for (const file of targetFiles) {
     const target = perFileBehaviorTarget(file);
     if (!target) continue;
     if (hasBehavioralGuidance(file)) {
@@ -522,7 +539,7 @@ export function detectAgentPractices(files: InstructionFile[]): PromptCiIssue[] 
     const sourceFile = files.find((f) => matchesAny(stripChecklistLines(f.content), check.patterns));
     if (!sourceFile) continue;
 
-    for (const file of files) {
+    for (const file of targetFiles) {
       if (file === sourceFile) continue;
       const target = perFileBehaviorTarget(file);
       if (!target) continue;

@@ -8,6 +8,7 @@ import {
   assertValidBaseline,
   isWithinRoot,
   resolveReadableWithinRoot,
+  writeTargetWithinRoot,
   resolveTargetModel,
   TARGET_MODELS,
 } from '@promptci/core';
@@ -174,6 +175,14 @@ export async function runScan(options: ScanOptions): Promise<void> {
       ? path.resolve(resolvedPath, options.baseline)
       : path.join(resolvedPath, '.promptci', 'baseline.json');
 
+    // Mirror of the read policy: a baseline path inside the scan path must not write
+    // through a symlink that leaves it (an explicit path outside the scan path is fine).
+    if (!writeTargetWithinRoot(resolvedPath, baselinePath)) {
+      console.error(
+        `Error: baseline file "${baselinePath}" resolves outside the scan path through a symlink; refusing to write it.`,
+      );
+      process.exit(1);
+    }
     await fs.mkdir(path.dirname(baselinePath), { recursive: true });
     await fs.writeFile(baselinePath, JSON.stringify(newBaseline, null, 2));
     if (!options.json) {

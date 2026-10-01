@@ -37,7 +37,23 @@ export async function loadConfig(scanPath: string): Promise<CliConfig> {
   // A config committed as a symlink to a file outside the scan path is not read
   // (treated as absent), like every other file the scanner opens by name.
   const configPath = resolveReadableWithinRoot(path.resolve(scanPath), CONFIG_FILE);
-  if (configPath === null) return {};
+  if (configPath === null) {
+    // Only say so when something is actually there: no config at all is the normal case.
+    const lexical = path.join(path.resolve(scanPath), CONFIG_FILE);
+    let present = false;
+    try {
+      await fs.lstat(lexical);
+      present = true;
+    } catch {
+      // absent
+    }
+    if (present) {
+      process.stderr.write(
+        `Warning: ignoring ${lexical}: it resolves outside the scan path through a symlink, so its settings were not applied.\n`,
+      );
+    }
+    return {};
+  }
   let raw: string;
   try {
     raw = await fs.readFile(configPath, 'utf-8');

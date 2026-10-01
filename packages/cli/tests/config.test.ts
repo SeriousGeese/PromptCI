@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -175,8 +175,32 @@ describe('loadConfig symlink containment', () => {
     return repo;
   }
 
-  it('ignores a config that resolves outside the scan path', async () => {
-    expect(await loadConfig(await repoWithPromptciLink('outside'))).toEqual({});
+  it('ignores a config that resolves outside the scan path, and says so on stderr', async () => {
+    const writes: string[] = [];
+    const spy = vi.spyOn(process.stderr, 'write').mockImplementation((chunk) => {
+      writes.push(String(chunk));
+      return true;
+    });
+    try {
+      expect(await loadConfig(await repoWithPromptciLink('outside'))).toEqual({});
+    } finally {
+      spy.mockRestore();
+    }
+    expect(writes.join('')).toMatch(/Warning: ignoring .*config\.json.*outside the scan path/);
+  });
+
+  it('does not warn when there is simply no config', async () => {
+    const writes: string[] = [];
+    const spy = vi.spyOn(process.stderr, 'write').mockImplementation((chunk) => {
+      writes.push(String(chunk));
+      return true;
+    });
+    try {
+      expect(await loadConfig(await makeTempDir())).toEqual({});
+    } finally {
+      spy.mockRestore();
+    }
+    expect(writes).toEqual([]);
   });
 
   it('still reads a config reached through an in-repo link', async () => {

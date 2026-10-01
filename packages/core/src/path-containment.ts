@@ -90,3 +90,32 @@ export function resolveReadableWithinRoot(root: string, candidatePath: string): 
   if (resolved === null) return null;
   return realPathWithinRoot(root, resolved) ? resolved : null;
 }
+
+/**
+ * True when WRITING `target` stays inside `root`. The mirror of the read
+ * policy: a path inside the root must not reach outside through a symlink on
+ * any component that already exists (a `.promptci` committed as a link to
+ * `/etc`, a `latest.md` linked to `~/.bashrc`), including a dangling link whose
+ * target a write would create outside. The nearest existing ancestor is
+ * checked, so a not-yet-created file is judged by the directory it would land in.
+ *
+ * A target that is lexically OUTSIDE the root is the caller's explicit choice
+ * (`--output /tmp/report.md`) and is allowed.
+ */
+export function writeTargetWithinRoot(root: string, target: string): boolean {
+  const resolved = path.resolve(target);
+  if (!isWithinRoot(root, resolved)) return true;
+  let probe = resolved;
+  for (;;) {
+    if (realPath(probe) !== null) return realPathWithinRoot(root, probe);
+    try {
+      // lstat succeeding while realpath failed: a dangling symlink, whose target a write would create.
+      if (fs.lstatSync(probe).isSymbolicLink()) return false;
+    } catch {
+      // does not exist: look at its parent
+    }
+    const parent = path.dirname(probe);
+    if (parent === probe) return true;
+    probe = parent;
+  }
+}

@@ -6,6 +6,7 @@ import * as fs from 'node:fs/promises';
 import * as nodePath from 'node:path';
 import type { IssueSeverity, PromptCiIssue, ScanReport, ScanReportJson, ScanTrend } from './types.js';
 import { computeFingerprint } from './baseline.js';
+import { writeTargetWithinRoot } from './path-containment.js';
 import { snippet, visibleText } from './evidence.js';
 
 export type WriteReportOptions = {
@@ -307,7 +308,8 @@ export function generateMarkdownReport(report: ScanReport): string {
   lines.push(`**Generated:** ${generatedAt}`);
   lines.push(`**Repo:** \`${repoPath}\``);
   lines.push(`**Project type:** ${projectType}`);
-  lines.push(`**Files scanned:** ${filesScanned.length}`);
+  // Symlink aliases are listed below but are not separate files: count the real ones.
+  lines.push(`**Files scanned:** ${filesScanned.filter((f) => f.aliasOf === undefined).length}`);
   if (report.metrics) {
     lines.push(`**Estimated instruction tokens:** ${report.metrics.estimatedInstructionTokens} (always-loaded)`);
     if (report.metrics.estimatedOnDemandTokens) {
@@ -504,7 +506,8 @@ export function generateJsonReport(report: ScanReport, pretty = true): string {
       })),
     })),
     filesScanned: report.filesScanned.map((f) => ({
-      path: rel(f.path),
+      // Forward slashes, like `aliasOf` (a repo-relative POSIX path), on every OS.
+      path: rel(f.path).replace(/\\/g, '/'),
       fileType: f.fileType,
       lineCount: f.lineCount,
       charCount: f.charCount,
@@ -654,6 +657,16 @@ export async function writeReport(
   const outputDir = nodePath.join(report.repoPath, '.promptci');
   const resolvedMd = options.mdPath ?? nodePath.join(outputDir, 'latest.md');
   const resolvedJson = options.jsonPath ?? nodePath.join(outputDir, 'report.json');
+
+  // A `.promptci` (or `latest.md`) committed as a link that leaves the repo must not
+  // redirect these writes: mirror of the read policy. An explicit path outside the repo is allowed.
+  for (const target of [outputDir, resolvedMd, resolvedJson, nodePath.join(outputDir, 'history')]) {
+    if (!writeTargetWithinRoot(report.repoPath, target)) {
+      throw new Error(
+        `Refusing to write the report: ${target} resolves outside the repository through a symlink.`,
+      );
+    }
+  }
 
   await fs.mkdir(nodePath.dirname(resolvedMd), { recursive: true });
   await fs.mkdir(nodePath.dirname(resolvedJson), { recursive: true });
