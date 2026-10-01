@@ -21,6 +21,7 @@ import type { RepoContext } from './repo-context.js';
 import type { PromptCiIssue } from './types.js';
 import { shortHash } from './ai-config.js';
 import { fileIdPath } from './finding-id.js';
+import { withTypeAliases } from './alias-files.js';
 
 /**
  * Language / framework signals that, when they appear as SECTION HEADINGS in an
@@ -56,7 +57,11 @@ const MIN_DISTINCT_TOPICS = 2;
 export function detectWindsurfRules(context: RepoContext): PromptCiIssue[] {
   const issues: PromptCiIssue[] = [];
 
-  for (const file of context.files) {
+  // `.windsurfrules -> AGENTS.md`: Windsurf loads that content always-on under the alias's name, so the
+  // check runs for the alias (against the real content) unless the real file is already a Windsurf file.
+  const windsurfFiles = withTypeAliases(context.files, context.aliasFiles, (type) => type === 'windsurf');
+
+  for (const file of windsurfFiles) {
     if (file.fileType !== 'windsurf') continue;
 
     const topics = new Set<string>();

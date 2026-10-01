@@ -14,6 +14,7 @@
 import * as crypto from 'node:crypto';
 import type { InstructionFile, PromptCiIssue } from './types.js';
 import { fileIdPath } from './finding-id.js';
+import { aliasesWithNewType } from './alias-files.js';
 
 export type ContextBloatThresholds = {
   fileWarning: number;
@@ -107,10 +108,7 @@ function mergeThresholds(
  * the total and every generic threshold keep counting the content once.
  */
 function aliasesOfType(files: InstructionFile[], aliases: InstructionFile[], fileType: InstructionFile['fileType']) {
-  return aliases.filter(
-    (alias) =>
-      alias.fileType === fileType && files.find((f) => f.relativePath === alias.aliasOf)?.fileType !== fileType,
-  );
+  return aliasesWithNewType(files, aliases, (type) => type === fileType);
 }
 
 export function detectContextBloat(
