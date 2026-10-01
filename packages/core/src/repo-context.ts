@@ -90,6 +90,8 @@ export type RepoContext = {
    * the repo with a policy of their own.
    */
   aiConfig: AiConfigFiles;
+  /** The scan's `exclude` patterns, for detectors that walk the repo themselves. */
+  exclude?: string[];
   metrics: ScanMetrics;
   contextBudget?: number;
   fileContextBudget?: number;
@@ -473,6 +475,7 @@ export async function buildRepoContext(input: ScanInput): Promise<RepoContext> {
     workspacesTruncated: workspaceDiscovery.truncated,
     ...(makefile ? { makefile } : {}),
     aiConfig,
+    ...(input.exclude && input.exclude.length > 0 ? { exclude: input.exclude } : {}),
     metrics: buildMetrics(files, onDemandFiles),
     // A targetModel preset scales the context-bloat thresholds to that model's
     // window, but an explicit budget (flag or config) always wins over it.

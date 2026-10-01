@@ -611,6 +611,261 @@ describe('NgModule (c)', () => {
   });
 });
 
+// ── Review round: non-JS imports, migration examples, manifest discovery ──────
+
+describe('imports from other languages are not npm packages', () => {
+  it.each([
+    ['Go, unlabeled fence', fence('', 'import "fmt"\nimport "github.com/spf13/cobra"\nimport "log/slog"')],
+    ['Go, labeled fence', fence('go', 'import "fmt"\nimport "github.com/spf13/cobra"')],
+    ['Go, inline span', 'Log with `import "log/slog"` and wire commands with `import "github.com/spf13/cobra"`.'],
+    ['Dart, unlabeled fence', fence('', "import 'foo_bar.dart';\nimport 'package:flutter/material.dart';")],
+    ['Dart, inline span', "Use `import 'foo_bar.dart';` in lib/."],
+    ['a CSS virtual module', fence('ts', "import 'uno.css';\nimport './theme.scss';\nimport logo from 'logo.svg';")],
+    ['a module path with a domain', fence('ts', "import { x } from 'github.com/spf13/cobra';\nimport y from 'golang.org/x/net/http2';")],
+    ['Python', fence('python', 'import os\nfrom flask import Flask')],
+    ['Rust', fence('rust', 'use serde::Serialize;')],
+  ])('%s', async (_label, body) => {
+    expect(await detectIn(body, { react: '^19.0.0' })).toEqual([]);
+  });
+
+  it('still reads JavaScript-only import forms in an unlabeled fence or a span', async () => {
+    const issues = await detectIn(
+      `${fence('', "import { create } from 'zustand';")}\n\nOr call \`require('left-pad')\` and \`import('dayjs')\`.`,
+    );
+    expect(titles(issues).sort()).toEqual([
+      'Package named in instructions is not in any package.json: dayjs',
+      'Package named in instructions is not in any package.json: left-pad',
+      'Package named in instructions is not in any package.json: zustand',
+    ]);
+  });
+
+  it('still reads a bare side-effect import in a JS-labeled fence', async () => {
+    const issues = await detectIn(fence('ts', "import 'reflect-metadata';"));
+    expect(titles(issues)).toEqual(['Package named in instructions is not in any package.json: reflect-metadata']);
+  });
+
+  it('keeps real package names that end in .js', async () => {
+    const issues = await detectIn(fence('ts', "import Chart from 'chart.js/auto';"));
+    expect(titles(issues)).toEqual(['Package named in instructions is not in any package.json: chart.js']);
+  });
+});
+
+describe('severity by evidence', () => {
+  it('is info for an import line alone and warning for an install command', async () => {
+    const imp = await detectIn(fence('ts', "import { create } from 'zustand';"));
+    const inst = await detectIn(fence('bash', 'npm i zustand'));
+    expect(imp[0]!.severity).toBe('info');
+    expect(inst[0]!.severity).toBe('warning');
+  });
+
+  it('is warning when both appear', async () => {
+    const issues = await detectIn(`${fence('bash', 'npm i zustand')}\n\n${fence('ts', "import { create } from 'zustand';")}`);
+    expect(issues[0]!.severity).toBe('warning');
+  });
+});
+
+describe('negation reads comments in code, not identifiers', () => {
+  it('does not treat an imported identifier as a negation', async () => {
+    const issues = await detectIn(fence('ts', "import { without } from 'lodash';"));
+    expect(titles(issues)).toEqual(['Package named in instructions is not in any package.json: lodash']);
+  });
+
+  it('still honors a negating trailing comment', async () => {
+    expect(await detectIn(fence('ts', "import x from 'left-pad'; // never use this"))).toEqual([]);
+  });
+
+  it('treats "phased out" prose as a migration note', async () => {
+    expect(await detectIn('Dates use `moment` for now; it is being phased out for date-fns.', { moment: '^2.0.0' })).toEqual([]);
+  });
+});
+
+describe('before/after migration examples are not instructions', () => {
+  const REACT_19 = { react: '^19.0.0', 'react-dom': '^19.0.0' };
+
+  it('skips a diff fence', async () => {
+    const diff = fence('diff', '- ReactDOM.render(<App />, el)\n+ createRoot(el).render(<App />)');
+    expect(await detectIn(diff, REACT_19)).toEqual([]);
+    // even a diff that only shows the removed line
+    expect(await detectIn(fence('diff', '- ReactDOM.render(<App />, el)'), REACT_19)).toEqual([]);
+    expect(await detectIn(fence('patch', '-ReactDOM.render(<App />, el)'), REACT_19)).toEqual([]);
+  });
+
+  it.each([
+    'Before: `ReactDOM.render(<App/>, el)`. After: use the new root API.',
+    'Old tests call ReactDOM.render through enzyme; new tests use RTL.',
+    'Anti-pattern: ReactDOM.render(<App />, el)',
+  ])('skips a line labeled as the old way (%s)', async (line) => {
+    expect(await detectIn(line, REACT_19)).toEqual([]);
+  });
+
+  it('skips a fence introduced by a Before label', async () => {
+    const body = `Before:\n\n${fence('tsx', 'ReactDOM.render(<App />, el);')}`;
+    expect(await detectIn(body, REACT_19)).toEqual([]);
+  });
+
+  it('skips a section that also shows the replacement', async () => {
+    const body = `## Mounting\n\n${fence('tsx', 'ReactDOM.render(<App />, el);')}\n\n${fence('tsx', 'createRoot(el).render(<App />);')}`;
+    expect(await detectIn(body, REACT_19)).toEqual([]);
+  });
+
+  it('still flags a section that shows only the old API', async () => {
+    const body = `## Mounting\n\n${fence('tsx', 'ReactDOM.render(<App />, el);')}\n\n## Other\n\nUse createRoot elsewhere.`;
+    expect(titles(await detectIn(body, REACT_19))).toEqual(['Instructions use ReactDOM.render, which React 19 removed']);
+  });
+
+  it('skips getInitialProps in a section that names the app-router way', async () => {
+    const issues = await detect({
+      'package.json': pkg({ next: '^15.0.0' }),
+      'app/layout.tsx': '',
+      'CLAUDE.md': '# A\n\n## Data\n\nThe old getInitialProps hook was replaced by Server Components here.\n',
+    });
+    expect(issues).toEqual([]);
+  });
+});
+
+describe('manifest discovery', () => {
+  const ZOD = fence('bash', 'npm install zod');
+
+  it('treats a manifest deeper than six levels as a declaration', async () => {
+    expect(
+      await detect({ 'package.json': pkg(), 'a/b/c/d/e/f/g/package.json': pkg({ zod: '^3.0.0' }), 'CLAUDE.md': `# A\n\n${ZOD}\n` }),
+    ).toEqual([]);
+  });
+
+  it('reads manifests in dot directories', async () => {
+    const issues = await detect({
+      'package.json': pkg(),
+      '.github/actions/x/package.json': pkg({ zod: '^3.0.0' }),
+      'CLAUDE.md': `# A\n\n${fence('ts', "import { z } from 'zod';")}\n`,
+    });
+    expect(issues).toEqual([]);
+  });
+
+  it('does not guess when more manifests exist than were read', async () => {
+    const files: Record<string, string> = { 'package.json': pkg(), 'CLAUDE.md': `# A\n\n${ZOD}\n` };
+    for (let i = 0; i < 201; i++) files[`aa${String(i).padStart(3, '0')}/package.json`] = pkg();
+    files['zz-service/package.json'] = pkg({ zod: '^3.0.0' });
+    expect(await detect(files)).toEqual([]);
+  });
+
+  it("respects the scan's exclude patterns when looking for other manifests", async () => {
+    const files = { 'package.json': pkg(), 'fixtures/x/package.json': pkg({ zod: '^3.0.0' }), 'CLAUDE.md': `# A\n\n${ZOD}\n` };
+    const repo = repoWith(files);
+    expect(detectDependencyStaleness(await buildRepoContext({ repoPath: repo }))).toEqual([]);
+    const excluded = await buildRepoContext({ repoPath: repo, exclude: ['fixtures/**'] });
+    expect(titles(detectDependencyStaleness(excluded))).toEqual([
+      'Package named in instructions is not in any package.json: zod',
+    ]);
+  });
+
+  it('counts @types/x as declaring x', async () => {
+    const issues = await detect({
+      'package.json': pkg({}, { devDependencies: { '@types/json-schema': '^7.0.0', '@types/babel__core': '^7.0.0' } }),
+      'CLAUDE.md': `# A\n\n${fence('ts', "import type { JSONSchema7 } from 'json-schema';\nimport type { x } from '@babel/core';")}\n`,
+    });
+    expect(issues).toEqual([]);
+  });
+
+  it.each([
+    ["import * as vscode from 'vscode';"],
+    ["import http from 'k6/http';\nimport { check } from 'k6';"],
+  ])('skips modules the host provides (%s)', async (code) => {
+    expect(await detectIn(fence('ts', code))).toEqual([]);
+  });
+
+  it('reads a Deno import map as declarations', async () => {
+    const issues = await detect({
+      'package.json': pkg(),
+      'deno.json': JSON.stringify({ imports: { hono: 'jsr:@hono/hono@^4', '@std/assert/': 'jsr:@std/assert@1/' } }),
+      'CLAUDE.md': `# A\n\n${fence('ts', "import { Hono } from 'hono';\nimport { assert } from '@std/assert';")}\n`,
+    });
+    expect(issues).toEqual([]);
+  });
+
+  it('treats tsconfig paths (JSONC, root and workspace) as local aliases', async () => {
+    const issues = await detect({
+      'package.json': pkg({}, { workspaces: ['apps/*'] }),
+      'tsconfig.json': '{\n  // comment\n  "compilerOptions": { "paths": { "@app/*": ["./src/app/*"], "~/*": ["./src/*"], }, },\n}\n',
+      'apps/web/package.json': pkg({ next: '^15.0.0' }),
+      'apps/web/tsconfig.json': JSON.stringify({ compilerOptions: { paths: { 'trpc/*': ['./src/trpc/*'], '@lib/format': ['./src/format.ts'] } } }),
+      'CLAUDE.md': `# A\n\n${fence('ts', "import { api } from 'trpc/react';\nimport { s } from '@app/session';\nimport { f } from '@lib/format';")}\n`,
+    });
+    expect(issues).toEqual([]);
+  });
+
+  it("finds a local directory in a workspace's src/", async () => {
+    const issues = await detect({
+      'package.json': pkg({}, { workspaces: ['apps/*'] }),
+      'apps/web/package.json': pkg({ next: '^15.0.0' }),
+      'apps/web/src/trpc/react.ts': '',
+      'CLAUDE.md': `# A\n\n${fence('ts', "import { api } from 'trpc/react';")}\n`,
+    });
+    expect(issues).toEqual([]);
+  });
+
+  it('does not double-report a Jest/Vitest mix-up manifest-consistency already reports', async () => {
+    const issues = await detect({
+      'package.json': pkg({}, { devDependencies: { vitest: '^2.0.0' } }),
+      'CLAUDE.md': `# A\n\n${fence('bash', 'npm install -D jest')}\n`,
+    });
+    expect(issues).toEqual([]);
+    // ...but a jest mention with neither tool installed is not that mismatch
+    expect(titles(await detectIn(fence('bash', 'npm install -D jest')))).toEqual([
+      'Package named in instructions is not in any package.json: jest',
+    ]);
+  });
+});
+
+describe('version specs from pnpm catalogs', () => {
+  const RENDER = 'Mount with ReactDOM.render(<App />, el).';
+
+  it('resolves the default catalog', async () => {
+    const issues = await detect({
+      'package.json': pkg({ react: 'catalog:', 'react-dom': 'catalog:' }),
+      'pnpm-workspace.yaml': 'packages:\n  - apps/*\ncatalog:\n  react: ^19.0.0\n  react-dom: "^19.0.0"\n',
+      'CLAUDE.md': `# A\n\n${RENDER}\n`,
+    });
+    expect(titles(issues)).toEqual(['Instructions use ReactDOM.render, which React 19 removed']);
+  });
+
+  it('resolves a named catalog', async () => {
+    const issues = await detect({
+      'package.json': pkg({ react: 'catalog:legacy', 'react-dom': 'catalog:legacy' }),
+      'pnpm-workspace.yaml':
+        'packages:\n  - apps/*\ncatalogs:\n  legacy:\n    react: ^17.0.2\n    react-dom: ^17.0.2\n  modern:\n    react: ^19.0.0\n',
+      'CLAUDE.md': `# A\n\n${RENDER}\n`,
+    });
+    expect(issues).toEqual([]);
+    const modern = await detect({
+      'package.json': pkg({ react: 'catalog:modern', 'react-dom': 'catalog:modern' }),
+      'pnpm-workspace.yaml':
+        'packages:\n  - apps/*\ncatalogs:\n  legacy:\n    react: ^17.0.2\n  modern:\n    react: ^18.3.0\n    react-dom: ^18.3.0\n',
+      'CLAUDE.md': `# A\n\n${RENDER}\n`,
+    });
+    expect(titles(modern)).toEqual(['Instructions use ReactDOM.render, which is the legacy React 17 root API']);
+  });
+
+  it('stays quiet when the catalog entry cannot be found', async () => {
+    const issues = await detect({
+      'package.json': pkg({ react: 'catalog:', 'react-dom': 'catalog:' }),
+      'CLAUDE.md': `# A\n\n${RENDER}\n`,
+    });
+    expect(issues).toEqual([]);
+  });
+});
+
+describe('repo reads stay inside the repo', () => {
+  it('ignores an app/ router that is a link leaving the repo', async () => {
+    const outside = repoWith({ 'layout.tsx': 'export default function L() { return null; }' });
+    const repo = repoWith({
+      'package.json': pkg({ next: '^15.0.0' }),
+      'CLAUDE.md': '# A\n\nFetch with getInitialProps.\n',
+    });
+    fs.symlinkSync(outside, `${repo}/app`, 'junction');
+    expect(detectDependencyStaleness(await buildRepoContext({ repoPath: repo }))).toEqual([]);
+  });
+});
+
 // ── Pipeline ──────────────────────────────────────────────────────────────────
 
 describe('in a scan', () => {
