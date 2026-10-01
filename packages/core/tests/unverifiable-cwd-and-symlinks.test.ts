@@ -11,13 +11,12 @@
  */
 
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { buildRepoContext } from '../src/repo-context.js';
 import { realPathWithinRoot, resolveReadableWithinRoot } from '../src/path-containment.js';
 import { scan } from '../src/scan.js';
-import { makeTempRepo, writeFile } from './ai-config-helpers.js';
+import { canSymlink, makeTempRepo, trySymlink, writeFile } from './ai-config-helpers.js';
 
 const tempDirs: string[] = [];
 afterEach(() => {
@@ -108,31 +107,6 @@ describe('bare ./dir is not a missing script (pcic-2b6.8)', () => {
 });
 
 // ── Symlinks ──────────────────────────────────────────────────────────────────
-
-/** Create a file symlink, or return false where the OS refuses (Windows without the privilege). */
-function trySymlink(target: string, linkPath: string): boolean {
-  try {
-    fs.mkdirSync(path.dirname(linkPath), { recursive: true });
-    fs.symlinkSync(target, linkPath, 'file');
-    return true;
-  } catch (err) {
-    const code = (err as { code?: string }).code;
-    if (code === 'EPERM' || code === 'EACCES' || code === 'ENOTSUP') return false;
-    throw err;
-  }
-}
-
-function symlinksSupported(): boolean {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'promptci-symlink-probe-'));
-  try {
-    fs.writeFileSync(path.join(dir, 'target'), '');
-    return trySymlink(path.join(dir, 'target'), path.join(dir, 'link'));
-  } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
-}
-
-const canSymlink = symlinksSupported();
 
 /**
  * A linked DIRECTORY (a junction on Windows, which needs no privilege; a plain

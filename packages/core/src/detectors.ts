@@ -5,6 +5,7 @@ import { detectCiAlignment } from './ci-alignment.js';
 import { detectCompetingTechConflicts, detectConflicts, detectVersionConflicts } from './conflicts.js';
 import { detectCommandValidity } from './command-validity.js';
 import { detectContextBloat } from './context-bloat.js';
+import { detectDependencyStaleness } from './dependency-staleness.js';
 import { detectDeadReferences } from './dead-references.js';
 import { detectDuplicates, detectDuplicateHeadings } from './duplicates.js';
 import { detectManifestConsistency } from './manifest-consistency.js';
@@ -66,7 +67,7 @@ export const DETECTORS: DetectorDefinition[] = [
       totalHigh: context.contextBudget ? context.contextBudget * 2 : undefined,
       fileWarning: context.fileContextBudget,
       fileHigh: context.fileContextBudget ? context.fileContextBudget * 2.5 : undefined,
-    }),
+    }, context.aliasFiles),
   },
   {
     id: 'stale-instructions',
@@ -85,6 +86,10 @@ export const DETECTORS: DetectorDefinition[] = [
     run: (context) => detectManifestConsistency(context),
   },
   {
+    id: 'dependency-staleness',
+    run: (context) => detectDependencyStaleness(context),
+  },
+  {
     id: 'vague-guidance',
     run: (context) =>
       detectVagueGuidance(context.files, { severityOverride: context.vagueGuidanceSeverity }),
@@ -95,7 +100,7 @@ export const DETECTORS: DetectorDefinition[] = [
   },
   {
     id: 'agent-practices',
-    run: (context) => detectAgentPractices(context.files),
+    run: (context) => detectAgentPractices(context.files, context.aliasFiles),
   },
   {
     id: 'canonical-owner',

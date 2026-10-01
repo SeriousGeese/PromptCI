@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -146,5 +146,64 @@ describe('loadConfig', () => {
       'utf-8',
     );
     await expect(loadConfig(tmpDir)).rejects.toThrow('targetModel');
+  });
+});
+
+// pcic-2b6.14: .promptci/config.json is opened by name, so a committed link that
+// resolves outside the scan path must not be read. A linked DIRECTORY (a junction
+// on Windows, which needs no privilege) exercises the same real-path check as a
+// linked file does, so these run on every platform.
+describe('loadConfig symlink containment', () => {
+  const dirs: string[] = [];
+  afterEach(async () => {
+    for (const dir of dirs.splice(0)) await fs.rm(dir, { recursive: true, force: true });
+  });
+
+  async function repoWithPromptciLink(target: 'outside' | 'inside'): Promise<string> {
+    const repo = await makeTempDir();
+    const other = await makeTempDir();
+    dirs.push(repo, other);
+    // `projectType: 'bogus'` makes loadConfig throw if (and only if) the file is read.
+    const linked = target === 'outside' ? other : path.join(repo, 'shared-promptci');
+    await fs.mkdir(linked, { recursive: true });
+    await fs.writeFile(
+      path.join(linked, 'config.json'),
+      JSON.stringify(target === 'outside' ? { projectType: 'bogus' } : { severityThreshold: 'high' }),
+      'utf-8',
+    );
+    await fs.symlink(linked, path.join(repo, '.promptci'), 'junction');
+    return repo;
+  }
+
+  it('ignores a config that resolves outside the scan path, and says so on stderr', async () => {
+    const writes: string[] = [];
+    const spy = vi.spyOn(process.stderr, 'write').mockImplementation((chunk) => {
+      writes.push(String(chunk));
+      return true;
+    });
+    try {
+      expect(await loadConfig(await repoWithPromptciLink('outside'))).toEqual({});
+    } finally {
+      spy.mockRestore();
+    }
+    expect(writes.join('')).toMatch(/Warning: ignoring .*config\.json.*outside the scan path/);
+  });
+
+  it('does not warn when there is simply no config', async () => {
+    const writes: string[] = [];
+    const spy = vi.spyOn(process.stderr, 'write').mockImplementation((chunk) => {
+      writes.push(String(chunk));
+      return true;
+    });
+    try {
+      expect(await loadConfig(await makeTempDir())).toEqual({});
+    } finally {
+      spy.mockRestore();
+    }
+    expect(writes).toEqual([]);
+  });
+
+  it('still reads a config reached through an in-repo link', async () => {
+    expect(await loadConfig(await repoWithPromptciLink('inside'))).toEqual({ severityThreshold: 'high' });
   });
 });
