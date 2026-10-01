@@ -100,14 +100,28 @@ function mergeThresholds(
   return merged;
 }
 
+/**
+ * Symlink aliases of a file of a DIFFERENT type whose own tool has a size limit
+ * (`.windsurfrules -> AGENTS.md`: Windsurf truncates the content it reads under
+ * that name). They get only that tool-specific check, against the real content;
+ * the total and every generic threshold keep counting the content once.
+ */
+function aliasesOfType(files: InstructionFile[], aliases: InstructionFile[], fileType: InstructionFile['fileType']) {
+  return aliases.filter(
+    (alias) =>
+      alias.fileType === fileType && files.find((f) => f.relativePath === alias.aliasOf)?.fileType !== fileType,
+  );
+}
+
 export function detectContextBloat(
   files: InstructionFile[],
   thresholds?: Partial<ContextBloatThresholds>,
+  aliases: InstructionFile[] = [],
 ): PromptCiIssue[] {
   const t: ContextBloatThresholds = mergeThresholds(DEFAULTS, thresholds);
   const issues: PromptCiIssue[] = [];
 
-  for (const file of files) {
+  for (const file of [...files, ...aliasesOfType(files, aliases, 'windsurf')]) {
     const { charCount, estimatedTokens, path: filePath, fileType } = file;
 
     // Per-file-type thresholds: READMEs are project docs consumed for context
@@ -173,7 +187,7 @@ export function detectContextBloat(
   }
 
   // Copilot-specific: flag if line count exceeds GitHub's recommended limit
-  for (const file of files) {
+  for (const file of [...files, ...aliasesOfType(files, aliases, 'copilot')]) {
     if (file.fileType === 'copilot' && file.lineCount > t.copilotLineWarning) {
       issues.push({
         id: fileIssueId(fileIdPath(file) + ':copilot-lines'),

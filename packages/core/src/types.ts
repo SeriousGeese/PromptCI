@@ -100,6 +100,12 @@ export type InstructionFile = {
    * Optional so hand-built test fixtures keep type-checking.
    */
   relativePath?: string;
+  /**
+   * Set only on a symlink ALIAS: the `relativePath` of the file this name is a
+   * symlink to, which is the copy detectors scan (the alias is listed in the
+   * report inventory but never scanned, so its content is not double-counted).
+   */
+  aliasOf?: string;
   fileType: FileType;
   content: string;
   sections: InstructionSection[];
@@ -216,7 +222,10 @@ export type ScanMetrics = {
  * that matches what's really on disk, instead of the full in-memory
  * `ScanReport`/`InstructionFile` types.
  */
-export type CompactFileSummary = Pick<InstructionFile, 'path' | 'fileType' | 'lineCount' | 'charCount' | 'estimatedTokens'>;
+export type CompactFileSummary = Pick<InstructionFile, 'path' | 'fileType' | 'lineCount' | 'charCount' | 'estimatedTokens'> & {
+  /** Repo-relative path of the file this entry is a symlink to (aliases only). */
+  aliasOf?: string;
+};
 
 export type ScanReportJson = Omit<ScanReport, 'filesScanned'> & {
   filesScanned: CompactFileSummary[];

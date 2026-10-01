@@ -4,7 +4,7 @@ import { discoverAiConfigFiles, listFiles, resolveReadableWithinRoot } from './a
 import type { AiConfigFiles } from './ai-config.js';
 import { detectProjectType, detectProjectTypeFromContent } from './project-type.js';
 import micromatch from 'micromatch';
-import { MAX_FILE_SIZE, isBinary, parseSections, scanFiles } from './scanner.js';
+import { MAX_FILE_SIZE, isBinary, parseSections, scanFilesWithAliases } from './scanner.js';
 import type { ManifestData } from './manifest-consistency.js';
 import { discoverWorkspaceManifests } from './workspace-manifests.js';
 import type { WorkspaceManifest } from './workspace-manifests.js';
@@ -109,6 +109,14 @@ export type RepoContext = {
    * `aiConfig`, independent of this array.
    */
   onDemandFiles: InstructionFile[];
+  /**
+   * Symlinked names of files already in `files`/`onDemandFiles` (e.g. `CLAUDE.md`
+   * -> `AGENTS.md`), each with `aliasOf` naming the real file. Kept out of
+   * `files` so no detector scans the same content twice or reports a file as a
+   * duplicate of its own symlink; listed in the report inventory. Optional so
+   * hand-built contexts keep type-checking.
+   */
+  aliasFiles?: InstructionFile[];
   /**
    * Validated rules loaded from `.promptci/custom-rules.json` (empty when the
    * file is absent). Interpreted by the `custom-rules` detector.
@@ -403,7 +411,7 @@ function buildMetrics(files: InstructionFile[], onDemandFiles: InstructionFile[]
 
 export async function buildRepoContext(input: ScanInput): Promise<RepoContext> {
   const repoRoot = path.resolve(input.repoPath);
-  const scanned = await scanFiles({ ...input, repoPath: repoRoot });
+  const { files: scanned, aliases: aliasFiles } = await scanFilesWithAliases({ ...input, repoPath: repoRoot });
 
   // Split load-on-demand skill/agent bodies out of the always-loaded set the
   // prose/bloat detectors consume via `context.files`. They stay available on
@@ -483,6 +491,7 @@ export async function buildRepoContext(input: ScanInput): Promise<RepoContext> {
     fileContextBudget: input.fileContextBudget ?? modelPreset?.fileContextBudget,
     vagueGuidanceSeverity: input.vagueGuidanceSeverity,
     onDemandFiles,
+    ...(aliasFiles.length > 0 ? { aliasFiles } : {}),
     customRules,
   };
 }
