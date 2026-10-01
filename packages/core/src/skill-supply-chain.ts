@@ -15,16 +15,25 @@
  * Rules (tag `skill-supply-chain` + the rule id below):
  *
  *   remote-exec            fetched content piped into a shell (`curl … |
- *                          bash`, by path, via env/sudo/busybox/xargs, in a
+ *                          bash`, by path, via env/sudo/busybox/xargs — an
+ *                          `env A=…` assignment of any length — in a
  *                          subshell, through any number of pipe stages),
- *                          process/here-string substitution, `iex (iwr …)`,
- *                          or a downloaded file executed later in the same
+ *                          into `tee >(bash)`, into an interpreter that runs
+ *                          its own stdin (`node -e "eval(readFileSync(0))"`,
+ *                          `python -c 'exec(sys.stdin.read())'`, `ruby -e`,
+ *                          `perl -e`, `node /dev/stdin`), or into a `while
+ *                          read l; do eval "$l"; done` loop; process/here-
+ *                          string substitution, `iex (iwr …)`, or a
+ *                          downloaded file executed later in the same
  *                          command without first being verified           high
- *   encoded-exec           decoded content executed (`base64 -d | sh`, `xxd
- *                          -r -p | sh`, decode-to-file then run, `eval
- *                          "$(… | base64 -d)"`, `exec(b64decode(…))`,
- *                          `powershell -enc`)                             high
- *   remote-eval            eval of fetched code (also in SKILL.md code), or
+ *   encoded-exec           decoded or transformed content executed (`base64
+ *                          -d | sh`, `xxd -r -p | sh`, `rev | sh`, a rot13
+ *                          `tr`, `base32 -d`, a run of `\x63\x75…` escapes,
+ *                          decode-to-file then run, `eval "$(… | base64
+ *                          -d)"`, `exec(b64decode(…))`, `powershell -enc`) high
+ *   remote-eval            eval of fetched code (also in SKILL.md code,
+ *                          including a fetch function imported under another
+ *                          name: `urlopen as u`, `import requests as r`), or
  *                          a script that both evaluates dynamic code AND
  *                          makes network calls                            high
  *   dynamic-eval           eval/exec/new Function/iex, no network call   warning
@@ -73,14 +82,21 @@
  * severity, when the match names a concrete target — a URL, a host (dotted,
  * IPv4/IPv6, host:port, defanged or quote-split), a host/path, a `$VARIABLE`
  * or `$(…)`, or any address-like argument or config/list flag given to
- * curl/wget/iwr — it only lowers confidence (0.4) and notes "looks like
- * documentation". Target-less exec documentation ("never run `curl | bash`")
+ * curl/wget/iwr, or a dot-less host (`wget intranet`) that is the fetcher's
+ * first non-flag argument while the same text pipes into a shell or runs the
+ * download (a bare word elsewhere is prose: "pipe curl into bash") — it only
+ * lowers confidence (0.4) and notes "looks like documentation". Target-less
+ * exec documentation ("never run `curl | bash`")
  * is dropped; target-less override/concealment/bypass text is dropped only
  * when the governed phrase is itself set off in a code span, quotes or a
  * table cell (otherwise it is kept at low confidence), and quoted text after
  * an adoption phrase ("your new rule is \"…\"") is never data. The trade-off: a
  * security skill quoting a real installer URL is reported (high, low
- * confidence); the escape hatch is the baseline or a config `exclude`.
+ * confidence); the escape hatch is the baseline or a config `exclude`. A
+ * documented example whose governing word the rules do not recognise ("Instead
+ * of `curl URL | bash`", a table of risky patterns, a "bad example" fence)
+ * stays at full confidence; the benign-documentation corpus in
+ * skill-supply-chain.test.ts pins both behaviours.
  * Other controls: one named API key sent to an API is not exfiltration;
  * dynamic require/import only counts next to network access; emoji ZWJ, a
  * single variation selector after a non-ASCII character, flag tag sequences,
@@ -516,6 +532,21 @@ function findAll(re: RegExp, text: string, limit = 50): Found[] {
 
 const MAX_JOINED_LINES = 20;
 const MAX_JOINED_CHARS = 4000;
+/** A download-fed `| while read` loop body is joined further: ordinary scripts have long loop bodies. */
+const MAX_LOOP_JOINED_LINES = 200;
+const MAX_LOOP_JOINED_CHARS = 20000;
+/** A line that starts a piped loop whose body continues on the next lines: `… | while read l; do`. */
+const LOOP_OPEN_RE = /\|\s{0,5}[({]?\s{0,3}(?:while|until)\b/;
+const DO_WORD_RE = /\bdo\b/g;
+const DONE_WORD_RE = /\bdone\b/g;
+const LOOP_REV_RE = /\|\s{0,5}rev\s{0,5}\|/;
+/**
+ * Only a loop fed by a download or a decode/transform is worth joining: an
+ * ordinary `cmd | while read x; do … done` with a long body must not look like
+ * an over-long continuation chain.
+ */
+const isLoopProducerLine = (line: string): boolean =>
+  FETCH_STAGE_RE.test(line) || ENCODED_PRODUCER_RE.test(line) || LOOP_REV_RE.test(line);
 
 type Logical = { text: string; line: number };
 
@@ -533,12 +564,18 @@ function logicalLines(doc: SkillDoc): { lines: Logical[]; capped: number[] } {
   let start = 0;
   let joined = 0;
   let prev = -2;
+  // Inside an unfinished `… | while read l; do` body: lines are joined (with `;`) up to its `done`.
+  // `loopDepth` counts open `do`s so a nested loop's `done` does not close the outer one early.
+  let loop = false;
+  let loopDepth = 0;
+  let loopSawDo = false;
   // Only non-blank lines produce logical lines; a blank line ends any continuation.
   for (const i of doc.active) {
     const l = doc.lines[i]!;
     if (buf !== '' && i !== prev + 1) {
       out.push({ text: buf, line: start });
       buf = '';
+      loop = false;
     }
     prev = i;
     if (buf === '') {
@@ -549,13 +586,47 @@ function logicalLines(doc: SkillDoc): { lines: Logical[]; capped: number[] } {
     const backslash = trimmed.endsWith('\\') && !trimmed.endsWith('\\\\');
     const operator = (trimmed.endsWith('|') || trimmed.endsWith('&&')) &&
       !(doc.kind === 'instructions' && !doc.fenced[i] && l.trimStart().startsWith('|'));
-    if (backslash || operator) {
-      if (joined < MAX_JOINED_LINES && buf.length + l.length < MAX_JOINED_CHARS) {
-        buf += `${backslash ? trimmed.slice(0, -1) : trimmed} `;
+    let opensLoop = false;
+    if (!loop && trimmed.includes('|') && (doc.kind !== 'instructions' || doc.fenced[i] === 1) &&
+        LOOP_OPEN_RE.test(trimmed) && isLoopProducerLine(trimmed)) {
+      const dos = trimmed.match(DO_WORD_RE)?.length ?? 0;
+      const dones = trimmed.match(DONE_WORD_RE)?.length ?? 0;
+      // A loop that already closes on its own line (`… do …; done`) needs no joining.
+      if (dos === 0 || dos > dones) {
+        opensLoop = true;
+        loopDepth = dos - dones;
+        loopSawDo = dos > 0;
+      }
+    }
+    if (backslash || operator || loop || opensLoop) {
+      // Loop lines are joined trimmed, so indentation does not eat the join budget.
+      const piece = loop || opensLoop ? l.trim() : l;
+      const inLoop = loop || opensLoop;
+      if (joined < (inLoop ? MAX_LOOP_JOINED_LINES : MAX_JOINED_LINES) &&
+          buf.length + piece.length < (inLoop ? MAX_LOOP_JOINED_CHARS : MAX_JOINED_CHARS)) {
+        let closes = false;
+        if (loop) {
+          const dos = piece.match(DO_WORD_RE)?.length ?? 0;
+          const dones = piece.match(DONE_WORD_RE)?.length ?? 0;
+          if (dos > 0) loopSawDo = true;
+          loopDepth += dos - dones;
+          closes = (loopSawDo && loopDepth <= 0) || (!loopSawDo && dones > 0);
+        }
+        // The opening line needs a `;` after it unless it already ends where a command list continues (`… do`).
+        const joiner = backslash || operator || (opensLoop && /(?:\bdo|[;{(])$/.test(piece)) ? ' ' : '; ';
+        const text = loop || opensLoop ? piece : trimmed;
+        buf += `${backslash ? text.slice(0, -1) : text}${closes ? '' : joiner}`;
         joined++;
+        if (opensLoop) loop = true;
+        if (closes) {
+          out.push({ text: buf, line: start });
+          buf = '';
+          loop = false;
+        }
         continue;
       }
       capped.push(start);
+      loop = false;
     }
     out.push({ text: buf + l, line: start });
     buf = '';
@@ -656,12 +727,96 @@ const FETCH_CONFIG_FLAG_RE = /^(?:-K|--config|-i|--input-file|-T|--upload-file|-
  * "pipe curl into bash", whose "arguments" are plain words.
  */
 function fetcherHasArgument(span: string): boolean {
+  let seen = 0;
   for (const m of span.matchAll(FETCHER_RE)) {
-    const rest = span.slice((m.index ?? 0) + m[0].length, (m.index ?? 0) + m[0].length + 300);
-    const args = rest.split(/[|;&)`\n]/, 1)[0]!.trim().split(/\s+/)
-      .map((a) => a.replace(/[.,:;!?'")\]]+$/, ''))
-      .filter(Boolean);
-    if (args.some((a) => FETCH_CONFIG_FLAG_RE.test(a) || (!a.startsWith('-') && /[/.:@=$~\d[]/.test(a)))) return true;
+    if (++seen > 8) break;
+    if (fetcherArgs(span, m).some((a) => FETCH_CONFIG_FLAG_RE.test(a) || (!a.startsWith('-') && /[/.:@=$~\d[]/.test(a)))) return true;
+  }
+  // A dot-less host (`wget intranet`) is indistinguishable from prose ("pipe curl into bash") on its own;
+  // it is a target only when it is the fetcher's first argument AND the span pipes the download into a
+  // shell or runs the downloaded file.
+  return hasBareHostFetch(span) && (pipeInto(span, FETCH_STAGE_RE, false) !== undefined || downloadIsRun(span));
+}
+
+/** The arguments after a fetcher match, up to the end of its command. */
+function fetcherArgs(span: string, m: RegExpMatchArray): string[] {
+  const rest = span.slice((m.index ?? 0) + m[0].length, (m.index ?? 0) + m[0].length + 300);
+  return rest.split(/[|;&)`\n]/, 1)[0]!.trim().split(/\s+/, 16)
+    .map((a) => a.replace(/[.,:;!?'")\]]+$/, ''))
+    .filter(Boolean);
+}
+
+/** A fetcher whose first non-flag argument is a dot-less word that could be a host (`wget intranet`). */
+function hasBareHostFetch(text: string, maxFetchers = 4): boolean {
+  // Bounded: only the first few fetcher words of the first 600 characters, however long the command is.
+  const span = text.slice(0, 600);
+  let seen = 0;
+  for (const m of span.matchAll(FETCHER_RE)) {
+    if (++seen > maxFetchers) break;
+    const first = firstPositional(m[0].toLowerCase(), fetcherArgs(span, m));
+    if (first !== undefined && isBareHost(first)) return true;
+  }
+  return false;
+}
+
+/** Short and long options that consume the next word, per fetcher (lower-cased). */
+const FETCH_VALUE_FLAGS: Readonly<Record<string, ReadonlySet<string>>> = {
+  curl: new Set(['-o', '-H', '-d', '-X', '-u', '-A', '-e', '-m', '-w', '-b', '-c', '-x', '-F', '-r', '-z', '-E',
+    '--output', '--header', '--data', '--request', '--user', '--user-agent', '--referer', '--max-time', '--cookie',
+    '--proxy', '--retry', '--connect-timeout']),
+  wget: new Set(['-O', '-o', '-P', '-t', '-T', '-U', '-e', '-w', '-Q', '-a', '-B', '--output-document',
+    '--directory-prefix', '--user-agent', '--tries', '--timeout', '--header']),
+  iwr: new Set(['-outfile', '-method', '-headers', '-body', '-contenttype', '-useragent', '-credential', '-timeoutsec',
+    '-proxy', '-websession']),
+};
+/** Words that follow a fetcher in prose ("pipe curl into bash") rather than naming a host. */
+const NOT_A_HOST: ReadonlySet<string> = new Set([
+  'a', 'an', 'the', 'it', 'its', 'this', 'that', 'these', 'those', 'into', 'to', 'from', 'with', 'without', 'and', 'or',
+  'then', 'as', 'in', 'on', 'for', 'at', 'by', 'is', 'are', 'was', 'be', 'directly', 'blindly', 'output', 'outputs',
+  'piped', 'pipe', 'piping', 'command', 'commands', 'script', 'scripts', 'file', 'files', 'content', 'contents', 'data',
+  'result', 'results', 'url', 'urls', 'link', 'links', 'anything', 'something', 'remote', 'untrusted', 'unverified',
+  'unknown', 'here', 'there', 'when', 'which', 'only', 'not', 'never', 'always', 'unsafe', 'safely', 'instead', 'again',
+  'install', 'installer', 'installers', 'download', 'downloads', 'downloaded', 'run', 'runs', 'running', 'execute',
+  'bash', 'sh', 'shell', 'silently', 'quietly',
+  // Placeholders documentation uses where a real host would go.
+  'foo', 'bar', 'baz', 'example', 'examples', 'yourscript', 'your-script', 'your-host', 'your-server', 'yourhost',
+  'host', 'hostname', 'server', 'domain', 'site', 'website', 'get', 'docs', 'doc', 'mirror', 'some', 'my', 'your',
+  'somewhere', 'test', 'tests', 'x', 'y', 'z', 'xxx', 'target', 'endpoint', 'api', 'repo', 'package', 'tool', 'app',
+  'service', 'path', 'name', 'address', 'ip',
+]);
+
+/** The first non-flag argument of a fetcher (skipping option values; `-Uri x` names its target). */
+function firstPositional(fetcher: string, args: string[]): string | undefined {
+  const kind = fetcher === 'curl' || fetcher === 'wget' ? fetcher : 'iwr';
+  const valueFlags = FETCH_VALUE_FLAGS[kind]!;
+  for (let n = 0; n < args.length; n++) {
+    const a = args[n]!;
+    if (kind === 'iwr' && a.toLowerCase() === '-uri') return args[n + 1];
+    const flag = kind === 'iwr' ? a.toLowerCase() : a;
+    if (valueFlags.has(flag)) { n++; continue; }
+    if (a.startsWith('-')) continue;
+    return a;
+  }
+  return undefined;
+}
+
+function isBareHost(arg: string): boolean {
+  return /^[a-z][a-z0-9_-]{0,62}$/i.test(arg) && !NOT_A_HOST.has(arg.toLowerCase());
+}
+
+/** `curl -o i.sh host && sh i.sh`: a downloaded file that a later command of the span runs. */
+function downloadIsRun(span: string): boolean {
+  const segs = splitCommands(span, false).slice(0, 50);
+  for (let k = 0; k < segs.length; k++) {
+    if (!FETCH_STAGE_RE.test(segs[k]!.text)) continue;
+    const file = producedFile(segs[k]!.text, 'remote');
+    if (!file) continue;
+    for (let j = k + 1; j < segs.length && j <= k + 8; j++) {
+      const t = segs[j]!.text;
+      if (/^\s{0,5}(?:chmod|cat|ls|rm|mv|cp|echo|printf|test|\[)\b/i.test(t)) continue;
+      const run = RUN_FILE_RE.exec(t);
+      if (run && fileKey(run[1]!) === file) return true;
+    }
   }
   return false;
 }
@@ -786,7 +941,7 @@ const FETCH_CMD = String.raw`(?:curl|wget|iwr|irm|invoke-webrequest|invoke-restm
 const FETCH_STAGE_RE = new RegExp(String.raw`(?:^|[\s(\x60{>"':=])${FETCH_CMD}\b`, 'i');
 const DECODE_STAGE_RE = /(?:^|[\s(`{>"':=])(?:base64\s{1,5}(?:-\S{1,10}\s{1,5}){0,3}(?:-d|--decode|-D)\b|xxd\s{1,5}(?:-\S{1,10}\s{1,5}){0,3}-r\b|openssl\s{1,5}(?:base64|enc)\b[^|;&\n]{0,80}\s-d\b|uudecode\b)/i;
 /** Interpreters that execute whatever arrives on stdin when given no script argument. */
-const STDIN_INTERP = String.raw`(?:python[0-9.]{0,5}|node|perl|ruby|php|deno|bun)(?=\s{0,5}$|\s{1,5}-(?:\s|$)|\s{0,5}[;&|)}\x60'"])`;
+const STDIN_INTERP = String.raw`(?:python[0-9.]{0,5}|node|perl|ruby|php|deno|bun)(?=\s{0,5}$|\s{1,5}-(?:\s|$)|\s{1,5}run\s{1,5}-(?:\s|$)|\s{1,5}(?:\/dev\/stdin|\/proc\/self\/fd\/0)\b|\s{0,5}[;&|)}\x60'"])`;
 /**
  * What executes stdin (or its lines): a shell, `$SHELL`, `source /dev/stdin`,
  * a stdin-reading interpreter, `python -c 'exec(sys.stdin.read())'`,
@@ -815,14 +970,252 @@ const STAGE_WRAPPER = String.raw`(?:` + [
  * wrappers (sudo -u x, env A=…, nice, timeout N, exec, command, xargs…), a
  * path prefix, `env`.
  */
-const SHELL_STAGE_RE = new RegExp(
+const STAGE_PREFIX =
   String.raw`^\s{0,5}[({]?\s{0,3}(?:${STAGE_WRAPPER}){0,6}` +
-  String.raw`(?:[\w./-]{0,40}\/)?(?:env\s{1,5}(?:-\S{1,20}\s{1,5}){0,3})?` +
-  SHELL_WORD,
+  String.raw`(?:[\w./-]{0,40}\/)?(?:env\s{1,5}(?:-\S{1,20}\s{1,5}){0,3})?`;
+const SHELL_STAGE_RE = new RegExp(STAGE_PREFIX + SHELL_WORD, 'i');
+
+/**
+ * A call that evaluates its argument as code (`eval(`, python's `exec(`,
+ * `new Function(`, `vm.run…(`, `instance_eval`, `compile(`), or runs it as a
+ * command (`os.system(`, `child_process.execSync(`, `system(`), followed by the
+ * start of its argument. A literal argument (`eval('1+1')`) and a verb that is
+ * just a word in a string (`print('eval', …)`) do not qualify.
+ */
+const STDIN_VERB_CALL_RE = new RegExp(
+  String.raw`(?:(?<![.\w$])(?:eval|exec\w{0,8}|system|popen|spawn\w{0,8}|compile|Function)|(?:instance_|class_|module_)eval|` +
+  String.raw`\b(?:vm|child_process|os|subprocess|Kernel)["']?\)?\.(?:run\w{2,20}|compile\w{0,12}|exec\w{0,8}|spawn\w{0,8}|system|popen|call|check_output|Popen|eval|Script))\b` +
+  String.raw`(?:\s{0,5}\(\s{0,5}|\s{1,5})(?!["'\x60][^"'\x60]{0,60}["'\x60]\s{0,3}[);,])`,
+  'g', // case-sensitive: `Function` is a constructor, `function` a keyword
+);
+/** Where a script reads its own stdin. */
+const STDIN_SOURCE_RE = new RegExp(
+  String.raw`readFileSync\s{0,5}\(\s{0,5}(?:0\b|process\.stdin|["']\/dev\/stdin)|process\.stdin|\/dev\/stdin|php:\/\/stdin|sys\.stdin|` +
+  String.raw`open\s{0,5}\(\s{0,5}0\b|fileinput|\bSTDIN\b|\$stdin|\bARGF\b|<STDIN>|<>|\bgets\b|\breadlines?\b|\binput\s{0,5}\(|\$_(?!\w)`,
+  'gi',
+);
+/** `eval do { local $/; <STDIN> }`: the `;` inside the block is not the end of the statement. */
+const PERL_EVAL_BLOCK_RE = /\beval\s{0,5}\(?\s{0,5}do\s{0,5}\{[^}\n]{0,100}(?:<STDIN>|<>)/i;
+/** `s = sys.stdin.read()` — the name assigned from a stdin read, at the end of the text before it. */
+const STDIN_ASSIGN_BEFORE_RE = /(?:^|[;\s{(])\$?([A-Za-z_]\w{0,30})\s{0,3}=\s{0,3}[^;\n=]{0,60}$/;
+const MAX_SCRIPT_CHARS = 600;
+/** The farthest a stdin read may sit from the evaluating call that consumes it. */
+const MAX_ARGUMENT_CHARS = 150;
+
+/**
+ * Does inline interpreter script text run its own stdin? The stdin read has to
+ * sit INSIDE the argument of an evaluating call — `eval(require('fs').readFileSync(0,'utf8'))`,
+ * `exec(open(0).read())`, `eval STDIN.read` — or be assigned to a name that is
+ * then evaluated (`s=sys.stdin.read(); exec(s)`). A script that merely reads
+ * stdin AND, elsewhere, runs something fixed (`json.load(sys.stdin)` …
+ * `subprocess.call([...])`) does not qualify. Linear: sources and calls are
+ * found in one pass each over at most {@link MAX_SCRIPT_CHARS} characters.
+ */
+function runsOwnStdin(scriptText: string): boolean {
+  const script = scriptText.slice(0, MAX_SCRIPT_CHARS);
+  const sources: number[] = [];
+  for (const m of script.matchAll(STDIN_SOURCE_RE)) {
+    sources.push(m.index ?? 0);
+    if (sources.length >= 16) break;
+  }
+  if (sources.length === 0) return false;
+  if (PERL_EVAL_BLOCK_RE.test(script)) return true;
+  let verbs = 0;
+  let next = 0;
+  for (const call of script.matchAll(STDIN_VERB_CALL_RE)) {
+    if (++verbs > 40) break;
+    const from = (call.index ?? 0) + call[0].length;
+    while (next < sources.length && sources[next]! < from) next++;
+    const source = sources[next];
+    if (source !== undefined && source - from <= MAX_ARGUMENT_CHARS && !/[;\n]/.test(script.slice(from, source))) return true;
+  }
+  for (const source of sources.slice(0, 4)) {
+    const assigned = STDIN_ASSIGN_BEFORE_RE.exec(script.slice(Math.max(0, source - 80), source));
+    if (assigned && new RegExp(String.raw`\b(?:eval|exec|system)\s{0,5}\(?\s{0,5}\$?${assigned[1]!}\b`).test(script.slice(source))) return true;
+  }
+  return false;
+}
+
+/** An interpreter given inline script text (`node -e`, `python -c`, `ruby -e`, `perl -e`, `php -r`), up to the script. */
+const STDIN_EVAL_WORD =
+  String.raw`(?:` + [
+    String.raw`(?:node(?:js)?|bun|deno)\s{1,5}(?:--?[\w-]{1,30}(?:=\S{1,30})?\s{1,5}){0,3}?(?:-e|-p|-pe|--eval|--print|eval)`,
+    String.raw`python[0-9.]{0,5}\s{1,5}(?:-[\w-]{1,10}\s{1,5}){0,3}?-c`,
+    String.raw`ruby\s{1,5}(?:-\S{1,10}\s{1,5}){0,3}?-[a-z]{0,4}e`,
+    String.raw`perl\s{1,5}(?:-[\w=:.-]{1,20}\s{1,5}){0,3}?-[a-z]{0,4}e`,
+    String.raw`php\s{1,5}(?:-\S{1,10}\s{1,5}){0,3}?-r`,
+  ].join('|') + String.raw`)\s{1,5}["']?`;
+const STDIN_EVAL_STAGE_RE = new RegExp(`${STAGE_PREFIX}${STDIN_EVAL_WORD}`, 'i');
+/** `perl -ne 'eval'` / `perl -pe 'eval'`: the -n/-p loop feeds every stdin line to `$_`, which a bare eval runs. */
+const PERL_LOOP_EVAL_RE = new RegExp(
+  `${STAGE_PREFIX}perl\\s{1,5}(?:-[\\w=:.-]{1,20}\\s{1,5}){0,3}?-[a-z]{0,3}[np][a-z]{0,3}e\\s{1,5}["']?(?=[^\\n]{0,300}?eval\\b)`, 'i');
+
+/** A stage that is an interpreter running its own stdin as code. */
+function isStdinEvalStage(head: string): boolean {
+  const m = STDIN_EVAL_STAGE_RE.exec(head);
+  if (m && runsOwnStdin(head.slice(m.index + m[0].length))) return true;
+  return PERL_LOOP_EVAL_RE.test(head);
+}
+/** `tee >(bash)`: the pipe feeds a shell through process substitution. */
+const TEE_STAGE_RE = /^\s{0,5}[({]?\s{0,3}(?:sudo\s{1,5}(?:-\S{1,20}\s{1,5}){0,3})?(?:[\w./-]{0,40}\/)?tee\b/i;
+
+/**
+ * `while read l; do eval "$l"; done` as a pipeline stage: the loop's first
+ * segment reads lines, a later body segment (before `done`) runs one of the
+ * variables it read.
+ */
+const LOOP_HEAD_RE = /^\s{0,5}[({]?\s{0,3}(?:while|until)\b[^;|]{0,150}?\bread\b([^;|]{0,100})/i;
+const LOOP_RUN_RE =
+  /^\s{0,5}(?:do\s{1,5})?(?:(?:(?:command|builtin)\s{1,5})?(?:eval|source|\.)\s{1,5}|(?:sudo\s{1,5})?(?:[\w./-]{0,40}\/)?(?:ba|z|k|da)?sh\s{1,5}(?:(?:-\S{1,5}|<<<)\s{1,5}){0,2}|sudo\s{1,5})?["']?\$\{?([A-Za-z_]\w{0,40})\}?/i;
+/** `echo "$l"` (or printf) as the producer of a pipe into a shell, inside the loop body. */
+const LOOP_ECHO_RE = /^\s{0,5}(?:do\s{1,5})?(?:echo|printf)\s{1,5}(?:-\S{1,5}\s{1,5}){0,2}(?:["']%s["']\s{1,5})?["']?\$\{?([A-Za-z_]\w{0,40})\}?/i;
+const LOOP_DO_RE = /^\s*do\b/;
+const LOOP_DONE_RE = /^\s*done\b/;
+/** `read` options that consume the next word (a prompt, a delimiter, a count, a descriptor). */
+const READ_VALUE_FLAGS: ReadonlySet<string> = new Set(['-p', '-d', '-n', '-N', '-t', '-u', '-i']);
+/** The longest loop body followed (in command segments) after its head. */
+const MAX_LOOP_SEGMENTS = 250;
+
+function readVariables(afterRead: string): Set<string> {
+  const vars = new Set<string>();
+  const parts = afterRead.trim().split(/\s+/).slice(0, 12);
+  for (let n = 0; n < parts.length; n++) {
+    const part = parts[n]!;
+    if (READ_VALUE_FLAGS.has(part)) { n++; continue; }
+    if (part.startsWith('-')) continue;
+    if (/^[A-Za-z_]\w{0,40}$/.test(part)) vars.add(part);
+  }
+  if (vars.size === 0) vars.add('REPLY');
+  return vars;
+}
+
+/** What a loop-body segment is, computed once per segment however many loop heads scan past it. */
+type LoopBodyInfo = { kind: 'do' | 'done' | 'other'; runs?: string; echoes?: string };
+
+function loopBodyInfo(segs: Segment[], j: number, memo: Array<LoopBodyInfo | undefined>): LoopBodyInfo {
+  let info = memo[j];
+  if (info === undefined) {
+    const body = segs[j]!;
+    const text = body.text.slice(0, 400);
+    if (LOOP_DONE_RE.test(text)) info = { kind: 'done' };
+    else {
+      info = { kind: LOOP_DO_RE.test(text) ? 'do' : 'other' };
+      const run = LOOP_RUN_RE.exec(text);
+      if (run) info.runs = run[1]!;
+      const echoed = body.sep === '|' && j + 1 < segs.length ? LOOP_ECHO_RE.exec(text) : null;
+      if (echoed) info.echoes = echoed[1]!;
+    }
+    memo[j] = info;
+  }
+  return info;
+}
+
+/** End offset (in the logical command) of a loop segment that runs the lines it reads, else undefined. */
+function loopRunsLine(segs: Segment[], k: number, memo: Array<LoopBodyInfo | undefined>): number | undefined {
+  const headText = segs[k]!.text;
+  if (!headText.includes('read') || !/while|until/i.test(headText)) return undefined;
+  const head = LOOP_HEAD_RE.exec(headText.slice(0, 400));
+  if (!head) return undefined;
+  const vars = readVariables(head[1] ?? '');
+  // `depth` follows nested loops (`for x in a; do …; done` before the eval) so an inner `done` does not end the scan.
+  let depth = 0;
+  for (let j = k + 1; j < segs.length && j <= k + MAX_LOOP_SEGMENTS; j++) {
+    const info = loopBodyInfo(segs, j, memo);
+    if (info.kind === 'done') {
+      if (--depth <= 0) return undefined;
+      continue;
+    }
+    if (info.kind === 'do') depth++;
+    const body = segs[j]!;
+    if (info.runs !== undefined && vars.has(info.runs)) return body.start + Math.min(body.text.length, 60);
+    // `echo "$l" | sh`: the line is piped into a shell.
+    if (info.echoes !== undefined && vars.has(info.echoes) && isShellStage(segs[j + 1]!.text)) {
+      return segs[j + 1]!.start + Math.min(segs[j + 1]!.text.length, 60);
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Stages whose output a following shell would run in a form the reader cannot
+ * see: reversed (`rev`), rotated (`tr a-z n-za-m`), base32/basenc-decoded, or
+ * written as a long run of hex/octal/unicode escapes (`printf '\x63\x75…'`).
+ * Matched as a pipeline producer next to a shell, like a base64 decode.
+ */
+const TRANSFORM_STAGE_RE = new RegExp(
+  String.raw`^\s{0,5}[({]?\s{0,3}(?:sudo\s{1,5})?(?:` + [
+    String.raw`rev\b`,
+    // A rotation or shift: the second set starts at a DIFFERENT letter/digit than the first (`A-Za-z` -> `N-ZA-Mn-za-m`).
+    // Case conversion (`a-z` -> `A-Z`) starts at the same letter, so it never matches (the back-reference ignores case).
+    String.raw`tr\s{1,5}(?:-\S{1,5}\s{1,5}){0,2}["']?\[?([a-z0-9])-[a-z0-9](?:[a-z0-9]-[a-z0-9]){0,3}\]?["']?\s{1,5}["']?\[?(?!\1)[a-z0-9]-[a-z0-9]`,
+    String.raw`tr\s{1,5}(?:-\S{1,5}\s{1,5}){0,2}["']?([a-z])[a-z]{9,}["']?\s{1,5}["']?(?!\2)[a-z][a-z]{9,}`,
+    String.raw`(?:base32|basenc)\s{1,5}(?:-\S{1,12}\s{1,5}){0,3}(?:-[a-z]{0,3}d[a-z]{0,3}|--decode)\b`,
+    // Escapes that spell PRINTABLE characters (`\x63`, `\143`): a run of ANSI/control escapes (`\x1b`, `\033`) is terminal colour.
+    String.raw`(?:printf|echo)\s{1,5}(?:-\S{1,4}\s{1,5}){0,2}(?:["']%b["']\s{1,5})?\$?["']?(?:\\x[2-7][0-9a-f]|\\0[4-7][0-7]|\\1[0-7][0-7]|\\u00[2-7][0-9a-f]){4,}`,
+  ].join('|') + String.raw`)`,
   'i',
 );
+/** Decoders and transforms that can feed a shell. */
+const ENCODED_PRODUCER_RE = new RegExp(`${DECODE_STAGE_RE.source}|${TRANSFORM_STAGE_RE.source}`, 'i');
+
 /** Pipeline stages followed from the producer to the shell. */
 const MAX_PIPE_HOPS = 16;
+
+/**
+ * The first 600 characters of a stage with its shell-relevant structure made
+ * regex-friendly: whitespace runs collapse to one space, and a variable
+ * assignment's value (`A=<any length>`) collapses to `V=1`, so a long value
+ * (or a long run of spaces) before the shell cannot push it out of the bounded
+ * quantifiers. Quote-aware and linear: each character is read once.
+ */
+function stageHead(text: string): string {
+  let out = '';
+  let i = 0;
+  let tokens = 0;
+  let lastWasAssignment = false;
+  const n = text.length;
+  while (i < n && out.length < 600 && tokens < 400) {
+    while (i < n && text.charCodeAt(i) <= 32) i++;
+    if (i >= n) break;
+    const from = i;
+    let quote = 0;
+    while (i < n) {
+      const c = text.charCodeAt(i);
+      if (quote !== 0) {
+        if (c === 92 && quote === 34) i++; // backslash escape inside double quotes
+        else if (c === quote) quote = 0;
+      } else if (c === 34 || c === 39) quote = c;
+      else if (c <= 32) break;
+      i++;
+    }
+    const token = text.slice(from, Math.min(i, from + 700));
+    tokens++;
+    const assignment = /^[A-Za-z_]\w{0,40}=/.test(token);
+    // A run of assignments (`A=1 B=2 C=3 …`) is one: any number may precede the shell.
+    if (assignment && lastWasAssignment) continue;
+    lastWasAssignment = assignment;
+    out += `${out === '' ? '' : ' '}${assignment ? 'V=1' : token}`;
+  }
+  return out.length >= 600 || i >= n ? out.slice(0, 600) : `${out} ${text.slice(i, i + 600)}`.slice(0, 600);
+}
+
+/** Is this pipeline stage a shell (or something that runs its stdin / its lines)? */
+function isShellStage(stageText: string): boolean {
+  if (!SHELL_WORD_HINT_RE.test(stageText)) return false; // cheap reject before the head is normalized
+  const head = stageHead(stageText);
+  if (!SHELL_WORD_HINT_RE.test(head)) return false;
+  if (SHELL_STAGE_RE.test(head) || isStdinEvalStage(head)) return true;
+  // `tee >(bash)` / `tee f >(sh -s)`: process substitution feeds the shell.
+  if (head.includes('>(') && TEE_STAGE_RE.test(head)) {
+    let from = head.indexOf('>(');
+    for (let n = 0; from >= 0 && n < 4; n++) {
+      const inner = head.slice(from + 2);
+      if (SHELL_STAGE_RE.test(inner) || isStdinEvalStage(inner)) return true;
+      from = head.indexOf('>(', from + 2);
+    }
+  }
+  return false;
+}
 
 /**
  * `producer … | [stage |]… shell` over the whole logical command — split on
@@ -849,11 +1242,15 @@ function pipeInSegments(text: string, segs: Segment[], producer: RegExp): Found 
   // Each segment is tested as a shell stage at most once, however many producers look at it.
   const isShell: Array<boolean | undefined> = new Array(segs.length);
   const shellAt = (k: number): boolean => {
-    if (isShell[k] === undefined) {
-      const head = segs[k]!.text.slice(0, 400);
-      isShell[k] = SHELL_WORD_HINT_RE.test(head) && SHELL_STAGE_RE.test(head);
-    }
+    if (isShell[k] === undefined) isShell[k] = isShellStage(segs[k]!.text);
     return isShell[k]!;
+  };
+  // A `while read l; do eval "$l"; done` loop stage: the end of the segment that runs the lines (memoized).
+  const loopEnds: Array<number | null | undefined> = new Array(segs.length);
+  const loopMemo: Array<LoopBodyInfo | undefined> = new Array(segs.length);
+  const loopAt = (k: number): number | undefined => {
+    if (loopEnds[k] === undefined) loopEnds[k] = loopRunsLine(segs, k, loopMemo) ?? null;
+    return loopEnds[k] ?? undefined;
   };
   for (let s = 0; s < segs.length; s++) {
     if (segs[s]!.sep !== '|') continue;
@@ -861,9 +1258,10 @@ function pipeInSegments(text: string, segs: Segment[], producer: RegExp): Found 
     if (!p) continue;
     for (let hop = 1; hop <= MAX_PIPE_HOPS && s + hop < segs.length; hop++) {
       const next = segs[s + hop]!;
-      if (shellAt(s + hop)) {
+      const loopEnd = shellAt(s + hop) ? undefined : loopAt(s + hop);
+      if (loopEnd !== undefined || shellAt(s + hop)) {
         const index = segs[s]!.start + p.index;
-        const end = Math.min(text.length, next.start + Math.min(next.text.length, 60));
+        const end = Math.min(text.length, loopEnd ?? next.start + Math.min(next.text.length, 60));
         return { index, match: fakeMatch(text, index, end) };
       }
       if (next.sep !== '|') break; // the pipeline ended
@@ -985,7 +1383,7 @@ class ChainScanner {
         this.fetchedVars.set(assign[1]!, { line, feed: feedId, index: at });
         continue;
       }
-      const isFetch = FETCH_STAGE_RE.test(t) && /https?:\/\//i.test(t);
+      const isFetch = FETCH_STAGE_RE.test(t) && (/https?:\/\//i.test(t) || hasBareHostFetch(t, 1));
       const isDecode = DECODE_STAGE_RE.test(t);
       if (isFetch || isDecode) {
         const kind = isFetch ? 'remote' : 'encoded';
@@ -1065,6 +1463,11 @@ const REMOTE_EXEC_PATTERNS: Guarded[] = [
     requires: (w) => w.includes('<('),
     pattern: /(?:^|[\s;&|(`])(?:(?:[\w./-]{0,40}\/)?(?:ba|z|k)?sh|source|\.)\s{1,5}(?:<\s{0,3})?<\(\s{0,5}(?:curl|wget)\b/i,
   },
+  // curl … > >(bash)   (output redirected into a process substitution that runs a shell)
+  {
+    requires: (w) => w.includes('>(') && /curl|wget/i.test(w),
+    pattern: /(?:^|[\s;&|(`])(?:curl|wget)\b[^\n;&|]{0,300}>\s{0,3}>\(\s{0,5}(?:sudo\s{1,5})?(?:[\w./-]{0,40}\/)?(?:ba|z|k|da)?sh\b/i,
+  },
   // sh -c "$(curl …)"   /   eval "$(wget …)"   /   bash <<< "$(curl …)"
   {
     requires: (w) => w.includes('$(') || w.includes('`'),
@@ -1097,6 +1500,103 @@ const ENCODED_EXEC_PATTERNS: Guarded[] = [
 /** Direct eval-of-fetch on one line: remote-eval without needing file context. */
 const DIRECT_REMOTE_EVAL_RE =
   /\b(?:eval|exec|Function)\s{0,5}\(\s{0,5}(?:await\s{1,5})?\(?\s{0,5}(?:await\s{1,5})?(?:fetch|requests\.get|urlopen|urllib\.request\.urlopen|http\.get)\s{0,5}\(/i;
+
+/**
+ * Python HTTP clients imported or assigned under another name:
+ * `from urllib.request import urlopen as u`, `from urllib import request as rq`,
+ * `import requests as r`, `fetch = urllib.request.urlopen`. `exec(u(url).read())`
+ * is then the same remote-code loader as `exec(urlopen(url).read())`. The names
+ * a code block (or a script) binds are collected once, in a single pass with one
+ * regex, and an `exec(NAME(` / `eval(NAME(` call is checked against that set —
+ * no cap, so a flood of decoy imports cannot push the real one out.
+ */
+const PY_HTTP_MODULE = String.raw`(?:urllib\.request|urllib2|requests|httpx)`;
+const PY_ALIAS_RE = new RegExp([
+  String.raw`\bfrom\s{1,5}${PY_HTTP_MODULE}\s{1,5}import\s{1,5}\(?(?<list>[^\n;#]{1,300})`,
+  String.raw`\bfrom\s{1,5}urllib\s{1,5}import\s{1,5}\(?(?<ulist>[^\n;#]{1,300})`,
+  String.raw`\bimport\s{1,5}${PY_HTTP_MODULE}\s{1,5}as\s{1,5}(?<mod>[A-Za-z_]\w{0,39})\b`,
+  String.raw`(?:^|[\s;(])(?<fn>[A-Za-z_]\w{0,39})\s{0,3}=\s{0,3}(?:urllib\.request\.urlopen|urllib2\.urlopen|urlopen|requests\.(?:get|post)|httpx\.(?:get|post))\s{0,3}(?=$|[\s;#)])`,
+  String.raw`(?:^|[\s;(])(?<modassign>[A-Za-z_]\w{0,39})\s{0,3}=\s{0,3}${PY_HTTP_MODULE}\s{0,3}(?=$|[\s;#)])`,
+].join('|'), 'g');
+/** `exec(NAME(` / `eval(compile(NAME(`: the callee of the evaluated call. */
+const PY_EVAL_CALLEE_RE = /\b(?:eval|exec)\s{0,5}\(\s{0,5}(?:compile\s{0,5}\(\s{0,5})?([A-Za-z_][\w.]{0,60})\s{0,5}\(/g;
+const PY_FETCH_FUNCTIONS: ReadonlyArray<string> = ['urlopen', 'get', 'post', 'request'];
+const PY_FETCH_FUNCTION_SET: ReadonlySet<string> = new Set(PY_FETCH_FUNCTIONS);
+const PY_HINT_RE = /urlopen|urllib|requests|httpx/;
+
+type AliasIndex = { blockOf: (lineIndex: number) => number; byBlock: Map<number, Set<string>> };
+const fetchAliasCache = new WeakMap<SkillDoc, AliasIndex | null>();
+
+function collectFetchAliases(line: string, names: Set<string>): void {
+  const matches: RegExpExecArray[] = [];
+  if (line.length <= MAX_SCAN_WINDOW) {
+    PY_ALIAS_RE.lastIndex = 0;
+    for (let m = PY_ALIAS_RE.exec(line); m !== null && matches.length < 20; m = PY_ALIAS_RE.exec(line)) matches.push(m);
+  } else {
+    for (const found of findAll(PY_ALIAS_RE, line, 20)) matches.push(found.match);
+  }
+  for (const match of matches) {
+    const g = match.groups ?? {};
+    if (g.list !== undefined) {
+      for (const item of g.list.split(',').slice(0, 12)) {
+        const [name, alias] = item.trim().replace(/[()]/g, '').split(/\s{1,5}as\s{1,5}/i);
+        if (name !== undefined && PY_FETCH_FUNCTION_SET.has(name)) names.add((alias ?? name).trim());
+      }
+    } else if (g.ulist !== undefined) {
+      // `from urllib import request as rq`: `rq` is the module.
+      for (const item of g.ulist.split(',').slice(0, 12)) {
+        const [name, alias] = item.trim().replace(/[()]/g, '').split(/\s{1,5}as\s{1,5}/i);
+        if (name === 'request') for (const fn of PY_FETCH_FUNCTIONS) names.add(`${(alias ?? name).trim()}.${fn}`);
+      }
+    } else if (g.mod !== undefined || g.modassign !== undefined) {
+      for (const fn of PY_FETCH_FUNCTIONS) names.add(`${(g.mod ?? g.modassign)!}.${fn}`);
+    } else if (g.fn !== undefined) {
+      names.add(g.fn);
+    }
+  }
+}
+
+/** The names bound to a fetch function in each code block of the document (a script is one block). */
+function fetchAliasIndex(doc: SkillDoc): AliasIndex | null {
+  const cached = fetchAliasCache.get(doc);
+  if (cached !== undefined) return cached;
+  let index: AliasIndex | null = null;
+  if (PY_HINT_RE.test(doc.content)) {
+    const blockOf = chainBlocks(doc);
+    const byBlock = new Map<number, Set<string>>();
+    // Repeated identical short lines (a decoy flood) are examined once.
+    const seen = new Set<string>();
+    for (const i of doc.active) {
+      const line = doc.lines[i]!;
+      if (!line.includes('import') && !line.includes('=')) continue;
+      if (!PY_HINT_RE.test(line)) continue;
+      if (line.length < 300) {
+        if (seen.has(`${blockOf(i)}|${line}`)) continue;
+        if (seen.size < 5000) seen.add(`${blockOf(i)}|${line}`);
+      }
+      const block = blockOf(i);
+      let names = byBlock.get(block);
+      if (!names) byBlock.set(block, (names = new Set()));
+      collectFetchAliases(line, names);
+    }
+    index = { blockOf, byBlock };
+  }
+  fetchAliasCache.set(doc, index);
+  return index;
+}
+
+/** One-line eval-of-fetch, including a fetch function bound under another name in the same code block. */
+function directRemoteEval(doc: SkillDoc, text: string, lineIndex: number): Found | undefined {
+  const direct = findFirst(DIRECT_REMOTE_EVAL_RE, text);
+  if (direct) return direct;
+  const aliases = fetchAliasIndex(doc);
+  const names = aliases?.byBlock.get(aliases.blockOf(lineIndex));
+  if (!names || names.size === 0 || !text.includes('(')) return undefined;
+  for (const found of findAll(PY_EVAL_CALLEE_RE, text, 20)) {
+    if (names.has(found.match[1]!)) return found;
+  }
+  return undefined;
+}
 
 /** Strong dynamic evaluation, per language. */
 const EVAL_PATTERNS: Partial<Record<Lang, RegExp[]>> = {
@@ -1476,7 +1976,7 @@ function addJudged(
 
 /** remote-exec + encoded-exec (+ one-line remote-eval in instruction code). Returns consumed lines. */
 /** Cheap per-line prefilter: a line with none of these cannot match any exec rule. */
-const EXEC_HINT_RE = /[|&;<$`]|iex|invoke-expression|atob|decode|FromBase64|powershell|pwsh/i;
+const EXEC_HINT_RE = /[|&;<$`]|>\(|iex|invoke-expression|atob|decode|FromBase64|powershell|pwsh/i;
 
 /** remote-exec / encoded-exec matches in one logical command. */
 function execMatches(text: string, quoteAware: boolean): Array<{ rule: SkillSupplyChainRule; found: Found }> {
@@ -1484,7 +1984,7 @@ function execMatches(text: string, quoteAware: boolean): Array<{ rule: SkillSupp
   if (!EXEC_HINT_RE.test(text)) return hits;
   const pipe = pipeInto(text, FETCH_STAGE_RE, quoteAware);
   if (pipe) hits.push({ rule: 'remote-exec', found: pipe });
-  const decodedPipe = pipeInto(text, DECODE_STAGE_RE, quoteAware);
+  const decodedPipe = pipeInto(text, ENCODED_PRODUCER_RE, quoteAware);
   if (decodedPipe) hits.push({ rule: 'encoded-exec', found: decodedPipe });
   if (!hits.some((h) => h.rule === 'remote-exec')) {
     for (const g of REMOTE_EXEC_PATTERNS) {
@@ -1549,7 +2049,7 @@ function checkExec(doc: SkillDoc, logical: Logical[], commands: Logical[], add: 
     // `exec(requests.get(url).text)` in a SKILL.md code sample is still a remote-code loader.
     for (const { text, line } of commands) {
       if (consumed.has(line)) continue;
-      const hit = findFirst(DIRECT_REMOTE_EVAL_RE, text);
+      const hit = directRemoteEval(doc, text, line - 1);
       if (!hit) continue;
       consumed.add(line);
       add('remote-eval', line, excerpt(text, hit.index, hit.match[0].length), 'high', 0.85);
@@ -1578,7 +2078,7 @@ function checkScript(doc: SkillDoc, consumed: Set<number>, add: Add): void {
     const line = i + 1;
     if (consumed.has(line)) continue;
     const text = doc.lines[i]!;
-    const direct = findFirst(DIRECT_REMOTE_EVAL_RE, text);
+    const direct = directRemoteEval(doc, text, i);
     if (direct) {
       add('remote-eval', line, excerpt(text, direct.index, direct.match[0].length), 'high', 0.85);
       continue;
@@ -1749,35 +2249,70 @@ const LETTER_OR_MARK_RE = /[\p{L}\p{M}]/u;
 const MONGOLIAN_RE = /\p{Script=Mongolian}/u;
 const FORMAT_RE = /\p{Cf}/u;
 
+/**
+ * The only characters `hiddenClass` can ever flag: control characters (tab
+ * excepted), every `Cf` format character, the tag block, bidi controls,
+ * variation selectors, Mongolian free variation selectors, Hangul/Khmer
+ * fillers, the combining grapheme joiner and the line/paragraph separators.
+ * A line with none of them (all printable ASCII, accented Latin, CJK, emoji…)
+ * is skipped by a single regex scan, with no per-character work and no
+ * allocation — the common case on a large file.
+ */
+const HIDDEN_RANGES: ReadonlyArray<readonly [number, number]> = [
+  [0x0, 0x8], [0xa, 0x1f], [0x7f, 0x9f], [0x34f, 0x34f], [0x600, 0x605], [0x61c, 0x61c], [0x6dd, 0x6dd], [0x70f, 0x70f],
+  [0x890, 0x891], [0x8e2, 0x8e2], [0x115f, 0x1160], [0x17b4, 0x17b5], [0x180b, 0x180f], [0x200b, 0x200f],
+  [0x2028, 0x202e], [0x2060, 0x2069], [0x3164, 0x3164], [0xfe00, 0xfe0f], [0xfeff, 0xfeff], [0xffa0, 0xffa0],
+  [0xe0000, 0xe007f], [0xe0100, 0xe01ef],
+];
+const regexEscape = (cp: number): string => '\\u{' + cp.toString(16) + '}';
+const HIDDEN_CANDIDATE_RE = new RegExp(
+  '[' + HIDDEN_RANGES.map(([lo, hi]) => regexEscape(lo) + '-' + regexEscape(hi)).join('') + '\\p{Cf}]',
+  'gu',
+);
+
 function isVariationSelector(cp: number): boolean {
   return (cp >= 0xfe00 && cp <= 0xfe0f) || (cp >= 0xe0100 && cp <= 0xe01ef);
 }
 
+/** The code point ending right before UTF-16 index `idx`. */
+function cpBefore(s: string, idx: number): number | undefined {
+  if (idx <= 0) return undefined;
+  const lo = s.charCodeAt(idx - 1);
+  if (lo >= 0xdc00 && lo <= 0xdfff && idx >= 2) {
+    const hi = s.charCodeAt(idx - 2);
+    if (hi >= 0xd800 && hi <= 0xdbff) return (hi - 0xd800) * 0x400 + (lo - 0xdc00) + 0x10000;
+  }
+  return lo;
+}
+
+const asChar = (cp: number | undefined): string | undefined => (cp === undefined ? undefined : String.fromCodePoint(cp));
+
 /**
- * Classify the character at `k`: 'severe' (tag characters, bidi controls),
- * 'mild' (other invisible/format/control characters), or undefined (visible,
- * or invisible in a legitimate context). `tagRunPrev` is the code point just
- * before the current run of tag characters (tracked by the caller, so a long
- * run is classified in linear time).
+ * Classify the character `cp` at UTF-16 index `idx` of `line`: 'severe' (tag
+ * characters, bidi controls), 'mild' (other invisible/format/control
+ * characters), or undefined (invisible in a legitimate context). `tagRunPrev`
+ * is the code point just before the current run of tag characters (tracked by
+ * the caller, so a long run is classified in linear time). Only called for
+ * `HIDDEN_CANDIDATE_RE` matches; neighbours are read straight from the string.
  */
 function hiddenClass(
-  chars: string[],
-  k: number,
-  lineIndex: number,
+  line: string,
+  idx: number,
+  cp: number,
+  firstLine: boolean,
   tagRunPrev: number | undefined,
   hasRtl: () => boolean,
 ): 'severe' | 'mild' | undefined {
-  const cp = chars[k]!.codePointAt(0)!;
   if (cp === 0x09 || (cp >= 0x20 && cp < 0x7f)) return undefined;
   if (cp >= 0xe0000 && cp <= 0xe007f) return tagRunPrev === 0x1f3f4 ? undefined : 'severe'; // subdivision flags
   if ((cp >= 0x202a && cp <= 0x202e) || (cp >= 0x2066 && cp <= 0x2069)) return 'severe';
-  const prev = chars[k - 1];
-  const next = chars[k + 1];
-  if (cp === 0xfeff && lineIndex === 0 && k === 0) return undefined; // BOM
+  if (cp === 0xfeff && firstLine && idx === 0) return undefined; // BOM
+  const prevCp = cpBefore(line, idx);
+  const nextCp = line.codePointAt(idx + (cp > 0xffff ? 2 : 1));
   if (cp === 0x200c || cp === 0x200d) {
-    const ctx = (ch: string | undefined) =>
-      ch !== undefined && ch.codePointAt(0)! > 0x7f && (EMOJI_OR_MARK_RE.test(ch) || LETTER_OR_MARK_RE.test(ch));
-    return ctx(prev) || ctx(next) ? undefined : 'mild';
+    const ctx = (ch: number | undefined) =>
+      ch !== undefined && ch > 0x7f && (EMOJI_OR_MARK_RE.test(asChar(ch)!) || LETTER_OR_MARK_RE.test(asChar(ch)!));
+    return ctx(prevCp) || ctx(nextCp) ? undefined : 'mild';
   }
   if (cp === 0x200e || cp === 0x200f || cp === 0x061c || (cp >= 0x0600 && cp <= 0x0605) || cp === 0x06dd ||
       cp === 0x070f || cp === 0x0890 || cp === 0x0891 || cp === 0x08e2) {
@@ -1786,64 +2321,71 @@ function hiddenClass(
   if (isVariationSelector(cp)) {
     // One selector after a non-ASCII character is an emoji/CJK presentation
     // choice; a RUN of selectors is how data is smuggled after a character.
-    const prevCp = prev?.codePointAt(0);
-    const nextCp = next?.codePointAt(0);
     const lone = nextCp === undefined || !isVariationSelector(nextCp);
     return prevCp !== undefined && prevCp > 0x7f && !isVariationSelector(prevCp) && lone ? undefined : 'mild';
   }
-  if (cp >= 0x180b && cp <= 0x180f && cp !== 0x180e) return prev && MONGOLIAN_RE.test(prev) ? undefined : 'mild';
+  if (cp >= 0x180b && cp <= 0x180f && cp !== 0x180e) {
+    return prevCp !== undefined && MONGOLIAN_RE.test(asChar(prevCp)!) ? undefined : 'mild';
+  }
   if (cp === 0x115f || cp === 0x1160) {
-    const jamo = (ch: string | undefined) => ch !== undefined && ch.codePointAt(0)! >= 0x1100 && ch.codePointAt(0)! <= 0x11ff;
-    return jamo(prev) || jamo(next) ? undefined : 'mild';
+    const jamo = (ch: number | undefined) => ch !== undefined && ch >= 0x1100 && ch <= 0x11ff;
+    return jamo(prevCp) || jamo(nextCp) ? undefined : 'mild';
   }
   if (cp === 0x3164 || cp === 0xffa0 || cp === 0x034f || cp === 0x17b4 || cp === 0x17b5 || cp === 0x2028 || cp === 0x2029) {
     return 'mild';
   }
   if (cp < 0x20 || (cp >= 0x7f && cp <= 0x9f)) return 'mild'; // control characters (tab excepted above)
-  if (FORMAT_RE.test(chars[k]!)) return 'mild'; // zero-width, soft hyphen, invisible operators, …
+  if (FORMAT_RE.test(String.fromCodePoint(cp))) return 'mild'; // zero-width, soft hyphen, invisible operators, …
   return undefined;
 }
 
-/** hidden-unicode — every file kind. Every line is examined: a severe payload after many mild lines still counts. */
+/**
+ * hidden-unicode — every file kind. Every line is examined: a severe payload
+ * after many mild lines still counts. One pass: a global regex jumps straight
+ * to each candidate character, so a line without any costs one scan, and the
+ * evidence text is only rendered for hits the collector keeps.
+ */
 function checkHiddenUnicode(doc: SkillDoc, add: Add): void {
   for (const i of doc.active) {
     const lineText = doc.lines[i]!;
-    // Fast path: plain printable ASCII (plus tab) cannot hide anything.
-    if (!/[^\t\x20-\x7e]/.test(lineText)) continue;
-    const chars = Array.from(lineText);
+    HIDDEN_CANDIDATE_RE.lastIndex = 0;
+    let m = HIDDEN_CANDIDATE_RE.exec(lineText);
+    if (m === null) continue; // fast path: nothing here can hide anything
     let rtl: boolean | undefined;
     const hasRtl = () => (rtl ??= RTL_SCRIPT_RE.test(lineText));
     const found = new Map<number, number>();
     let severe = false;
     let firstOffset = -1;
     let severeOffset = -1;
-    let offset = 0;
     let tagRunPrev: number | undefined;
-    let prevWasTag = false;
-    for (let k = 0; k < chars.length; k++) {
-      const ch = chars[k]!;
-      const cp = ch.codePointAt(0)!;
-      const isTag = cp >= 0xe0000 && cp <= 0xe007f;
-      if (isTag && !prevWasTag) tagRunPrev = k > 0 ? chars[k - 1]!.codePointAt(0) : undefined;
-      prevWasTag = isTag;
-      const cls = hiddenClass(chars, k, i, tagRunPrev, hasRtl);
-      if (cls) {
-        if (cls === 'severe' && severeOffset < 0) severeOffset = offset;
-        if (cls === 'severe') severe = true;
-        found.set(cp, (found.get(cp) ?? 0) + 1);
-        if (firstOffset < 0) firstOffset = offset;
+    while (m !== null) {
+      const idx = m.index;
+      const cp = lineText.codePointAt(idx)!;
+      if (cp >= 0xe0000 && cp <= 0xe007f) {
+        const prev = cpBefore(lineText, idx);
+        if (prev === undefined || prev < 0xe0000 || prev > 0xe007f) tagRunPrev = prev; // a new run of tag characters
       }
-      offset += ch.length;
+      const cls = hiddenClass(lineText, idx, cp, i === 0, tagRunPrev, hasRtl);
+      if (cls) {
+        if (cls === 'severe') {
+          severe = true;
+          if (severeOffset < 0) severeOffset = idx;
+        }
+        found.set(cp, (found.get(cp) ?? 0) + 1);
+        if (firstOffset < 0) firstOffset = idx;
+      }
+      m = HIDDEN_CANDIDATE_RE.exec(lineText);
     }
     if (found.size === 0) continue;
-    const counts = [...found.entries()]
-      .sort((a, b) => a[0] - b[0])
-      .slice(0, 4)
-      .map(([cp, n]) => `${codepointLabel(cp)}×${n}`)
-      .join(' ');
-    const more = found.size > 4 ? ` (+${found.size - 4} more kinds)` : '';
-    const focus = severe ? severeOffset : firstOffset;
-    add('hidden-unicode', i + 1, `${counts}${more} in: ${excerpt(lineText, focus, 1)}`, severe ? 'high' : 'warning', severe ? 0.9 : 0.7);
+    add('hidden-unicode', i + 1, () => {
+      const counts = [...found.entries()]
+        .sort((a, b) => a[0] - b[0])
+        .slice(0, 4)
+        .map(([cp, n]) => `${codepointLabel(cp)}×${n}`)
+        .join(' ');
+      const more = found.size > 4 ? ` (+${found.size - 4} more kinds)` : '';
+      return `${counts}${more} in: ${excerpt(lineText, severe ? severeOffset : firstOffset, 1)}`;
+    }, severe ? 'high' : 'warning', severe ? 0.9 : 0.7);
   }
 }
 
@@ -2317,7 +2859,8 @@ function scanDoc(
   if (capped.length > 0) {
     unscanned.push({
       path: doc.path,
-      reason: `continuation chain longer than ${MAX_JOINED_LINES} lines / ${MAX_JOINED_CHARS} characters at line ${capped[0]} — split for scanning`,
+      reason: `continuation chain longer than ${MAX_JOINED_LINES} lines / ${MAX_JOINED_CHARS} characters at line ${capped[0]} — split for scanning ` +
+        `(a download-fed loop body is followed up to ${MAX_LOOP_JOINED_LINES} lines / ${MAX_LOOP_JOINED_CHARS} characters)`,
       severity: 'warning',
     });
   }
