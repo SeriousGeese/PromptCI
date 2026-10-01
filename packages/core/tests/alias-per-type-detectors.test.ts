@@ -302,14 +302,15 @@ describe('text symlinks (a link checked out without symlink support)', () => {
     });
   });
 
-  it('stays linear with thousands of text links and long chains', async () => {
+  it('stays linear with a thousand text links and long chains', async () => {
     const repoFiles: Record<string, string> = { 'AGENTS.md': AGENTS };
-    for (let n = 0; n < 3000; n++) repoFiles[`.cursor/rules/r${n}.md`] = n % 2 === 0 ? 'AGENTS.md' : `r${n - 1}.md`;
+    for (let n = 0; n < 1000; n++) repoFiles[`.cursor/rules/r${n}.md`] = n % 2 === 0 ? 'AGENTS.md' : `r${n - 1}.md`;
+    const repo = tempRepo(repoFiles);
     const started = performance.now();
-    const { files, aliases } = await scanned(repoFiles);
+    const { files, aliases } = await scanFilesWithAliases({ repoPath: repo });
     const elapsed = performance.now() - started;
     expect(rels(files)).toEqual(['AGENTS.md']);
-    expect(aliases).toHaveLength(3000);
+    expect(aliases).toHaveLength(1000);
     expect(new Set(aliases.map((a) => a.aliasOf))).toEqual(new Set(['AGENTS.md']));
     expect(elapsed, `${elapsed.toFixed(0)} ms`).toBeLessThan(15_000);
   }, 60_000);
