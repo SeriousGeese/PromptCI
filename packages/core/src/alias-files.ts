@@ -40,12 +40,28 @@ export function aliasesWithNewType(
   });
 }
 
-/** `files` plus the aliases from {@link aliasesWithNewType} (the same array when there are none). */
+/** The aliases of each real file together, in path order: `[[CLAUDE.md, GEMINI.md], …]` for two links to AGENTS.md. */
+export function groupAliasesByTarget(aliases: InstructionFile[]): InstructionFile[][] {
+  const groups = new Map<string, InstructionFile[]>();
+  for (const alias of [...aliases].sort((a, b) => a.path.localeCompare(b.path))) {
+    const key = alias.aliasOf ?? alias.path;
+    const group = groups.get(key);
+    if (group) group.push(alias);
+    else groups.set(key, [alias]);
+  }
+  return [...groups.values()];
+}
+
+/**
+ * `files` plus the aliases from {@link aliasesWithNewType}, ONE per real file (the
+ * first by path): a generic check reads the content once however many links
+ * point at it. The same array when there is nothing to add.
+ */
 export function withTypeAliases(
   files: InstructionFile[],
   aliases: InstructionFile[] | undefined,
   qualifies: (fileType: FileType) => boolean,
 ): InstructionFile[] {
-  const extra = aliasesWithNewType(files, aliases ?? [], qualifies);
+  const extra = groupAliasesByTarget(aliasesWithNewType(files, aliases ?? [], qualifies)).map((group) => group[0]!);
   return extra.length === 0 ? files : [...files, ...extra];
 }

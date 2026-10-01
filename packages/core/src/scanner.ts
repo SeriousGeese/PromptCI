@@ -5,6 +5,8 @@ import * as path from 'node:path';
 import type { FileType, InstructionFile, InstructionSection, ScanInput } from './types.js';
 import { scanFencedLines } from './markdown-fences.js';
 import { isWithinRoot, realPath, realPathWithinRoot } from './path-containment.js';
+import { createGitSymlinkOracle } from './git-symlinks.js';
+import type { GitSymlinkOracle } from './git-symlinks.js';
 
 const DEFAULT_PATTERNS = [
   // Core AI instruction files
@@ -326,22 +328,39 @@ const MAX_TEXT_SYMLINK_HOPS = 8;
  * never mistaken for one:
  *  - its trimmed content is a single line of at most {@link MAX_TEXT_SYMLINK_CHARS} characters;
  *  - that line is a relative path (no absolute or drive prefix, no backslashes, no `..` out of the repo);
- *  - the path is EXACTLY the repo-relative path of another discovered file, read either
- *    the way git stores a link target (relative to the link's directory: `../AGENTS.md`
- *    from `docs/CLAUDE.md`) or from the repo root (`./AGENTS.md`).
+ *  - the path, resolved relative to the link's own directory exactly as git stores a link
+ *    target (`../AGENTS.md` from `docs/CLAUDE.md`, `./AGENTS.md` from the root), is EXACTLY the
+ *    repo-relative path of another discovered file;
+ *  - the repository itself says the file is a symlink (see git-symlinks.ts): its index entry has
+ *    mode 120000, or, with no readable index, its own config has `core.symlinks = false`.
+ *    A hand-written one-line pointer file in a repository that tracks it as a regular file
+ *    stays a real file.
  */
-function textSymlinkTarget(file: InstructionFile, discovered: ReadonlyMap<string, InstructionFile>): string | undefined {
+function textSymlinkTarget(
+  file: InstructionFile,
+  discovered: ReadonlyMap<string, InstructionFile>,
+  oracle: GitSymlinkOracle,
+): string | undefined {
   const rel = file.relativePath;
   if (rel === undefined || file.charCount > MAX_TEXT_SYMLINK_CHARS + 16) return undefined;
   const text = file.content.replace(/^\u{FEFF}/u, '').trim();
   if (text === '' || text.length > MAX_TEXT_SYMLINK_CHARS || /[\r\n]/.test(text)) return undefined;
   if (text.startsWith('/') || /^[A-Za-z]:/.test(text) || text.includes('\\')) return undefined;
-  const candidates = [path.posix.normalize(path.posix.join(path.posix.dirname(rel), text)), path.posix.normalize(text)];
-  for (const candidate of candidates) {
-    if (candidate === '..' || candidate.startsWith('../')) continue;
-    if (candidate !== rel && discovered.has(candidate)) return candidate;
-  }
-  return undefined;
+  const target = path.posix.normalize(path.posix.join(path.posix.dirname(rel), text));
+  if (target === '..' || target.startsWith('../') || target === rel || !discovered.has(target)) return undefined;
+  return oracle.isSymlink(rel) ? target : undefined;
+}
+
+/** `link` as an alias of `real`: the real content and sections (parsed under the link's own path), the link's name and type. */
+function aliasOfReal(link: InstructionFile, real: InstructionFile): InstructionFile {
+  return {
+    ...real,
+    path: link.path,
+    relativePath: link.relativePath,
+    fileType: link.fileType,
+    sections: parseSections(real.content, link.path, link.relativePath),
+    aliasOf: real.relativePath,
+  };
 }
 
 /**
@@ -353,41 +372,37 @@ function textSymlinkTarget(file: InstructionFile, discovered: ReadonlyMap<string
  * or a target that is not a discovered file leaves the file as it was. Aliases that
  * pointed at a file which turned out to be a link are re-pointed at the real one.
  */
-function foldTextSymlinks(files: InstructionFile[], aliases: InstructionFile[]): ScanFilesResult {
+export function foldTextSymlinks(files: InstructionFile[], aliases: InstructionFile[], oracle: GitSymlinkOracle): ScanFilesResult {
   const byRelativePath = new Map<string, InstructionFile>();
   for (const file of files) if (file.relativePath !== undefined) byRelativePath.set(file.relativePath, file);
 
   const links = new Map<string, string>();
   for (const file of files) {
-    const target = textSymlinkTarget(file, byRelativePath);
+    const target = textSymlinkTarget(file, byRelativePath, oracle);
     if (target !== undefined) links.set(file.relativePath!, target);
   }
   if (links.size === 0) return { files, aliases };
 
+  // Follow each link to its real file: at most MAX_TEXT_SYMLINK_HOPS links in a row.
   const real = new Map<string, InstructionFile>();
   for (const rel of links.keys()) {
     let current = links.get(rel)!;
-    for (let hop = 0; hop < MAX_TEXT_SYMLINK_HOPS && links.has(current); hop++) current = links.get(current)!;
+    let hops = 1;
+    while (links.has(current) && hops < MAX_TEXT_SYMLINK_HOPS) {
+      current = links.get(current)!;
+      hops++;
+    }
     if (!links.has(current)) real.set(rel, byRelativePath.get(current)!);
   }
   if (real.size === 0) return { files, aliases };
 
   const folded = files.filter((file) => file.relativePath === undefined || !real.has(file.relativePath));
+  // An alias that pointed at a file which turned out to be a link now stands for the real file: rebuilt in full, never left with the stub's text.
   const out = aliases.map((alias) => {
     const target = alias.aliasOf === undefined ? undefined : real.get(alias.aliasOf);
-    return target === undefined ? alias : { ...alias, aliasOf: target.relativePath };
+    return target === undefined ? alias : aliasOfReal(alias, target);
   });
-  for (const [rel, target] of real) {
-    const link = byRelativePath.get(rel)!;
-    out.push({
-      ...target,
-      path: link.path,
-      relativePath: link.relativePath,
-      fileType: link.fileType,
-      sections: parseSections(target.content, link.path, link.relativePath),
-      aliasOf: target.relativePath,
-    });
-  }
+  for (const [rel, target] of real) out.push(aliasOfReal(byRelativePath.get(rel)!, target));
   return { files: folded, aliases: out };
 }
 
@@ -511,7 +526,7 @@ export async function scanFilesWithAliases(input: ScanInput): Promise<ScanFilesR
     if (real !== null) canonicalByReal.set(real, file);
   }
 
-  const linked = foldTextSymlinks(files, aliases);
+  const linked = foldTextSymlinks(files, aliases, createGitSymlinkOracle(repoRoot));
   linked.files.sort((a, b) => a.path.localeCompare(b.path));
   linked.aliases.sort((a, b) => a.path.localeCompare(b.path));
   return linked;

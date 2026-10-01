@@ -25,7 +25,7 @@ import * as path from 'node:path';
 import type { InstructionFile, PromptCiIssue } from './types.js';
 import { stripCodeBlocks } from './markdown-fences.js';
 import { fileIdPath } from './finding-id.js';
-import { aliasesWithNewType } from './alias-files.js';
+import { aliasesWithNewType, groupAliasesByTarget } from './alias-files.js';
 
 // ── Practice checks ──────────────────────────────────────────────────────────
 
@@ -444,7 +444,9 @@ function isClaudeTagTarget(fileType: InstructionFile['fileType']): boolean {
  * Skip README files — they often document Claude XML tags as examples rather than using them
  * Skip if the tag only appears inside fenced code blocks (documentation, not real usage)
  */
-function claudeXmlTagIssue(file: InstructionFile): PromptCiIssue | undefined {
+function claudeXmlTagIssue(names: InstructionFile[]): PromptCiIssue | undefined {
+  // `names` is one real file, or every link to one real file (one finding listing them all, id from the first).
+  const file = names[0]!;
   if (!isClaudeTagTarget(file.fileType)) return undefined;
   const contentOutsideCode = stripCodeBlocks(file.content).replace(/`[^`\n]+`/g, '');
   if (!CLAUDE_XML_TAG_RE.test(contentOutsideCode)) return undefined;
@@ -464,9 +466,9 @@ function claudeXmlTagIssue(file: InstructionFile): PromptCiIssue | undefined {
       `This file contains a Claude-specific XML tag (${firstTag}) but is not a CLAUDE.md file. ` +
       `Claude XML tags are only interpreted by Claude; other AI tools (Cursor, Copilot, etc.) ` +
       `will treat them as literal text or ignore them.`,
-    filePaths: [file.path],
-    locations: [{ filePath: file.path }],
-    evidence: [`Found: ${firstTag} in ${file.fileType} file`],
+    filePaths: names.map((f) => f.path),
+    locations: names.map((f) => ({ filePath: f.path })),
+    evidence: [`Found: ${firstTag} in ${[...new Set(names.map((f) => f.fileType))].join(', ')} file`],
     recommendation:
       'Move Claude-specific directives to CLAUDE.md, or replace this tag with a plain-text ' +
       'instruction that all tools can understand.',
@@ -754,7 +756,7 @@ export function detectAgentPractices(files: InstructionFile[], aliases: Instruct
       });
     }
 
-    const claudeTag = claudeXmlTagIssue(file);
+    const claudeTag = claudeXmlTagIssue([file]);
     if (claudeTag) issues.push(claudeTag);
   }
 
@@ -763,9 +765,9 @@ export function detectAgentPractices(files: InstructionFile[], aliases: Instruct
   // that is already "not Claude" would only repeat the real file's finding, so it is left out.) The
   // other per-type content checks above are not repeated for aliases: "do not edit" is type-independent,
   // and the Copilot agent-behavior check assumes copilot-instructions.md is Copilot-only, which a link
-  // to AGENTS.md is not.
-  for (const alias of aliasesWithNewType(files, aliases, isClaudeTagTarget)) {
-    const claudeTag = claudeXmlTagIssue(alias);
+  // to AGENTS.md is not. Several links to one file give ONE finding that lists every link.
+  for (const group of groupAliasesByTarget(aliasesWithNewType(files, aliases, isClaudeTagTarget))) {
+    const claudeTag = claudeXmlTagIssue(group);
     if (claudeTag) issues.push(claudeTag);
   }
 

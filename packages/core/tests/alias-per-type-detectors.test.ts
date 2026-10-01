@@ -16,7 +16,9 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { scan } from '../src/scan.js';
-import { parseSections, scanFilesWithAliases } from '../src/scanner.js';
+import { foldTextSymlinks, parseSections, scanFilesWithAliases } from '../src/scanner.js';
+import { configDisablesSymlinks, symlinkPathsInIndex } from '../src/git-symlinks.js';
+import type { GitSymlinkOracle } from '../src/git-symlinks.js';
 import { detectAgentPractices } from '../src/agent-practices.js';
 import { detectWindsurfRules } from '../src/windsurf-detector.js';
 import { DETECTORS } from '../src/detectors.js';
@@ -34,6 +36,13 @@ function tempRepo(files: Record<string, string>): string {
   const repo = makeTempRepo('promptci-alias-types-');
   tempDirs.push(repo);
   for (const [rel, content] of Object.entries(files)) writeFile(repo, rel, content);
+  return repo;
+}
+
+/** A repo whose own git config says symlinks are off: how a Windows checkout without link support looks. */
+function noLinkRepo(files: Record<string, string>): string {
+  const repo = tempRepo(files);
+  writeFile(repo, '.git/config', '[core]\n\trepositoryformatversion = 0\n\tsymlinks = false\n');
   return repo;
 }
 
@@ -221,7 +230,7 @@ describe('type-gated generic detectors see an alias only when the real file\'s t
 });
 
 describe('text symlinks (a link checked out without symlink support)', () => {
-  const scanned = async (files: Record<string, string>) => scanFilesWithAliases({ repoPath: tempRepo(files) });
+  const scanned = async (files: Record<string, string>) => scanFilesWithAliases({ repoPath: noLinkRepo(files) });
   const rels = (list: InstructionFile[]) => list.map((f) => f.relativePath);
 
   it.each([
@@ -304,8 +313,8 @@ describe('text symlinks (a link checked out without symlink support)', () => {
 
   it('stays linear with a thousand text links and long chains', async () => {
     const repoFiles: Record<string, string> = { 'AGENTS.md': AGENTS };
-    for (let n = 0; n < 1000; n++) repoFiles[`.cursor/rules/r${n}.md`] = n % 2 === 0 ? 'AGENTS.md' : `r${n - 1}.md`;
-    const repo = tempRepo(repoFiles);
+    for (let n = 0; n < 1000; n++) repoFiles[`.cursor/rules/r${n}.md`] = n % 2 === 0 ? '../../AGENTS.md' : `r${n - 1}.md`;
+    const repo = noLinkRepo(repoFiles);
     const started = performance.now();
     const { files, aliases } = await scanFilesWithAliases({ repoPath: repo });
     const elapsed = performance.now() - started;
@@ -322,7 +331,7 @@ describe('text symlinks (a link checked out without symlink support)', () => {
   });
 
   it('is listed with zeroed counts, counts the real content once, and does not change the findings', async () => {
-    const linked = await scan({ repoPath: tempRepo({ 'AGENTS.md': AGENTS, 'CLAUDE.md': 'AGENTS.md\n' }) });
+    const linked = await scan({ repoPath: noLinkRepo({ 'AGENTS.md': AGENTS, 'CLAUDE.md': 'AGENTS.md\n' }) });
     const plain = await scan({ repoPath: tempRepo({ 'AGENTS.md': AGENTS }) });
     const alias = linked.filesScanned.find((f) => f.aliasOf !== undefined)!;
     expect(alias).toMatchObject({ relativePath: 'CLAUDE.md', aliasOf: 'AGENTS.md', charCount: 0, estimatedTokens: 0, lineCount: 0, content: '' });
@@ -334,7 +343,7 @@ describe('text symlinks (a link checked out without symlink support)', () => {
   });
 
   it('runs a tool-specific check for a text-symlinked alias: .windsurfrules -> AGENTS.md', async () => {
-    const linked = await scan({ repoPath: tempRepo({ 'AGENTS.md': MULTI_LANGUAGE, '.windsurfrules': 'AGENTS.md\n' }) });
+    const linked = await scan({ repoPath: noLinkRepo({ 'AGENTS.md': MULTI_LANGUAGE, '.windsurfrules': 'AGENTS.md\n' }) });
     const plain = await scan({ repoPath: tempRepo({ 'AGENTS.md': MULTI_LANGUAGE }) });
     const scope = (issues: typeof linked.issues) => issues.filter((i) => i.id.startsWith('ai-config-windsurf-scope-'));
     expect(scope(plain.issues)).toEqual([]);
@@ -352,7 +361,7 @@ describe.skipIf(!canSymlink)('Windows and Linux checkouts of the same links scan
     expect(trySymlink('AGENTS.md', path.join(real, '.windsurfrules'))).toBe(true);
     expect(trySymlink('AGENTS.md', path.join(real, 'CLAUDE.md'))).toBe(true);
     expect(trySymlink('../AGENTS.md', path.join(real, '.github', 'copilot-instructions.md'))).toBe(true);
-    const text = tempRepo({
+    const text = noLinkRepo({
       ...FILES,
       '.windsurfrules': 'AGENTS.md',
       'CLAUDE.md': 'AGENTS.md',
@@ -372,5 +381,225 @@ describe.skipIf(!canSymlink)('Windows and Linux checkouts of the same links scan
     });
     expect(shape(b)).toEqual(shape(a));
     expect(shape(b).files.filter((f) => f[2] !== null)).toHaveLength(3);
+  });
+});
+
+// \u2500\u2500 review round \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+
+/** A git index (version 2 or 3) with the given entries: enough of the format for the reader. */
+function indexBuffer(entries: Array<{ path: string; mode: number }>, version = 2): Buffer {
+  const header = Buffer.alloc(12);
+  header.write('DIRC', 0, 'latin1');
+  header.writeUInt32BE(version, 4);
+  header.writeUInt32BE(entries.length, 8);
+  const parts: Buffer[] = [header];
+  for (const entry of entries) {
+    const name = Buffer.from(entry.path, 'utf8');
+    const body = Buffer.alloc(Math.ceil((62 + name.length + 1) / 8) * 8);
+    body.writeUInt32BE(entry.mode, 24);
+    body.writeUInt16BE(Math.min(name.length, 0xfff), 60);
+    name.copy(body, 62);
+    parts.push(body);
+  }
+  parts.push(Buffer.alloc(20)); // trailing checksum
+  return Buffer.concat(parts);
+}
+
+const LINK = 0o120000;
+const FILE = 0o100644;
+
+describe('configDisablesSymlinks', () => {
+  it.each([
+    ['core.symlinks = false', '[core]\n\tsymlinks = false\n', true],
+    ['no / off / 0, any case', '[core]\n\tSymlinks = NO\n', true],
+    ['a trailing comment', '[core]\n\tsymlinks = false ; autodetected\n', true],
+    ['CRLF line endings', '[core]\r\n\tsymlinks = false\r\n', true],
+    ['the last value wins', '[core]\n\tsymlinks = false\n\tsymlinks = true\n', false],
+    ['true', '[core]\n\tsymlinks = true\n', false],
+    ['a bare key (true by git rules)', '[core]\n\tsymlinks\n', false],
+    ['unset', '[core]\n\tfilemode = false\n', false],
+    ['another section', '[remote "origin"]\n\tsymlinks = false\n', false],
+    ['a commented line', '[core]\n\t# symlinks = false\n', false],
+    ['a core subsection', '[core "x"]\n\tsymlinks = false\n', false],
+  ])('%s', (_label, config, expected) => {
+    expect(configDisablesSymlinks(config)).toBe(expected);
+  });
+});
+
+describe('symlinkPathsInIndex', () => {
+  it('lists the paths whose mode is a symlink', () => {
+    const index = indexBuffer([{ path: 'AGENTS.md', mode: FILE }, { path: 'CLAUDE.md', mode: LINK }, { path: 'docs/long/name.md', mode: LINK }]);
+    expect([...symlinkPathsInIndex(index)!].sort()).toEqual(['CLAUDE.md', 'docs/long/name.md']);
+  });
+
+  it('reads version 3 and a name past the 12-bit length field', () => {
+    const long = `${'d/'.repeat(2100)}x.md`;
+    expect([...symlinkPathsInIndex(indexBuffer([{ path: long, mode: LINK }], 3))!]).toEqual([long]);
+  });
+
+  it('answers undefined for another version, another file, or a truncated index', () => {
+    expect(symlinkPathsInIndex(indexBuffer([{ path: 'a', mode: LINK }], 4))).toBeUndefined();
+    expect(symlinkPathsInIndex(Buffer.from('not an index at all'))).toBeUndefined();
+    expect(symlinkPathsInIndex(indexBuffer([{ path: 'a', mode: LINK }, { path: 'b', mode: LINK }]).subarray(0, 90))).toBeUndefined();
+  });
+});
+
+describe('a text file is a link only when the repository says so', () => {
+  const files = { 'AGENTS.md': AGENTS, 'CLAUDE.md': 'AGENTS.md\n' };
+  const aliasesOf = async (repo: string) => (await scanFilesWithAliases({ repoPath: repo })).aliases.map((a) => a.relativePath);
+
+  it('leaves a one-line pointer file alone when there is no git repository', async () => {
+    expect(await aliasesOf(tempRepo(files))).toEqual([]);
+  });
+
+  it.each([
+    ['core.symlinks = true', '[core]\n\tsymlinks = true\n'],
+    ['no core.symlinks key', '[core]\n\tbare = false\n'],
+  ])('leaves a pointer file alone with %s in the repo config', async (_label, config) => {
+    const repo = tempRepo(files);
+    writeFile(repo, '.git/config', config);
+    expect(await aliasesOf(repo)).toEqual([]);
+  });
+
+  it('folds it with core.symlinks = false in the repo config', async () => {
+    expect(await aliasesOf(noLinkRepo(files))).toEqual(['CLAUDE.md']);
+  });
+
+  it('folds it when the index records mode 120000, with no config', async () => {
+    const repo = tempRepo(files);
+    writeFile(repo, '.git/HEAD', 'ref: refs/heads/main');
+    fs.writeFileSync(path.join(repo, '.git', 'index'), indexBuffer([{ path: 'AGENTS.md', mode: FILE }, { path: 'CLAUDE.md', mode: LINK }]));
+    expect(await aliasesOf(repo)).toEqual(['CLAUDE.md']);
+  });
+
+  it('keeps a tracked regular file real even with core.symlinks = false (the index is authoritative)', async () => {
+    const repo = noLinkRepo(files);
+    fs.writeFileSync(path.join(repo, '.git', 'index'), indexBuffer([{ path: 'AGENTS.md', mode: FILE }, { path: 'CLAUDE.md', mode: FILE }]));
+    expect(await aliasesOf(repo)).toEqual([]);
+  });
+
+  it('falls back to the config when the index is a version it does not read', async () => {
+    const repo = noLinkRepo(files);
+    fs.writeFileSync(path.join(repo, '.git', 'index'), indexBuffer([{ path: 'CLAUDE.md', mode: FILE }], 4));
+    expect(await aliasesOf(repo)).toEqual(['CLAUDE.md']);
+  });
+
+  it('reads the config of a linked worktree through .git/commondir', async () => {
+    const repo = tempRepo(files);
+    const common = path.join(repo, 'common.git');
+    fs.mkdirSync(path.join(common, 'worktrees', 'w'), { recursive: true });
+    fs.writeFileSync(path.join(common, 'config'), '[core]\n\tsymlinks = false\n');
+    fs.writeFileSync(path.join(common, 'worktrees', 'w', 'commondir'), '../..\n');
+    const work = path.join(repo, 'work');
+    for (const [rel, content] of Object.entries(files)) writeFile(work, rel, content);
+    fs.writeFileSync(path.join(work, '.git'), `gitdir: ${path.join(common, 'worktrees', 'w')}\n`);
+    expect(await aliasesOf(work)).toEqual(['CLAUDE.md']);
+  });
+
+  it('finds the repository above a subdirectory scan, with index paths relative to the repository root', async () => {
+    const repo = tempRepo({ 'pkg/AGENTS.md': AGENTS, 'pkg/CLAUDE.md': 'AGENTS.md' });
+    writeFile(repo, '.git/HEAD', 'ref: refs/heads/main');
+    fs.writeFileSync(path.join(repo, '.git', 'index'), indexBuffer([{ path: 'pkg/CLAUDE.md', mode: LINK }]));
+    expect(await aliasesOf(path.join(repo, 'pkg'))).toEqual(['CLAUDE.md']);
+  });
+});
+
+describe('text link resolution follows git and Linux semantics', () => {
+  const scanned = async (repoFiles: Record<string, string>) => scanFilesWithAliases({ repoPath: noLinkRepo(repoFiles) });
+
+  it('resolves relative to the link\'s own directory only (no repo-root fallback)', async () => {
+    // `.github/copilot-instructions.md` containing `AGENTS.md` points at `.github/AGENTS.md`, which does not exist.
+    const { files, aliases } = await scanned({ 'AGENTS.md': AGENTS, '.github/copilot-instructions.md': 'AGENTS.md' });
+    expect(aliases).toEqual([]);
+    expect(files.map((f) => f.relativePath)).toEqual(['.github/copilot-instructions.md', 'AGENTS.md']);
+  });
+
+  const chain = (links: number) => Object.fromEntries([
+    ['AGENTS.md', AGENTS],
+    ...Array.from({ length: links }, (_, n) => [`.cursor/rules/r${n}.md`, n === 0 ? '../../AGENTS.md' : `r${n - 1}.md`]),
+  ]);
+
+  it('follows a chain of up to 8 links and leaves a longer one alone', async () => {
+    const eight = await scanned(chain(8)); // r7 is 8 links from AGENTS.md
+    expect(eight.files.map((f) => f.relativePath)).toEqual(['AGENTS.md']);
+    expect(eight.aliases).toHaveLength(8);
+    const nine = await scanned(chain(9)); // r8 would need 9: it stays a plain file, the other eight fold
+    expect(nine.aliases).toHaveLength(8);
+    expect(nine.files.map((f) => f.relativePath)).toEqual(['.cursor/rules/r8.md', 'AGENTS.md']);
+  });
+});
+
+describe('foldTextSymlinks rebuilds a re-pointed alias in full', () => {
+  it('gives an alias of a text link the real content, sections and type of ITS OWN name', () => {
+    const stub = synthetic('CLAUDE.md', 'AGENTS.md', 'claude');
+    const real = synthetic('AGENTS.md', AGENTS, 'agents');
+    const viaStub = synthetic('.windsurfrules', 'AGENTS.md', 'windsurf', 'CLAUDE.md'); // a real link to the text link: it read the stub
+    const yes: GitSymlinkOracle = { isSymlink: (rel) => rel === 'CLAUDE.md' };
+    const folded = foldTextSymlinks([stub, real], [viaStub], yes);
+    expect(folded.files.map((f) => f.relativePath)).toEqual(['AGENTS.md']);
+    const byName = Object.fromEntries(folded.aliases.map((a) => [a.relativePath, a]));
+    for (const name of ['CLAUDE.md', '.windsurfrules']) {
+      expect(byName[name]!.aliasOf, name).toBe('AGENTS.md');
+      expect(byName[name]!.content, name).toBe(AGENTS);
+      expect(byName[name]!.charCount, name).toBe(AGENTS.length);
+      expect(byName[name]!.sections.map((s) => s.heading), name).toEqual(['Agents', 'Build', 'Testing']);
+      expect(byName[name]!.sections.every((s) => s.filePath === byName[name]!.path), name).toBe(true);
+    }
+    expect(byName['.windsurfrules']!.fileType).toBe('windsurf');
+  });
+
+  it('folds nothing when the oracle says no', () => {
+    const stub = synthetic('CLAUDE.md', 'AGENTS.md', 'claude');
+    const real = synthetic('AGENTS.md', AGENTS, 'agents');
+    const folded = foldTextSymlinks([stub, real], [], { isSymlink: () => false });
+    expect(folded.aliases).toEqual([]);
+    expect(folded.files).toHaveLength(2);
+  });
+});
+
+describe('several links to one file give one finding per check', () => {
+  const TAGGED = '# Rules\n\nUse <claude:thinking> blocks. Keep diffs focused and verify before finishing.\n';
+  const DATED = '# Notes\n\nLast updated: 2026-01-15\n\nKeep diffs focused and run the tests before you push.\n';
+
+  it('the Claude-tag check lists every alias of CLAUDE.md in one finding', () => {
+    const claude = synthetic('CLAUDE.md', TAGGED, 'claude');
+    const aliases = [
+      synthetic('AGENTS.md', TAGGED, 'agents', 'CLAUDE.md'),
+      synthetic('.cursorrules', TAGGED, 'cursor', 'CLAUDE.md'),
+      synthetic('GEMINI.md', TAGGED, 'gemini', 'CLAUDE.md'),
+    ];
+    const issues = detectAgentPractices([claude], aliases).filter((i) => i.title.startsWith('Claude-specific XML tag'));
+    expect(issues).toHaveLength(1);
+    expect(issues[0]!.filePaths).toEqual(aliases.map((a) => a.path).sort());
+    expect(issues[0]!.locations).toHaveLength(3);
+    expect(issues[0]!.evidence[0]).toContain('cursor, agents, gemini');
+    // Stable: the id comes from the first alias by path.
+    const first = [...aliases].sort((x, y) => x.path.localeCompare(y.path))[0]!;
+    expect(issues[0]!.id).toBe(detectAgentPractices([claude], [first]).find((i) => i.title.startsWith('Claude-specific'))!.id);
+  });
+
+  it('the Windsurf check lists every Windsurf alias of one file in one finding', () => {
+    const agents = synthetic('AGENTS.md', MULTI_LANGUAGE, 'agents');
+    const a = synthetic('.windsurfrules', MULTI_LANGUAGE, 'windsurf', 'AGENTS.md');
+    const b = synthetic('.windsurf/rules/main.md', MULTI_LANGUAGE, 'windsurf', 'AGENTS.md');
+    const issues = detectWindsurfRules(contextOf([agents], [a, b]));
+    expect(issues).toHaveLength(1);
+    expect(issues[0]!.filePaths).toEqual([b.path, a.path].sort());
+  });
+
+  it('a generic type-gated detector reads the content once however many links point at it', () => {
+    const readme = synthetic('README.md', DATED, 'readme');
+    const aliases = [
+      synthetic('CLAUDE.md', DATED, 'claude', 'README.md'),
+      synthetic('AGENTS.md', DATED, 'agents', 'README.md'),
+      synthetic('.cursorrules', DATED, 'cursor', 'README.md'),
+    ];
+    const run = (as: InstructionFile[]) => DETECTORS.find((d) => d.id === 'prompt-cache-friendliness')!.run(contextOf([readme], as));
+    // The first alias by path stands in for the group.
+    const first = [...aliases].sort((x, y) => x.path.localeCompare(y.path))[0]!;
+    const one = run([first]);
+    expect(one.length).toBeGreaterThan(0);
+    expect(run(aliases)).toEqual(one);
+    expect(one.every((i) => i.filePaths[0] === first.path)).toBe(true);
   });
 });
