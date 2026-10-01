@@ -5,6 +5,8 @@ import * as path from 'node:path';
 import type { FileType, InstructionFile, InstructionSection, ScanInput } from './types.js';
 import { scanFencedLines } from './markdown-fences.js';
 import { isWithinRoot, realPath, realPathWithinRoot } from './path-containment.js';
+import { createGitSymlinkOracle } from './git-symlinks.js';
+import type { GitSymlinkOracle } from './git-symlinks.js';
 
 const DEFAULT_PATTERNS = [
   // Core AI instruction files
@@ -310,6 +312,101 @@ async function readInstructionFile(
 type GlobEntry = { path: string; dirent: { isFile(): boolean; isSymbolicLink(): boolean } };
 
 /**
+ * Longest trimmed content (characters) of a file that stands in for a symlink.
+ * A path longer than this is not a link target anyone wrote by hand (MAX_PATH).
+ */
+const MAX_TEXT_SYMLINK_CHARS = 260;
+/** A chain of text symlinks followed to the real file (`A -> B -> C`); longer chains are left as plain files. */
+const MAX_TEXT_SYMLINK_HOPS = 8;
+
+/**
+ * The repo-relative path a "text symlink" points to, or undefined when the file
+ * is not one. A checkout without link support (Windows without `core.symlinks`)
+ * materializes a committed symlink as a small regular file whose whole content
+ * is the link's target path (`CLAUDE.md` containing `AGENTS.md`). Such a file is
+ * recognised only when ALL of these hold, so a genuine short instruction file is
+ * never mistaken for one:
+ *  - its trimmed content is a single line of at most {@link MAX_TEXT_SYMLINK_CHARS} characters;
+ *  - that line is a relative path (no absolute or drive prefix, no backslashes, no `..` out of the repo);
+ *  - the path, resolved relative to the link's own directory exactly as git stores a link
+ *    target (`../AGENTS.md` from `docs/CLAUDE.md`, `./AGENTS.md` from the root), is EXACTLY the
+ *    repo-relative path of another discovered file;
+ *  - the repository itself says the file is a symlink (see git-symlinks.ts): its index entry has
+ *    mode 120000, or, with no readable index, its own config has `core.symlinks = false`.
+ *    A hand-written one-line pointer file in a repository that tracks it as a regular file
+ *    stays a real file.
+ */
+function textSymlinkTarget(
+  file: InstructionFile,
+  discovered: ReadonlyMap<string, InstructionFile>,
+  oracle: GitSymlinkOracle,
+): string | undefined {
+  const rel = file.relativePath;
+  if (rel === undefined || file.charCount > MAX_TEXT_SYMLINK_CHARS + 16) return undefined;
+  const text = file.content.replace(/^\u{FEFF}/u, '').trim();
+  if (text === '' || text.length > MAX_TEXT_SYMLINK_CHARS || /[\r\n]/.test(text)) return undefined;
+  if (text.startsWith('/') || /^[A-Za-z]:/.test(text) || text.includes('\\')) return undefined;
+  const target = path.posix.normalize(path.posix.join(path.posix.dirname(rel), text));
+  if (target === '..' || target.startsWith('../') || target === rel || !discovered.has(target)) return undefined;
+  return oracle.isSymlink(rel) ? target : undefined;
+}
+
+/** `link` as an alias of `real`: the real content and sections (parsed under the link's own path), the link's name and type. */
+function aliasOfReal(link: InstructionFile, real: InstructionFile): InstructionFile {
+  return {
+    ...real,
+    path: link.path,
+    relativePath: link.relativePath,
+    fileType: link.fileType,
+    sections: parseSections(real.content, link.path, link.relativePath),
+    aliasOf: real.relativePath,
+  };
+}
+
+/**
+ * Make the text symlinks among `files` aliases of the file they name, so a
+ * Windows checkout without link support scans like the Linux one: the real file
+ * is scanned once, the link name is an alias carrying the real content (so tool-
+ * specific checks run for it under its own type) and is listed with zeroed counts.
+ * Chains (`A -> B -> C`) resolve to the final real file; a cycle, an over-long chain
+ * or a target that is not a discovered file leaves the file as it was. Aliases that
+ * pointed at a file which turned out to be a link are re-pointed at the real one.
+ */
+export function foldTextSymlinks(files: InstructionFile[], aliases: InstructionFile[], oracle: GitSymlinkOracle): ScanFilesResult {
+  const byRelativePath = new Map<string, InstructionFile>();
+  for (const file of files) if (file.relativePath !== undefined) byRelativePath.set(file.relativePath, file);
+
+  const links = new Map<string, string>();
+  for (const file of files) {
+    const target = textSymlinkTarget(file, byRelativePath, oracle);
+    if (target !== undefined) links.set(file.relativePath!, target);
+  }
+  if (links.size === 0) return { files, aliases };
+
+  // Follow each link to its real file: at most MAX_TEXT_SYMLINK_HOPS links in a row.
+  const real = new Map<string, InstructionFile>();
+  for (const rel of links.keys()) {
+    let current = links.get(rel)!;
+    let hops = 1;
+    while (links.has(current) && hops < MAX_TEXT_SYMLINK_HOPS) {
+      current = links.get(current)!;
+      hops++;
+    }
+    if (!links.has(current)) real.set(rel, byRelativePath.get(current)!);
+  }
+  if (real.size === 0) return { files, aliases };
+
+  const folded = files.filter((file) => file.relativePath === undefined || !real.has(file.relativePath));
+  // An alias that pointed at a file which turned out to be a link now stands for the real file: rebuilt in full, never left with the stub's text.
+  const out = aliases.map((alias) => {
+    const target = alias.aliasOf === undefined ? undefined : real.get(alias.aliasOf);
+    return target === undefined ? alias : aliasOfReal(alias, target);
+  });
+  for (const [rel, target] of real) out.push(aliasOfReal(byRelativePath.get(rel)!, target));
+  return { files: folded, aliases: out };
+}
+
+/**
  * Discover and read instruction files, plus the symlinked names that point at
  * them.
  *
@@ -330,6 +427,11 @@ type GlobEntry = { path: string; dirent: { isFile(): boolean; isSymbolicLink(): 
  *    patterns, or excluded) is scanned under the LINK's path and typed by the
  *    link's name. Several links to the same such target: the first (by path)
  *    is scanned, the rest are aliases of it.
+ *  - A small regular file that is nothing but the repo-relative path of another
+ *    discovered file (`CLAUDE.md` containing `AGENTS.md`) is how a checkout without
+ *    symlink support (Windows without `core.symlinks`) materializes a link; it is
+ *    folded into an alias of that file, so both platforms scan the same repo alike
+ *    (see {@link foldTextSymlinks}).
  */
 export async function scanFilesWithAliases(input: ScanInput): Promise<ScanFilesResult> {
   const repoRoot = path.resolve(input.repoPath);
@@ -424,9 +526,10 @@ export async function scanFilesWithAliases(input: ScanInput): Promise<ScanFilesR
     if (real !== null) canonicalByReal.set(real, file);
   }
 
-  files.sort((a, b) => a.path.localeCompare(b.path));
-  aliases.sort((a, b) => a.path.localeCompare(b.path));
-  return { files, aliases };
+  const linked = foldTextSymlinks(files, aliases, createGitSymlinkOracle(repoRoot));
+  linked.files.sort((a, b) => a.path.localeCompare(b.path));
+  linked.aliases.sort((a, b) => a.path.localeCompare(b.path));
+  return linked;
 }
 
 export async function scanFiles(input: ScanInput): Promise<InstructionFile[]> {
