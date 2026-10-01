@@ -66,7 +66,7 @@ export const DETECTORS: DetectorDefinition[] = [
       totalHigh: context.contextBudget ? context.contextBudget * 2 : undefined,
       fileWarning: context.fileContextBudget,
       fileHigh: context.fileContextBudget ? context.fileContextBudget * 2.5 : undefined,
-    }),
+    }, context.aliasFiles),
   },
   {
     id: 'stale-instructions',
@@ -95,7 +95,7 @@ export const DETECTORS: DetectorDefinition[] = [
   },
   {
     id: 'agent-practices',
-    run: (context) => detectAgentPractices(context.files),
+    run: (context) => detectAgentPractices(context.files, context.aliasFiles),
   },
   {
     id: 'canonical-owner',

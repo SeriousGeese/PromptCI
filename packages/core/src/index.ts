@@ -1,6 +1,7 @@
 /** Root export for @promptci/core */
 export * from './types.js';
-export { scanFiles, parseSections } from './scanner.js';
+export { scanFiles, scanFilesWithAliases, parseSections } from './scanner.js';
+export type { ScanFilesResult } from './scanner.js';
 export { detectProjectType, detectProjectTypeFromContent } from './project-type.js';
 export { detectDuplicates, detectDuplicateHeadings, normalizeSection } from './duplicates.js';
 export { detectConflicts, detectVersionConflicts, detectCompetingTechConflicts } from './conflicts.js';
@@ -38,7 +39,7 @@ export { scan } from './scan.js';
 export { computeFingerprint, createBaseline, filterNewIssues, assertValidBaseline } from './baseline.js';
 export { applyFixRecipe, resolveSafePath, isRepairable } from './fix-engine.js';
 export type { FileChange } from './fix-engine.js';
-export { isWithinRoot, resolveWithinRoot } from './path-containment.js';
+export { isWithinRoot, resolveWithinRoot, realPathWithinRoot, resolveReadableWithinRoot, writeTargetWithinRoot } from './path-containment.js';
 export { optimizeContext } from './context-optimizer.js';
 export type { OptimizeOptions, OptimizeResult } from './context-optimizer.js';
 export {
