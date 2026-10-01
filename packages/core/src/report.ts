@@ -444,7 +444,11 @@ export function generateMarkdownReport(report: ScanReport): string {
     lines.push('');
     const shown = filesScanned.slice(0, FILES_SCANNED_CAP);
     for (const f of shown) {
-      lines.push(`- \`${rel(f.path)}\` (${f.fileType}, ${f.lineCount} lines, ~${f.estimatedTokens} tokens)`);
+      lines.push(
+        f.aliasOf !== undefined
+          ? `- \`${rel(f.path)}\` (symlink to \`${f.aliasOf}\`)`
+          : `- \`${rel(f.path)}\` (${f.fileType}, ${f.lineCount} lines, ~${f.estimatedTokens} tokens)`,
+      );
     }
     const overflow = filesScanned.length - shown.length;
     if (overflow > 0) {
@@ -505,6 +509,7 @@ export function generateJsonReport(report: ScanReport, pretty = true): string {
       lineCount: f.lineCount,
       charCount: f.charCount,
       estimatedTokens: f.estimatedTokens,
+      ...(f.aliasOf !== undefined ? { aliasOf: f.aliasOf } : {}),
     })),
     ...(report.suppressedIssues && report.suppressedIssues.length > 0
       ? {

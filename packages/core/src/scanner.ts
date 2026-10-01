@@ -3,7 +3,7 @@ import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import type { FileType, InstructionFile, InstructionSection, ScanInput } from './types.js';
 import { scanFencedLines } from './markdown-fences.js';
-import { isWithinRoot, realPathWithinRoot } from './path-containment.js';
+import { isWithinRoot, realPath, realPathWithinRoot } from './path-containment.js';
 
 const DEFAULT_PATTERNS = [
   // Core AI instruction files
@@ -231,7 +231,73 @@ async function defaultPatterns(repoRoot: string): Promise<string[]> {
   return clineIsDir ? DEFAULT_PATTERNS : DEFAULT_PATTERNS.filter((p) => !CLINE_DIR_PATTERNS.has(p));
 }
 
-export async function scanFiles(input: ScanInput): Promise<InstructionFile[]> {
+/**
+ * What {@link scanFilesWithAliases} found: `files` holds each distinct file's
+ * content exactly once; `aliases` holds the extra symlinked names that resolve
+ * to a file already in `files` (each carries `aliasOf`).
+ */
+export type ScanFilesResult = { files: InstructionFile[]; aliases: InstructionFile[] };
+
+async function readInstructionFile(
+  repoRoot: string,
+  absPath: string,
+  typeRelPath: string,
+): Promise<InstructionFile | undefined> {
+  try {
+    // fs.stat/readFile follow a symlink, so a symlinked file is read as its target.
+    const stat = await fs.stat(absPath);
+    if (!stat.isFile()) return undefined;
+    if (stat.size > MAX_FILE_SIZE) return undefined;
+
+    const buffer = await fs.readFile(absPath);
+    if (isBinary(buffer)) return undefined;
+
+    const content = buffer.toString('utf-8');
+    // Root-relative, forward slashes: the location-independent form finding
+    // ids hash (finding-id.ts), identical on every OS and checkout path.
+    const relativePath = path.relative(repoRoot, absPath).replace(/\\/g, '/');
+    const sections = parseSections(content, absPath, relativePath);
+    const lineCount = splitLines(content).length;
+    const charCount = content.length;
+
+    return {
+      path: absPath,
+      relativePath,
+      fileType: deriveFileType(typeRelPath),
+      content,
+      sections,
+      lineCount,
+      charCount,
+      estimatedTokens: Math.round(charCount / 4),
+    };
+  } catch {
+    // skip unreadable files
+    return undefined;
+  }
+}
+
+type GlobEntry = { path: string; dirent: { isFile(): boolean; isSymbolicLink(): boolean } };
+
+/**
+ * Discover and read instruction files, plus the symlinked names that point at
+ * them.
+ *
+ * fast-glob with `followSymbolicLinks: false` never lists a symlinked FILE as
+ * a file (its dirent is a symlink), so `CLAUDE.md -> AGENTS.md` — a very common
+ * way to share one rule set between tools — used to be skipped entirely. Links
+ * are listed here and handled as follows:
+ *
+ *  - A link whose real path leaves the repo is skipped (never read).
+ *  - A link to a file that was also discovered directly is an ALIAS: it is
+ *    returned in `aliases` (with `aliasOf` naming the canonical file) and its
+ *    content is NOT scanned a second time, so findings are not double-counted
+ *    and a file is never reported as a duplicate of its own symlink.
+ *  - A link whose target was not discovered (an in-repo file outside the
+ *    patterns, or excluded) is scanned under the LINK's path and typed by the
+ *    link's name. Several links to the same such target: the first (by path)
+ *    is scanned, the rest are aliases of it.
+ */
+export async function scanFilesWithAliases(input: ScanInput): Promise<ScanFilesResult> {
   const repoRoot = path.resolve(input.repoPath);
   const patterns = (input.include && input.include.length > 0)
     ? input.include
@@ -241,13 +307,17 @@ export async function scanFiles(input: ScanInput): Promise<InstructionFile[]> {
     ...(input.exclude ?? []),
   ];
 
-  let relativePaths: string[];
+  let entries: GlobEntry[];
   try {
-    relativePaths = await fg(patterns, {
+    entries = await fg(patterns, {
       cwd: repoRoot,
       ignore: ignorePatterns,
       dot: true,
       absolute: false,
+      // `onlyFiles: false` + `objectMode` so symlinked entries are listed;
+      // regular files and links are told apart by dirent below.
+      onlyFiles: false,
+      objectMode: true,
       followSymbolicLinks: false,
       // Skip unreadable entries instead of failing the whole glob: an explicit
       // `include: [".clinerules/**"]` with a `.clinerules` FILE (ENOTDIR), or
@@ -256,55 +326,65 @@ export async function scanFiles(input: ScanInput): Promise<InstructionFile[]> {
       suppressErrors: true,
     });
   } catch {
-    return [];
+    return { files: [], aliases: [] };
   }
 
-  const results: InstructionFile[] = [];
+  const fileRels: string[] = [];
+  const linkRels: string[] = [];
+  for (const entry of entries) {
+    if (entry.dirent.isSymbolicLink()) linkRels.push(entry.path);
+    else if (entry.dirent.isFile()) fileRels.push(entry.path);
+  }
+  linkRels.sort();
 
-  for (const relPath of relativePaths) {
+  const files: InstructionFile[] = [];
+  const aliases: InstructionFile[] = [];
+  // Real path -> the file whose content represents it.
+  const canonicalByReal = new Map<string, InstructionFile>();
+
+  for (const relPath of fileRels) {
     const absPath = path.resolve(repoRoot, relPath);
 
     // Path traversal guard: skip anything a glob result resolves outside the
     // root — lexically, or through a symlink. With `followSymbolicLinks: false`
-    // fast-glob lists no symlinked file and never descends into a linked
-    // directory, but it does START its walk at a pattern's base directory even
-    // when that directory is a link (`.cursor/rules -> /elsewhere`), and every
-    // file below it would then be read through.
+    // fast-glob never descends into a linked directory, but it does START its
+    // walk at a pattern's base directory even when that directory is a link
+    // (`.cursor/rules -> /elsewhere`), and every file below it would then be
+    // read through.
     if (!isWithinRoot(repoRoot, absPath) || !realPathWithinRoot(repoRoot, absPath)) {
       continue;
     }
 
-    try {
-      const stat = await fs.stat(absPath);
-      if (!stat.isFile()) continue;
-      if (stat.size > MAX_FILE_SIZE) continue;
-
-      const buffer = await fs.readFile(absPath);
-      if (isBinary(buffer)) continue;
-
-      const content = buffer.toString('utf-8');
-      // Root-relative, forward slashes: the location-independent form finding
-      // ids hash (finding-id.ts), identical on every OS and checkout path.
-      const relativePath = path.relative(repoRoot, absPath).replace(/\\/g, '/');
-      const sections = parseSections(content, absPath, relativePath);
-      const lineCount = splitLines(content).length;
-      const charCount = content.length;
-
-      results.push({
-        path: absPath,
-        relativePath,
-        fileType: deriveFileType(relPath),
-        content,
-        sections,
-        lineCount,
-        charCount,
-        estimatedTokens: Math.round(charCount / 4),
-      });
-    } catch {
-      // skip unreadable files
-    }
+    const file = await readInstructionFile(repoRoot, absPath, relPath);
+    if (!file) continue;
+    files.push(file);
+    const real = realPath(absPath);
+    if (real !== null && !canonicalByReal.has(real)) canonicalByReal.set(real, file);
   }
 
-  results.sort((a, b) => a.path.localeCompare(b.path));
-  return results;
+  for (const relPath of linkRels) {
+    const absPath = path.resolve(repoRoot, relPath);
+    // Out-of-repo targets are skipped. A dangling link has nothing to read
+    // (readInstructionFile fails on it) and a link to a directory is not a file.
+    if (!isWithinRoot(repoRoot, absPath) || !realPathWithinRoot(repoRoot, absPath)) continue;
+
+    const file = await readInstructionFile(repoRoot, absPath, relPath);
+    if (!file) continue;
+    const real = realPath(absPath);
+    const canonical = real !== null ? canonicalByReal.get(real) : undefined;
+    if (canonical) {
+      aliases.push({ ...file, aliasOf: canonical.relativePath });
+      continue;
+    }
+    files.push(file);
+    if (real !== null) canonicalByReal.set(real, file);
+  }
+
+  files.sort((a, b) => a.path.localeCompare(b.path));
+  aliases.sort((a, b) => a.path.localeCompare(b.path));
+  return { files, aliases };
+}
+
+export async function scanFiles(input: ScanInput): Promise<InstructionFile[]> {
+  return (await scanFilesWithAliases(input)).files;
 }

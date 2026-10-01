@@ -55,7 +55,8 @@ export function resolveWithinRoot(root: string, candidatePath: string): string |
   }
 }
 
-function realPathOrNull(p: string): string | null {
+/** The canonical real path (symlinks resolved), or null when it does not exist. */
+export function realPath(p: string): string | null {
   try {
     const real: unknown = fs.realpathSync.native(p);
     return typeof real === 'string' ? real : null;
@@ -73,9 +74,9 @@ function realPathOrNull(p: string): string | null {
  * nothing to read through, so it is left to the caller's own read to fail.
  */
 export function realPathWithinRoot(root: string, absPath: string): boolean {
-  const real = realPathOrNull(absPath);
+  const real = realPath(absPath);
   if (real === null) return true;
-  const realRoot = realPathOrNull(root) ?? path.resolve(root);
+  const realRoot = realPath(root) ?? path.resolve(root);
   return isWithinRoot(realRoot, real);
 }
 

@@ -6,6 +6,8 @@ import {
   writeReport,
   createBaseline,
   assertValidBaseline,
+  isWithinRoot,
+  resolveReadableWithinRoot,
   resolveTargetModel,
   TARGET_MODELS,
 } from '@promptci/core';
@@ -102,6 +104,15 @@ export async function runScan(options: ScanOptions): Promise<void> {
   let baseline: Baseline | undefined;
   if (options.baseline) {
     const baselinePath = path.resolve(resolvedPath, options.baseline);
+    // A path the user points outside the scan path is their explicit choice. But
+    // a baseline INSIDE the scan path that is a committed symlink to somewhere
+    // outside it is not read, like every other file the scanner opens by name.
+    if (isWithinRoot(resolvedPath, baselinePath) && resolveReadableWithinRoot(resolvedPath, baselinePath) === null) {
+      console.error(
+        `Error: baseline file "${baselinePath}" is a symlink that resolves outside the scan path; refusing to read it.`,
+      );
+      process.exit(1);
+    }
     try {
       const content = await fs.readFile(baselinePath, 'utf-8');
       let parsed: unknown;

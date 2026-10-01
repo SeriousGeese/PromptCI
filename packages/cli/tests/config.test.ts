@@ -148,3 +148,38 @@ describe('loadConfig', () => {
     await expect(loadConfig(tmpDir)).rejects.toThrow('targetModel');
   });
 });
+
+// pcic-2b6.14: .promptci/config.json is opened by name, so a committed link that
+// resolves outside the scan path must not be read. A linked DIRECTORY (a junction
+// on Windows, which needs no privilege) exercises the same real-path check as a
+// linked file does, so these run on every platform.
+describe('loadConfig symlink containment', () => {
+  const dirs: string[] = [];
+  afterEach(async () => {
+    for (const dir of dirs.splice(0)) await fs.rm(dir, { recursive: true, force: true });
+  });
+
+  async function repoWithPromptciLink(target: 'outside' | 'inside'): Promise<string> {
+    const repo = await makeTempDir();
+    const other = await makeTempDir();
+    dirs.push(repo, other);
+    // `projectType: 'bogus'` makes loadConfig throw if (and only if) the file is read.
+    const linked = target === 'outside' ? other : path.join(repo, 'shared-promptci');
+    await fs.mkdir(linked, { recursive: true });
+    await fs.writeFile(
+      path.join(linked, 'config.json'),
+      JSON.stringify(target === 'outside' ? { projectType: 'bogus' } : { severityThreshold: 'high' }),
+      'utf-8',
+    );
+    await fs.symlink(linked, path.join(repo, '.promptci'), 'junction');
+    return repo;
+  }
+
+  it('ignores a config that resolves outside the scan path', async () => {
+    expect(await loadConfig(await repoWithPromptciLink('outside'))).toEqual({});
+  });
+
+  it('still reads a config reached through an in-repo link', async () => {
+    expect(await loadConfig(await repoWithPromptciLink('inside'))).toEqual({ severityThreshold: 'high' });
+  });
+});

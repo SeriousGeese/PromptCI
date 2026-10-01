@@ -79,7 +79,9 @@ export async function scan(input: ScanInput): Promise<ScanReport> {
     projectType: context.projectType,
     healthScore,
     metrics: context.metrics,
-    filesScanned: allScannedFiles,
+    // Symlink aliases are inventory only (see RepoContext.aliasFiles): they are
+    // not scanned, so they carry no annotations to parse above.
+    filesScanned: [...allScannedFiles, ...(context.aliasFiles ?? [])],
     issues: active,
     topFixes,
     newIssues,
