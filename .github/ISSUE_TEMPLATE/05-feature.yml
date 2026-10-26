@@ -15,7 +15,6 @@ body:
       options:
         - CLI (packages/cli)
         - Scanner engine / reporting (packages/core)
-        - Hosted dashboard
         - GitHub Action (action.yml)
         - Config & suppression
         - Not sure
