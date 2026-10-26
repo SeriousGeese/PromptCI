@@ -61,9 +61,7 @@ Anything imported by a config file at the repo root must be a **declared** devDe
 default `public-hoist-pattern` includes `*eslint*` and ESLint 9 happened to depend on it. ESLint
 10 does not, and lint broke until it was declared explicitly.
 
-Vite is an explicit root devDependency because Vitest requires it as a peer. Keep its
-range at or above 6.4.4, which fixes GHSA-587h-7wmj-h5pm; relying on automatic peer
-installation left the lockfile on vulnerable 6.4.3. No override is needed.
+Vite >=6.4.4 is Vitest's explicit peer (GHSA-587h-7wmj-h5pm).
 
 ## GitHub Actions pins
 
