@@ -20,7 +20,7 @@ instruction rot before it costs you.
 The scanner is **deterministic and rule-based** — no LLM calls, identical output for identical
 input. It runs entirely on your machine; your files never leave it. The only network request
 the package ever makes is a once-a-day, best-effort npm version check (see
-[Hosted dashboard](#hosted-dashboard) for how to disable it).
+[Network access](#network-access) for how to disable it).
 
 ## Why
 
@@ -55,8 +55,6 @@ Top 3 findings (of 9):
      Fix: Add a rule such as: "Always read a file fully before editing it."
   3. [warning] No "ask when unsure" instruction (AGENTS.md)
      Fix: Add a rule such as: "If you are uncertain about the correct approach, say so and ask before proceeding rather than guessing."
-
-Full report, score history, and PR reviews: https://promptci.dev (hosted dashboard; optional)
 ```
 
 It always exits 0 after printing a score (it is a glance, not a gate); a bad `--path` or
@@ -233,13 +231,10 @@ examples/ — fixture repositories used as the test corpus
 Docs/     — reference documentation
 ```
 
-## Hosted dashboard
+## Network access
 
-A hosted dashboard (scan history, improvement metrics, LLM-assisted fixes, GitHub PR
-integration) is developed separately and is not part of this repository. This package is the
-offline scanner only — it contains no LLM, auth, or upload code and makes no network requests
-beyond the once-a-day npm version check described below. The hosted dashboard is optional:
-`promptci score` only prints a one-line pointer to it, and nothing in the CLI logs in or uploads.
+PromptCI runs locally. It contains no LLM, auth, or upload code and makes no network requests
+beyond the once-a-day npm version check described below.
 
 The one network touch in this package is a best-effort check against the npm registry, at most
 once per day, for a newer `@promptci/cli` release. It never blocks a command and is skipped

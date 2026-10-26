@@ -9,7 +9,6 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { PromptCiIssue, ScanReport } from '@promptci/core';
 import {
-  DASHBOARD_POINTER,
   TOP_FINDINGS_COUNT,
   formatScoreTeaser,
   runScore,
@@ -99,7 +98,7 @@ describe('selectTopFindings', () => {
 });
 
 describe('formatScoreTeaser', () => {
-  it('prints one score line, exactly three numbered findings, and the pointer', () => {
+  it('prints one score line and exactly three numbered findings', () => {
     const out = formatScoreTeaser(
       report([
         issue({ id: '1', confidence: 0.9, severity: 'high' }),
@@ -116,13 +115,11 @@ describe('formatScoreTeaser', () => {
     expect(out).toContain('3. [warning] Title 3');
     expect(out).not.toMatch(/^\s+4\. /m);
     expect(out).toContain('Fix: Fix 1');
-    expect(out).toContain(DASHBOARD_POINTER);
   });
 
-  it('keeps the dashboard pointer plain: no tracking params, one line', () => {
-    expect(DASHBOARD_POINTER).not.toMatch(/[?&](utm_|ref=|source=)/);
-    expect(DASHBOARD_POINTER).not.toContain('\n');
-    expect(DASHBOARD_POINTER).not.toMatch(/login|sign ?up|upload/i);
+  it('does not promote a hosted dashboard', () => {
+    const out = formatScoreTeaser(report([issue({ id: '1' })]));
+    expect(out).not.toMatch(/dashboard|https?:\/\//i);
   });
 
   it('handles a clean scan and an empty repo', () => {
@@ -258,7 +255,7 @@ describe('promptci score (compiled binary): zero network, zero writes', () => {
       expect(stdout).toMatch(/^PromptCI instruction health: \d+\/100 \(.+\)$/m);
       expect(stdout).toContain('Top 3 findings (of ');
       expect(stdout.match(/^ {2}\d\. \[/gm)).toHaveLength(3);
-      expect(stdout).toContain(DASHBOARD_POINTER);
+      expect(stdout).not.toMatch(/dashboard|https?:\/\//i);
       expect(snapshot(dir)).toEqual(before);
       expect(fs.readdirSync(home)).toEqual([]);
     } finally {

@@ -11,18 +11,11 @@ import { loadConfig } from '../config.js';
  * findings. Unlike `promptci scan` it writes NOTHING (no `.promptci/` reports,
  * no history archive) and, in cli.ts, skips the once-a-day npm version probe,
  * so the whole path is offline and read-only. It stores no report and has no
- * account, login, or upload step: the dashboard pointer below is plain text.
+ * account, login, or upload step.
  */
 
 /** Number of findings the teaser shows. */
 export const TOP_FINDINGS_COUNT = 3;
-
-/**
- * One-line pointer printed under the teaser. Plain text only: no account, no
- * upload URL, no tracking parameters. Set to '' to drop the line entirely.
- */
-export const DASHBOARD_POINTER =
-  'Full report, score history, and PR reviews: https://promptci.dev (hosted dashboard; optional)';
 
 const SEVERITY_RANK: Record<IssueSeverity, number> = {
   critical: 3,
@@ -101,10 +94,6 @@ export function formatScoreTeaser(report: ScanReport): string {
     });
   }
 
-  if (DASHBOARD_POINTER) {
-    lines.push('');
-    lines.push(DASHBOARD_POINTER);
-  }
   lines.push('');
   return lines.join('\n');
 }

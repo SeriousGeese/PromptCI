@@ -71,8 +71,8 @@ promptci --help
 ## `score`: the zero-footprint teaser
 
 `promptci score` (and a bare `promptci` / `npx @promptci/cli`) scans the directory and prints one
-overall score plus the three top findings, then a single pointer line to the hosted
-dashboard. Sample output is in the [README quickstart](../README.md#quickstart).
+overall score plus the three top findings. Use `promptci scan` for full local reports.
+Sample output is in the [README quickstart](../README.md#quickstart).
 
 - **No network.** It also skips the once-a-day npm version check that other commands run.
 - **No writes.** It does not create `.promptci/` reports or history; it only reads your files and
