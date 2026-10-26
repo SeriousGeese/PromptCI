@@ -79,7 +79,21 @@ export async function scan(input: ScanInput): Promise<ScanReport> {
     projectType: context.projectType,
     healthScore,
     metrics: context.metrics,
-    filesScanned: allScannedFiles,
+    // Symlink aliases are inventory only (see RepoContext.aliasFiles): they are
+    // not scanned, so they carry no annotations to parse above. Their content and
+    // counts are zeroed so a consumer summing filesScanned does not count the
+    // same text twice; `aliasOf` says which real file they stand for.
+    filesScanned: [
+      ...allScannedFiles,
+      ...(context.aliasFiles ?? []).map((alias) => ({
+        ...alias,
+        content: '',
+        sections: [],
+        lineCount: 0,
+        charCount: 0,
+        estimatedTokens: 0,
+      })),
+    ],
     issues: active,
     topFixes,
     newIssues,

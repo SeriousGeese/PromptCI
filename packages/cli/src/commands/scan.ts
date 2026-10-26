@@ -6,6 +6,9 @@ import {
   writeReport,
   createBaseline,
   assertValidBaseline,
+  isWithinRoot,
+  resolveReadableWithinRoot,
+  writeTargetWithinRoot,
   resolveTargetModel,
   TARGET_MODELS,
 } from '@promptci/core';
@@ -102,6 +105,15 @@ export async function runScan(options: ScanOptions): Promise<void> {
   let baseline: Baseline | undefined;
   if (options.baseline) {
     const baselinePath = path.resolve(resolvedPath, options.baseline);
+    // A path the user points outside the scan path is their explicit choice. But
+    // a baseline INSIDE the scan path that is a committed symlink to somewhere
+    // outside it is not read, like every other file the scanner opens by name.
+    if (isWithinRoot(resolvedPath, baselinePath) && resolveReadableWithinRoot(resolvedPath, baselinePath) === null) {
+      console.error(
+        `Error: baseline file "${baselinePath}" is a symlink that resolves outside the scan path; refusing to read it.`,
+      );
+      process.exit(1);
+    }
     try {
       const content = await fs.readFile(baselinePath, 'utf-8');
       let parsed: unknown;
@@ -163,6 +175,14 @@ export async function runScan(options: ScanOptions): Promise<void> {
       ? path.resolve(resolvedPath, options.baseline)
       : path.join(resolvedPath, '.promptci', 'baseline.json');
 
+    // Mirror of the read policy: a baseline path inside the scan path must not write
+    // through a symlink that leaves it (an explicit path outside the scan path is fine).
+    if (!writeTargetWithinRoot(resolvedPath, baselinePath)) {
+      console.error(
+        `Error: baseline file "${baselinePath}" resolves outside the scan path through a symlink; refusing to write it.`,
+      );
+      process.exit(1);
+    }
     await fs.mkdir(path.dirname(baselinePath), { recursive: true });
     await fs.writeFile(baselinePath, JSON.stringify(newBaseline, null, 2));
     if (!options.json) {

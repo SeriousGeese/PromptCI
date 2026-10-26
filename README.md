@@ -167,9 +167,14 @@ The score is self-reported by your own scan; regenerate the file in CI to keep i
 - Stale instructions (old years, dated TODOs, deprecated wording, outdated versions)
 - Missing setup/validation commands and project-specific guidance
 - Manifest consistency against `package.json` and `pyproject.toml`
+- Dependency and framework-API staleness: packages an install command or import line names that
+  no `package.json` declares, end-of-life packages (moment, request, tslint, node-sass,
+  react-scripts, enzyme), and version-gated APIs (`ReactDOM.render` on React 18+, `getInitialProps`
+  in an app-router Next.js project, NgModule-centric guidance on Angular 17+)
 - CI/workflow alignment between instructions and GitHub Actions
 - Security and privacy gaps in instruction guidance
-- Vague guidance, broken local references, agent-practice gaps
+- Vague guidance, broken local references (files, directories, and documented package
+  scripts or `make` targets that no longer exist), agent-practice gaps
 - Prompt-cache-hostile content that inflates the cost of every agent turn
 - GitHub Actions `uses:` references (in workflows and composite actions) pinned to a tag or
   branch instead of a full commit SHA — detect-only, never rewritten; these findings cost at

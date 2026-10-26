@@ -24,6 +24,7 @@ import micromatch from 'micromatch';
 import type { InstructionFile, IssueSeverity, PromptCiIssue } from './types.js';
 import { snippet } from './evidence.js';
 import { fileIdPath } from './finding-id.js';
+import { realPathWithinRoot } from './path-containment.js';
 
 export const CUSTOM_RULES_FILE = path.join('.promptci', 'custom-rules.json');
 
@@ -174,6 +175,8 @@ export function parseCustomRules(raw: unknown): CustomRule[] {
  */
 export async function loadCustomRules(repoRoot: string): Promise<CustomRule[]> {
   const filePath = path.join(repoRoot, CUSTOM_RULES_FILE);
+  // A config committed as a symlink to a file outside the repo is not read.
+  if (!realPathWithinRoot(repoRoot, filePath)) return [];
   let raw: string;
   try {
     raw = await fs.readFile(filePath, 'utf-8');

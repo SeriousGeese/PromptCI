@@ -18,9 +18,10 @@
  */
 
 import type { RepoContext } from './repo-context.js';
-import type { PromptCiIssue } from './types.js';
+import type { FileType, InstructionFile, PromptCiIssue } from './types.js';
 import { shortHash } from './ai-config.js';
 import { fileIdPath } from './finding-id.js';
+import { aliasesWithNewType, groupAliasesByTarget } from './alias-files.js';
 
 /**
  * Language / framework signals that, when they appear as SECTION HEADINGS in an
@@ -56,8 +57,17 @@ const MIN_DISTINCT_TOPICS = 2;
 export function detectWindsurfRules(context: RepoContext): PromptCiIssue[] {
   const issues: PromptCiIssue[] = [];
 
-  for (const file of context.files) {
-    if (file.fileType !== 'windsurf') continue;
+  // `.windsurfrules -> AGENTS.md`: Windsurf loads that content always-on under the alias's name, so the
+  // check runs for the alias (against the real content) unless the real file is already a Windsurf file.
+  // Several links to one file are one finding listing every link, not one per link.
+  const isWindsurf = (type: FileType) => type === 'windsurf';
+  const groups: InstructionFile[][] = [
+    ...context.files.filter((file) => file.fileType === 'windsurf').map((file) => [file]),
+    ...groupAliasesByTarget(aliasesWithNewType(context.files, context.aliasFiles ?? [], isWindsurf)),
+  ];
+
+  for (const group of groups) {
+    const file = group[0]!;
 
     const topics = new Set<string>();
     for (const section of file.sections) {
@@ -80,8 +90,8 @@ export function detectWindsurfRules(context: RepoContext): PromptCiIssue[] {
           `(${found.join(', ')}), but it applies to the whole workspace on every ` +
           `request. Language- or framework-specific rules are cheaper as glob-scoped ` +
           `rules that load only for matching files.`,
-        filePaths: [file.path],
-        locations: [{ filePath: file.path, startLine: 1 }],
+        filePaths: group.map((f) => f.path),
+        locations: group.map((f) => ({ filePath: f.path, startLine: 1 })),
         evidence: [`Scoped topics found in headings: ${found.join(', ')}`],
         recommendation:
           'Clarify the intended scope: keep genuinely workspace-wide conventions in ' +

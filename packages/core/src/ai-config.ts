@@ -18,7 +18,7 @@ import * as crypto from 'node:crypto';
 import fg from 'fast-glob';
 import micromatch from 'micromatch';
 import { MAX_FILE_SIZE, BINARY_CHECK_BYTES, isBinary } from './scanner.js';
-import { resolveWithinRoot } from './path-containment.js';
+import { resolveReadableWithinRoot, resolveWithinRoot } from './path-containment.js';
 import type { PromptCiIssue, ScanInput } from './types.js';
 
 // ── Path helpers ──────────────────────────────────────────────────────────────
@@ -32,11 +32,11 @@ export function toPosix(p: string): string {
 // import path while the implementation lives in the shared path-containment
 // module. Every filesystem read below routes through it so a hostile config
 // value cannot point the detector at `/etc/passwd`.
-export { resolveWithinRoot };
+export { resolveWithinRoot, resolveReadableWithinRoot };
 
 /** True when a repo-relative path exists and is a regular file. */
 export function isFileWithinRoot(repoRoot: string, relativePath: string): boolean {
-  const abs = resolveWithinRoot(repoRoot, relativePath);
+  const abs = resolveReadableWithinRoot(repoRoot, relativePath);
   if (!abs) return false;
   try {
     return fs.statSync(abs).isFile();
@@ -47,7 +47,8 @@ export function isFileWithinRoot(repoRoot: string, relativePath: string): boolea
 
 /** Read a repo-relative text file, or `undefined` if it is absent/unreadable. */
 export function readTextWithinRoot(repoRoot: string, relativePath: string): string | undefined {
-  const abs = resolveWithinRoot(repoRoot, relativePath);
+  // Symlink-aware: a committed link whose target leaves the repo is not read.
+  const abs = resolveReadableWithinRoot(repoRoot, relativePath);
   if (!abs) return undefined;
   try {
     return fs.readFileSync(abs, 'utf8');
@@ -90,20 +91,27 @@ export function listFiles(repoRoot: string, patterns: string[], ignore: string[]
 
 // ── Config-file discovery ─────────────────────────────────────────────────────
 
+/**
+ * Every location an Agent Skill is installed from: the `.claude/` skills, the
+ * cross-tool `.agents/skills/` layout, and a Claude Code plugin's (or plugin
+ * marketplace's) root-level `skills/<name>/SKILL.md`. The root-level globs are
+ * anchored on purpose: a `**\/skills/**` glob would also sweep up vendored
+ * copies and test fixtures.
+ */
+const SKILL_GLOBS = [
+  '.claude/**/SKILL.md',
+  '.agents/skills/**/SKILL.md',
+  'skills/*/SKILL.md',
+  'plugins/*/skills/*/SKILL.md',
+] as const;
+
 /** Repo-relative globs for each config surface the ai_config detectors audit. */
 const AI_CONFIG_GLOBS = {
-  skills: ['.claude/**/SKILL.md'],
-  // Every location an Agent Skill is installed from: the `.claude/` skills
-  // above, the cross-tool `.agents/skills/` layout, and a Claude Code plugin's
-  // (or plugin marketplace's) root-level `skills/<name>/SKILL.md`. The
-  // root-level globs are anchored on purpose: a `**/skills/**` glob would also
-  // sweep up vendored copies and test fixtures.
-  allSkills: [
-    '.claude/**/SKILL.md',
-    '.agents/skills/**/SKILL.md',
-    'skills/*/SKILL.md',
-    'plugins/*/skills/*/SKILL.md',
-  ],
+  // The structural skills detector audits the same locations the supply-chain
+  // scan reads (it used to stop at `.claude/`, so `.agents/skills/` and plugin
+  // skills never got frontmatter, description or dead-reference checks).
+  skills: SKILL_GLOBS,
+  allSkills: SKILL_GLOBS,
   agents: ['.claude/agents/**/*.md'],
   settings: ['.claude/settings.json', '.claude/settings.local.json'],
   mcp: ['.mcp.json'],
@@ -116,16 +124,18 @@ const AI_CONFIG_GLOBS = {
 
 /** Pre-discovered config files per surface, as sorted repo-relative POSIX paths. */
 export type AiConfigFiles = {
-  /** Agent Skills audited structurally by the skills detector: `.claude/**\/SKILL.md`. */
+  /**
+   * Agent Skills audited structurally by the skills detector, in every
+   * supported skill location: `.claude/**\/SKILL.md`, `.agents/skills/**`,
+   * plugin `skills/*` and marketplace `plugins/*\/skills/*`. Subject to the
+   * size/binary guards.
+   */
   skills: string[];
   /**
-   * Every SKILL.md in any supported skill location — a superset of `skills`
-   * that adds `.agents/skills/**`, plugin `skills/*` and marketplace
-   * `plugins/*\/skills/*`. Read by the skill supply-chain scan. (The structural
-   * skills detector deliberately still audits only `skills`, so widening this
-   * list does not move existing structural scores.) Honors include/exclude but
-   * NOT the size/binary guards: the supply-chain scan must see — and report —
-   * an oversized or NUL-bearing SKILL.md rather than silently lose the skill.
+   * Every SKILL.md in the same locations as `skills`, read by the skill
+   * supply-chain scan. Honors include/exclude but NOT the size/binary guards:
+   * the supply-chain scan must see — and report — an oversized or NUL-bearing
+   * SKILL.md rather than silently lose the skill.
    * Optional so hand-built contexts from older releases keep working.
    */
   allSkills?: string[];
@@ -226,7 +236,7 @@ export function isPriorityBundleFile(rel: string): boolean {
 function listPackageManifests(repoRoot: string, nodeModules: string): string[] {
   const out: string[] = [];
   const read = (rel: string): fs.Dirent[] => {
-    const abs = resolveWithinRoot(repoRoot, rel);
+    const abs = resolveReadableWithinRoot(repoRoot, rel);
     if (!abs) return [];
     try { return fs.readdirSync(abs, { withFileTypes: true }); } catch { return []; }
   };
@@ -291,7 +301,7 @@ function discoverSkillFiles(
     const stack = [dir];
     while (stack.length > 0) {
       const current = stack.pop()!;
-      const abs = resolveWithinRoot(repoRoot, current);
+      const abs = resolveReadableWithinRoot(repoRoot, current);
       if (!abs) continue;
       let entries: fs.Dirent[];
       try {
@@ -341,7 +351,7 @@ function discoverSkillFiles(
  * leading BINARY_CHECK_BYTES.
  */
 function passesScanGuards(repoRoot: string, relativePath: string): boolean {
-  const abs = resolveWithinRoot(repoRoot, relativePath);
+  const abs = resolveReadableWithinRoot(repoRoot, relativePath);
   if (!abs) return false;
   try {
     const stat = fs.statSync(abs);

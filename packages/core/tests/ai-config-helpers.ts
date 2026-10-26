@@ -45,3 +45,29 @@ export function ctx(repoRoot: string, policy?: { include?: string[]; exclude?: s
     onDemandFiles: [],
   };
 }
+
+/** Create a file symlink, or return false where the OS refuses (Windows without the privilege). */
+export function trySymlink(target: string, linkPath: string): boolean {
+  try {
+    fs.mkdirSync(path.dirname(linkPath), { recursive: true });
+    fs.symlinkSync(target, linkPath, 'file');
+    return true;
+  } catch (err) {
+    const code = (err as { code?: string }).code;
+    if (code === 'EPERM' || code === 'EACCES' || code === 'ENOTSUP') return false;
+    throw err;
+  }
+}
+
+function symlinksSupported(): boolean {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'promptci-symlink-probe-'));
+  try {
+    fs.writeFileSync(path.join(dir, 'target'), '');
+    return trySymlink(path.join(dir, 'target'), path.join(dir, 'link'));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/** True where this OS lets the test process create file symlinks (CI on Linux; not default Windows). */
+export const canSymlink = symlinksSupported();

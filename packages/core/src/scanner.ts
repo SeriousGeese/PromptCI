@@ -1,9 +1,12 @@
 import fg from 'fast-glob';
+import * as fsSync from 'node:fs';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import type { FileType, InstructionFile, InstructionSection, ScanInput } from './types.js';
 import { scanFencedLines } from './markdown-fences.js';
-import { isWithinRoot } from './path-containment.js';
+import { isWithinRoot, realPath, realPathWithinRoot } from './path-containment.js';
+import { createGitSymlinkOracle } from './git-symlinks.js';
+import type { GitSymlinkOracle } from './git-symlinks.js';
 
 const DEFAULT_PATTERNS = [
   // Core AI instruction files
@@ -231,8 +234,208 @@ async function defaultPatterns(repoRoot: string): Promise<string[]> {
   return clineIsDir ? DEFAULT_PATTERNS : DEFAULT_PATTERNS.filter((p) => !CLINE_DIR_PATTERNS.has(p));
 }
 
-export async function scanFiles(input: ScanInput): Promise<InstructionFile[]> {
+/**
+ * What {@link scanFilesWithAliases} found: `files` holds each distinct file's
+ * content exactly once; `aliases` holds the extra symlinked names that resolve
+ * to a file already in `files` (each carries `aliasOf`).
+ */
+export type ScanFilesResult = { files: InstructionFile[]; aliases: InstructionFile[] };
+
+/** The canonical real path, or null when it does not exist. Kept apart from `realPath` (used only to group names). */
+function resolveReal(p: string): string | null {
+  try {
+    return fsSync.realpathSync.native(p);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Read one instruction file.
+ *
+ * Threat model: the scanner runs on checkouts it does not trust (a fork's PR in
+ * CI), where the committer controls every symlink in the tree. A link must never
+ * make the scanner read a file outside the repo. So the path is resolved to its
+ * real path ONCE, that real path is checked against the repo root, and the file
+ * is then opened by the REAL path (never the link) with O_NOFOLLOW where the OS
+ * has it, and stat'ed and read from that one handle. A link swapped in after the
+ * check cannot redirect the read. What remains is a race against a writer that
+ * can already modify the working tree during the scan, which is outside this
+ * guard's scope.
+ */
+async function readInstructionFile(
+  repoRoot: string,
+  realRoot: string,
+  absPath: string,
+  typeRelPath: string,
+): Promise<InstructionFile | undefined> {
+  const real = resolveReal(absPath);
+  if (real === null || !isWithinRoot(realRoot, real)) return undefined;
+
+  let handle: Awaited<ReturnType<typeof fs.open>> | undefined;
+  try {
+    const noFollow = (fsSync.constants as { O_NOFOLLOW?: number }).O_NOFOLLOW ?? 0;
+    handle = await fs.open(real, fsSync.constants.O_RDONLY | noFollow);
+    const stat = await handle.stat();
+    if (!stat.isFile()) return undefined;
+    if (stat.size > MAX_FILE_SIZE) return undefined;
+
+    const buffer = await handle.readFile();
+    if (isBinary(buffer)) return undefined;
+
+    const content = buffer.toString('utf-8');
+    // Root-relative, forward slashes: the location-independent form finding
+    // ids hash (finding-id.ts), identical on every OS and checkout path.
+    const relativePath = path.relative(repoRoot, absPath).replace(/\\/g, '/');
+    const sections = parseSections(content, absPath, relativePath);
+    const lineCount = splitLines(content).length;
+    const charCount = content.length;
+
+    return {
+      path: absPath,
+      relativePath,
+      fileType: deriveFileType(typeRelPath),
+      content,
+      sections,
+      lineCount,
+      charCount,
+      estimatedTokens: Math.round(charCount / 4),
+    };
+  } catch {
+    // skip unreadable files
+    return undefined;
+  } finally {
+    await handle?.close().catch(() => undefined);
+  }
+}
+
+type GlobEntry = { path: string; dirent: { isFile(): boolean; isSymbolicLink(): boolean } };
+
+/**
+ * Longest trimmed content (characters) of a file that stands in for a symlink.
+ * A path longer than this is not a link target anyone wrote by hand (MAX_PATH).
+ */
+const MAX_TEXT_SYMLINK_CHARS = 260;
+/** A chain of text symlinks followed to the real file (`A -> B -> C`); longer chains are left as plain files. */
+const MAX_TEXT_SYMLINK_HOPS = 8;
+
+/**
+ * The repo-relative path a "text symlink" points to, or undefined when the file
+ * is not one. A checkout without link support (Windows without `core.symlinks`)
+ * materializes a committed symlink as a small regular file whose whole content
+ * is the link's target path (`CLAUDE.md` containing `AGENTS.md`). Such a file is
+ * recognised only when ALL of these hold, so a genuine short instruction file is
+ * never mistaken for one:
+ *  - its trimmed content is a single line of at most {@link MAX_TEXT_SYMLINK_CHARS} characters;
+ *  - that line is a relative path (no absolute or drive prefix, no backslashes, no `..` out of the repo);
+ *  - the path, resolved relative to the link's own directory exactly as git stores a link
+ *    target (`../AGENTS.md` from `docs/CLAUDE.md`, `./AGENTS.md` from the root), is EXACTLY the
+ *    repo-relative path of another discovered file;
+ *  - the repository itself says the file is a symlink (see git-symlinks.ts): its index entry has
+ *    mode 120000, or, with no readable index, its own config has `core.symlinks = false`.
+ *    A hand-written one-line pointer file in a repository that tracks it as a regular file
+ *    stays a real file.
+ */
+function textSymlinkTarget(
+  file: InstructionFile,
+  discovered: ReadonlyMap<string, InstructionFile>,
+  oracle: GitSymlinkOracle,
+): string | undefined {
+  const rel = file.relativePath;
+  if (rel === undefined || file.charCount > MAX_TEXT_SYMLINK_CHARS + 16) return undefined;
+  const text = file.content.replace(/^\u{FEFF}/u, '').trim();
+  if (text === '' || text.length > MAX_TEXT_SYMLINK_CHARS || /[\r\n]/.test(text)) return undefined;
+  if (text.startsWith('/') || /^[A-Za-z]:/.test(text) || text.includes('\\')) return undefined;
+  const target = path.posix.normalize(path.posix.join(path.posix.dirname(rel), text));
+  if (target === '..' || target.startsWith('../') || target === rel || !discovered.has(target)) return undefined;
+  return oracle.isSymlink(rel) ? target : undefined;
+}
+
+/** `link` as an alias of `real`: the real content and sections (parsed under the link's own path), the link's name and type. */
+function aliasOfReal(link: InstructionFile, real: InstructionFile): InstructionFile {
+  return {
+    ...real,
+    path: link.path,
+    relativePath: link.relativePath,
+    fileType: link.fileType,
+    sections: parseSections(real.content, link.path, link.relativePath),
+    aliasOf: real.relativePath,
+  };
+}
+
+/**
+ * Make the text symlinks among `files` aliases of the file they name, so a
+ * Windows checkout without link support scans like the Linux one: the real file
+ * is scanned once, the link name is an alias carrying the real content (so tool-
+ * specific checks run for it under its own type) and is listed with zeroed counts.
+ * Chains (`A -> B -> C`) resolve to the final real file; a cycle, an over-long chain
+ * or a target that is not a discovered file leaves the file as it was. Aliases that
+ * pointed at a file which turned out to be a link are re-pointed at the real one.
+ */
+export function foldTextSymlinks(files: InstructionFile[], aliases: InstructionFile[], oracle: GitSymlinkOracle): ScanFilesResult {
+  const byRelativePath = new Map<string, InstructionFile>();
+  for (const file of files) if (file.relativePath !== undefined) byRelativePath.set(file.relativePath, file);
+
+  const links = new Map<string, string>();
+  for (const file of files) {
+    const target = textSymlinkTarget(file, byRelativePath, oracle);
+    if (target !== undefined) links.set(file.relativePath!, target);
+  }
+  if (links.size === 0) return { files, aliases };
+
+  // Follow each link to its real file: at most MAX_TEXT_SYMLINK_HOPS links in a row.
+  const real = new Map<string, InstructionFile>();
+  for (const rel of links.keys()) {
+    let current = links.get(rel)!;
+    let hops = 1;
+    while (links.has(current) && hops < MAX_TEXT_SYMLINK_HOPS) {
+      current = links.get(current)!;
+      hops++;
+    }
+    if (!links.has(current)) real.set(rel, byRelativePath.get(current)!);
+  }
+  if (real.size === 0) return { files, aliases };
+
+  const folded = files.filter((file) => file.relativePath === undefined || !real.has(file.relativePath));
+  // An alias that pointed at a file which turned out to be a link now stands for the real file: rebuilt in full, never left with the stub's text.
+  const out = aliases.map((alias) => {
+    const target = alias.aliasOf === undefined ? undefined : real.get(alias.aliasOf);
+    return target === undefined ? alias : aliasOfReal(alias, target);
+  });
+  for (const [rel, target] of real) out.push(aliasOfReal(byRelativePath.get(rel)!, target));
+  return { files: folded, aliases: out };
+}
+
+/**
+ * Discover and read instruction files, plus the symlinked names that point at
+ * them.
+ *
+ * fast-glob with `followSymbolicLinks: false` never lists a symlinked FILE as
+ * a file (its dirent is a symlink), so `CLAUDE.md -> AGENTS.md` — a very common
+ * way to share one rule set between tools — used to be skipped entirely. Names
+ * are grouped by REAL path, so the same content is scanned once whether it is
+ * reached through a symlinked file or a linked directory
+ * (`.clinerules -> .cursor/rules`):
+ *
+ *  - A name whose real path leaves the repo is skipped (never read).
+ *  - A name that resolves to a file already discovered is an ALIAS: it is
+ *    returned in `aliases` (with `aliasOf` naming the canonical file) and its
+ *    content is NOT scanned a second time, so findings are not double-counted
+ *    and a file is never reported as a duplicate of its own symlink. The
+ *    canonical name is the one that reaches the file without crossing a symlink.
+ *  - A link whose target was not discovered (an in-repo file outside the
+ *    patterns, or excluded) is scanned under the LINK's path and typed by the
+ *    link's name. Several links to the same such target: the first (by path)
+ *    is scanned, the rest are aliases of it.
+ *  - A small regular file that is nothing but the repo-relative path of another
+ *    discovered file (`CLAUDE.md` containing `AGENTS.md`) is how a checkout without
+ *    symlink support (Windows without `core.symlinks`) materializes a link; it is
+ *    folded into an alias of that file, so both platforms scan the same repo alike
+ *    (see {@link foldTextSymlinks}).
+ */
+export async function scanFilesWithAliases(input: ScanInput): Promise<ScanFilesResult> {
   const repoRoot = path.resolve(input.repoPath);
+  const realRoot = resolveReal(repoRoot) ?? repoRoot;
   const patterns = (input.include && input.include.length > 0)
     ? input.include
     : await defaultPatterns(repoRoot);
@@ -241,13 +444,17 @@ export async function scanFiles(input: ScanInput): Promise<InstructionFile[]> {
     ...(input.exclude ?? []),
   ];
 
-  let relativePaths: string[];
+  let entries: GlobEntry[];
   try {
-    relativePaths = await fg(patterns, {
+    entries = await fg(patterns, {
       cwd: repoRoot,
       ignore: ignorePatterns,
       dot: true,
       absolute: false,
+      // `onlyFiles: false` + `objectMode` so symlinked entries are listed;
+      // regular files and links are told apart by dirent below.
+      onlyFiles: false,
+      objectMode: true,
       followSymbolicLinks: false,
       // Skip unreadable entries instead of failing the whole glob: an explicit
       // `include: [".clinerules/**"]` with a `.clinerules` FILE (ENOTDIR), or
@@ -256,50 +463,75 @@ export async function scanFiles(input: ScanInput): Promise<InstructionFile[]> {
       suppressErrors: true,
     });
   } catch {
-    return [];
+    return { files: [], aliases: [] };
   }
 
-  const results: InstructionFile[] = [];
+  const fileRels: string[] = [];
+  const linkRels: string[] = [];
+  for (const entry of entries) {
+    if (entry.dirent.isSymbolicLink()) linkRels.push(entry.path);
+    else if (entry.dirent.isFile()) fileRels.push(entry.path);
+  }
+  linkRels.sort();
 
-  for (const relPath of relativePaths) {
+  const files: InstructionFile[] = [];
+  const aliases: InstructionFile[] = [];
+  // Real path -> the file whose content represents it.
+  const canonicalByReal = new Map<string, InstructionFile>();
+
+  // Path traversal guard: skip anything a glob result resolves outside the
+  // root — lexically, or through a symlink. With `followSymbolicLinks: false`
+  // fast-glob never descends into a linked directory, but it does START its
+  // walk at a pattern's base directory even when that directory is a link
+  // (`.cursor/rules -> /elsewhere`), and every file below it would then be
+  // read through.
+  const regular: Array<{ relPath: string; absPath: string; real: string | null; direct: boolean }> = [];
+  for (const relPath of fileRels) {
     const absPath = path.resolve(repoRoot, relPath);
+    if (!isWithinRoot(repoRoot, absPath) || !realPathWithinRoot(repoRoot, absPath)) continue;
+    const real = realPath(absPath);
+    // "Direct": reaches the file without crossing a symlink, so it is the natural canonical name
+    // when a linked directory makes the same file visible under two paths.
+    regular.push({ relPath, absPath, real, direct: real !== null && real === path.join(realRoot, relPath) });
+  }
+  regular.sort((a, b) => Number(b.direct) - Number(a.direct) || a.relPath.localeCompare(b.relPath));
 
-    // Path traversal guard: skip anything a glob result resolves outside the root.
-    if (!isWithinRoot(repoRoot, absPath)) {
+  for (const { relPath, absPath, real } of regular) {
+    const file = await readInstructionFile(repoRoot, realRoot, absPath, relPath);
+    if (!file) continue;
+    const canonical = real !== null ? canonicalByReal.get(real) : undefined;
+    if (canonical) {
+      aliases.push({ ...file, aliasOf: canonical.relativePath });
       continue;
     }
-
-    try {
-      const stat = await fs.stat(absPath);
-      if (!stat.isFile()) continue;
-      if (stat.size > MAX_FILE_SIZE) continue;
-
-      const buffer = await fs.readFile(absPath);
-      if (isBinary(buffer)) continue;
-
-      const content = buffer.toString('utf-8');
-      // Root-relative, forward slashes: the location-independent form finding
-      // ids hash (finding-id.ts), identical on every OS and checkout path.
-      const relativePath = path.relative(repoRoot, absPath).replace(/\\/g, '/');
-      const sections = parseSections(content, absPath, relativePath);
-      const lineCount = splitLines(content).length;
-      const charCount = content.length;
-
-      results.push({
-        path: absPath,
-        relativePath,
-        fileType: deriveFileType(relPath),
-        content,
-        sections,
-        lineCount,
-        charCount,
-        estimatedTokens: Math.round(charCount / 4),
-      });
-    } catch {
-      // skip unreadable files
-    }
+    files.push(file);
+    if (real !== null) canonicalByReal.set(real, file);
   }
 
-  results.sort((a, b) => a.path.localeCompare(b.path));
-  return results;
+  for (const relPath of linkRels) {
+    const absPath = path.resolve(repoRoot, relPath);
+    // Out-of-repo targets are skipped. A dangling link has nothing to read
+    // (readInstructionFile fails on it) and a link to a directory is not a file.
+    if (!isWithinRoot(repoRoot, absPath) || !realPathWithinRoot(repoRoot, absPath)) continue;
+
+    const file = await readInstructionFile(repoRoot, realRoot, absPath, relPath);
+    if (!file) continue;
+    const real = realPath(absPath);
+    const canonical = real !== null ? canonicalByReal.get(real) : undefined;
+    if (canonical) {
+      aliases.push({ ...file, aliasOf: canonical.relativePath });
+      continue;
+    }
+    files.push(file);
+    if (real !== null) canonicalByReal.set(real, file);
+  }
+
+  const linked = foldTextSymlinks(files, aliases, createGitSymlinkOracle(repoRoot));
+  linked.files.sort((a, b) => a.path.localeCompare(b.path));
+  linked.aliases.sort((a, b) => a.path.localeCompare(b.path));
+  return linked;
+}
+
+export async function scanFiles(input: ScanInput): Promise<InstructionFile[]> {
+  return (await scanFilesWithAliases(input)).files;
 }

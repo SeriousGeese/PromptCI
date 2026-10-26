@@ -17,6 +17,7 @@
  * yields `''` (the root itself) or a forward walk with no leading `..`; any
  * escape yields a leading `..` segment or an absolute path (a different drive).
  */
+import * as fs from 'node:fs';
 import * as path from 'node:path';
 
 /**
@@ -51,5 +52,70 @@ export function resolveWithinRoot(root: string, candidatePath: string): string |
     return isWithinRoot(resolvedRoot, resolved) ? resolved : null;
   } catch {
     return null;
+  }
+}
+
+/** The canonical real path (symlinks resolved), or null when it does not exist. */
+export function realPath(p: string): string | null {
+  try {
+    const real: unknown = fs.realpathSync.native(p);
+    return typeof real === 'string' ? real : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * True unless `absPath` exists and resolves — through a symlinked file or any
+ * symlinked directory on its path — to a location outside `root`. The lexical
+ * checks above cannot see a symlink: a committed `CLAUDE.md -> /etc/passwd`
+ * or `package.json -> ~/.npmrc` passes them and is then read through. In-repo
+ * symlinks stay readable. A path that does not exist (or a dangling link) has
+ * nothing to read through, so it is left to the caller's own read to fail.
+ */
+export function realPathWithinRoot(root: string, absPath: string): boolean {
+  const real = realPath(absPath);
+  if (real === null) return true;
+  const realRoot = realPath(root) ?? path.resolve(root);
+  return isWithinRoot(realRoot, real);
+}
+
+/**
+ * {@link resolveWithinRoot} for paths about to be READ: additionally `null`
+ * when the target is a symlink (or sits under a symlinked directory) whose
+ * real path escapes `root`.
+ */
+export function resolveReadableWithinRoot(root: string, candidatePath: string): string | null {
+  const resolved = resolveWithinRoot(root, candidatePath);
+  if (resolved === null) return null;
+  return realPathWithinRoot(root, resolved) ? resolved : null;
+}
+
+/**
+ * True when WRITING `target` stays inside `root`. The mirror of the read
+ * policy: a path inside the root must not reach outside through a symlink on
+ * any component that already exists (a `.promptci` committed as a link to
+ * `/etc`, a `latest.md` linked to `~/.bashrc`), including a dangling link whose
+ * target a write would create outside. The nearest existing ancestor is
+ * checked, so a not-yet-created file is judged by the directory it would land in.
+ *
+ * A target that is lexically OUTSIDE the root is the caller's explicit choice
+ * (`--output /tmp/report.md`) and is allowed.
+ */
+export function writeTargetWithinRoot(root: string, target: string): boolean {
+  const resolved = path.resolve(target);
+  if (!isWithinRoot(root, resolved)) return true;
+  let probe = resolved;
+  for (;;) {
+    if (realPath(probe) !== null) return realPathWithinRoot(root, probe);
+    try {
+      // lstat succeeding while realpath failed: a dangling symlink, whose target a write would create.
+      if (fs.lstatSync(probe).isSymbolicLink()) return false;
+    } catch {
+      // does not exist: look at its parent
+    }
+    const parent = path.dirname(probe);
+    if (parent === probe) return true;
+    probe = parent;
   }
 }

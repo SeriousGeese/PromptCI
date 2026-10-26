@@ -429,6 +429,66 @@ describe('runScan — baseline behaviour', () => {
     expect(exitCode).toBeUndefined();
   });
 
+  // pcic-2b6.14: a baseline reached through a link that leaves the scan path is
+  // refused. A linked directory (a junction on Windows) exercises the same
+  // real-path check as a linked file, on every platform.
+  it('refuses a baseline that resolves outside the scan path through a link', async () => {
+    const outside = await makeTempDir();
+    try {
+      await fs.writeFile(path.join(outside, 'baseline.json'), '[]', 'utf-8');
+      await fs.symlink(outside, path.join(tmpDir, '.promptci'), 'junction');
+
+      const { runScan } = await import('../src/commands/scan.js');
+      await expect(runScan({ scanPath: tmpDir, baseline: '.promptci/baseline.json' })).rejects.toThrow();
+      expect(exitCode).toBe(1);
+      expect(stderrOutput).toContain('symlink');
+    } finally {
+      await fs.rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  it('--update-baseline refuses to write through a .promptci link that leaves the scan path', async () => {
+    const outside = await makeTempDir();
+    try {
+      await fs.symlink(outside, path.join(tmpDir, '.promptci'), 'junction');
+      const { runScan } = await import('../src/commands/scan.js');
+      // The report write (which also lives under .promptci) is refused first; either way nothing lands outside.
+      await expect(runScan({ scanPath: tmpDir, updateBaseline: true })).rejects.toThrow();
+      expect(await fs.readdir(outside)).toEqual([]);
+    } finally {
+      await fs.rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  it('--update-baseline with an explicit baseline link that leaves the scan path is refused', async () => {
+    const outside = await makeTempDir();
+    try {
+      await fs.symlink(outside, path.join(tmpDir, 'baselines'), 'junction');
+      const { runScan } = await import('../src/commands/scan.js');
+      await expect(
+        runScan({ scanPath: tmpDir, baseline: 'baselines/baseline.json', updateBaseline: true }),
+      ).rejects.toThrow();
+      expect(exitCode).toBe(1);
+      expect(stderrOutput).toContain('refusing to write');
+      expect(await fs.readdir(outside)).toEqual([]);
+    } finally {
+      await fs.rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  it('still reads a baseline the user points at outside the scan path explicitly', async () => {
+    const outside = await makeTempDir();
+    try {
+      const baselinePath = path.join(outside, 'baseline.json');
+      await fs.writeFile(baselinePath, '[]', 'utf-8');
+      const { runScan } = await import('../src/commands/scan.js');
+      await runScan({ scanPath: tmpDir, baseline: baselinePath });
+      expect(exitCode).toBeUndefined();
+    } finally {
+      await fs.rm(outside, { recursive: true, force: true });
+    }
+  });
+
   it('--update-baseline respects a custom --baseline path', async () => {
     const customPath = path.join(tmpDir, 'custom-baseline.json');
     const { runScan } = await import('../src/commands/scan.js');
