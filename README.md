@@ -20,7 +20,7 @@ instruction rot before it costs you.
 The scanner is **deterministic and rule-based** — no LLM calls, identical output for identical
 input. It runs entirely on your machine; your files never leave it. The only network request
 the package ever makes is a once-a-day, best-effort npm version check (see
-[Hosted dashboard](#hosted-dashboard) for how to disable it).
+[Network access](#network-access) for how to disable it).
 
 ## Why
 
@@ -37,6 +37,30 @@ PromptCI treats instruction files like maintainable engineering artifacts.
 ## Quickstart
 
 Requires Node.js 22+.
+
+For a 10-second read on your repo, run the CLI with no arguments (same as `promptci score`).
+It needs no account, makes no network calls, and writes no files:
+
+```bash
+npx @promptci/cli
+```
+
+```text
+PromptCI instruction health: 80/100 (Fair)
+
+Top 3 findings (of 9):
+  1. [warning] Vague guidance detected (AGENTS.md:11)
+     Fix: Replace vague guidance with concrete constraints — specific commands, forbidden patterns, or measurable criteria. For example, replace "write clean code" with…
+  2. [warning] No "read before edit" instruction (AGENTS.md)
+     Fix: Add a rule such as: "Always read a file fully before editing it."
+  3. [warning] No "ask when unsure" instruction (AGENTS.md)
+     Fix: Add a rule such as: "If you are uncertain about the correct approach, say so and ask before proceeding rather than guessing."
+```
+
+It always exits 0 after printing a score (it is a glance, not a gate); a bad `--path` or
+unreadable `.promptci/config.json` exits 1. It uses the same config and score as `scan`, and
+skips even the once-a-day version check. To get the full Markdown/JSON report, history, or a CI
+gate, use `scan`:
 
 ```bash
 npx @promptci/cli scan
@@ -66,6 +90,7 @@ pattern containing a slash is otherwise anchored to the repo root and would miss
 Common commands:
 
 ```bash
+npx @promptci/cli score --path /path/to/repo   # quick score + top 3 findings, writes nothing
 npx @promptci/cli scan --path /path/to/repo    # scan a specific repo
 npx @promptci/cli init                         # create .promptci/config.json
 npx @promptci/cli fix                          # apply deterministic fix recipes
@@ -206,16 +231,15 @@ examples/ — fixture repositories used as the test corpus
 Docs/     — reference documentation
 ```
 
-## Hosted dashboard
+## Network access
 
-A hosted dashboard (scan history, improvement metrics, LLM-assisted fixes, GitHub PR
-integration) is developed separately and is not part of this repository. This package is the
-offline scanner only — it contains no LLM, auth, or upload code and makes no network requests
+PromptCI runs locally. It contains no LLM, auth, or upload code and makes no network requests
 beyond the once-a-day npm version check described below.
 
 The one network touch in this package is a best-effort check against the npm registry, at most
 once per day, for a newer `@promptci/cli` release. It never blocks a command and is skipped
-entirely when `CI`, `NO_UPDATE_NOTIFIER`, or `PROMPTCI_NO_UPDATE_NOTIFIER` is set.
+entirely when `CI`, `NO_UPDATE_NOTIFIER`, or `PROMPTCI_NO_UPDATE_NOTIFIER` is set, and it never
+runs for `promptci score`.
 
 ## Environment variables
 

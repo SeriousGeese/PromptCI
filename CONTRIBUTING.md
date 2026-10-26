@@ -61,6 +61,8 @@ Anything imported by a config file at the repo root must be a **declared** devDe
 default `public-hoist-pattern` includes `*eslint*` and ESLint 9 happened to depend on it. ESLint
 10 does not, and lint broke until it was declared explicitly.
 
+Vite >=6.4.4 fixes GHSA-587h-7wmj-h5pm.
+
 ## GitHub Actions pins
 
 Every action in `.github/workflows` **and in the published `action.yml`** is pinned to a full
