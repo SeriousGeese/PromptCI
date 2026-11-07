@@ -28,6 +28,10 @@ export function readWorkspaceVersion(repoRootDir, pkgRelPath) {
   return pkg.version;
 }
 
+// 12 x 15s = three minutes, about 2.5x the propagation lag seen on 2026-11-07.
+const PROPAGATION_ATTEMPTS = Number(process.env.PROMPTCI_PROPAGATION_ATTEMPTS ?? 12);
+const PROPAGATION_DELAY_MS = Number(process.env.PROMPTCI_PROPAGATION_DELAY_MS ?? 15_000);
+
 async function fetchPublishedVersion(name, attempts = 5, delayMs = 10_000) {
   let lastErr;
   for (let attempt = 1; attempt <= attempts; attempt++) {
@@ -83,10 +87,26 @@ async function main() {
 
   if (!registryMode) return;
 
-  const [publishedCli, publishedCore] = await Promise.all([
-    fetchPublishedVersion('@promptci/cli'),
-    fetchPublishedVersion('@promptci/core'),
-  ]);
+  // The registry does not serve a freshly published version immediately: the
+  // v0.2.0 publish (run 42386457663) reported both `+ @promptci/*@0.2.0`
+  // lines, yet /latest kept answering 0.1.0 for about 75 seconds, so this
+  // step failed a release that had in fact succeeded. When a tag is expected,
+  // keep re-reading until both packages report it (or the attempts run out).
+  let publishedCli;
+  let publishedCore;
+  for (let attempt = 1; ; attempt++) {
+    [publishedCli, publishedCore] = await Promise.all([
+      fetchPublishedVersion('@promptci/cli'),
+      fetchPublishedVersion('@promptci/core'),
+    ]);
+    const propagated = tagVersion === undefined || (publishedCli === tagVersion && publishedCore === tagVersion);
+    if (propagated || attempt >= PROPAGATION_ATTEMPTS) break;
+    console.error(
+      `check-version-sync: npm serves cli@${publishedCli} core@${publishedCore}, expected ${tagVersion}; ` +
+        `waiting ${PROPAGATION_DELAY_MS / 1000}s for propagation (attempt ${attempt}/${PROPAGATION_ATTEMPTS}).`,
+    );
+    await new Promise(resolve => setTimeout(resolve, PROPAGATION_DELAY_MS));
+  }
 
   if (publishedCli !== publishedCore) {
     console.error(
