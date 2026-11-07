@@ -102,8 +102,11 @@ versions together — they must release in lockstep.
    Publish run → "Review deployments").
 4. The workflow verifies, checks tag vs. package versions, publishes core then cli with npm
    provenance, then re-checks what npm serves for both.
-5. Update `cli_version` in [action.yml](action.yml) to match, in a follow-up PR (kept honest by
-   `packages/cli/tests/action-yml.test.ts`).
+5. `cli_version` in [action.yml](action.yml) was already bumped in step 1: the bump PR cannot go
+   green otherwise (`packages/cli/tests/action-yml.test.ts` holds the pin and the package version
+   together). Until the tag from step 2 is pushed and published, that pin points at a version npm
+   does not have; [action-pin-published.yml](.github/workflows/action-pin-published.yml) checks
+   npm every six hours and fails until it does.
 
 Publishing authenticates via npm [trusted publishing](https://docs.npmjs.com/trusted-publishers)
 (OIDC): both packages trust the workflow plus the `release` environment, so no npm token exists.

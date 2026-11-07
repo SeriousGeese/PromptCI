@@ -1,0 +1,50 @@
+name: Action pin published
+
+# Post-merge guard: fails loudly while action.yml pins a @promptci/cli version
+# that npm does not serve (see scripts/check-action-pin-published.mjs for the
+# failure mode this catches — a merged release PR whose vX.Y.Z tag was never
+# pushed).
+#
+# Why this is not a pull_request check: the release PR must merge with an
+# unpublished pin (packages/cli/tests/action-yml.test.ts forces the pin and
+# the package version to move together, and the tag that publishes them is
+# pushed only after the merge). Gating the PR on npm would deadlock releases.
+#
+# Why it is scheduled rather than `push: branches: [main]` alone: merges made
+# by the auto-merge bot use GITHUB_TOKEN, which never fires push workflows, so
+# a push-only trigger would skip exactly the merges it needs to see. The push
+# trigger is kept for human merges (fast feedback); the schedule is the
+# guarantee. A failed scheduled run notifies the last committer of this file.
+on:
+  schedule:
+    - cron: '17 */6 * * *'
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - action.yml
+      - packages/cli/package.json
+      - scripts/check-action-pin-published.mjs
+      - .github/workflows/action-pin-published.yml
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    # Forks pin whatever they pin; only this repo's action.yml is what
+    # `SeriousGeese/PromptCI@main` consumers install.
+    if: github.repository == 'SeriousGeese/PromptCI'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+
+      # Node built-ins only (fs + fetch): no pnpm install, no lockfile needed.
+      - name: Check action.yml cli_version exists on npm
+        run: node scripts/check-action-pin-published.mjs
