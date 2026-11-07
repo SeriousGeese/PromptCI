@@ -101,13 +101,22 @@ jobs:
       # devDependency on core. That's inert in the published tarball —
       # devDependencies are never installed by consumers, and core ships
       # inside cli's dist as an esbuild snapshot regardless.
+      #
+      # --fetch-timeout: npm flattens this to the `timeout` it hands sigstore,
+      # which otherwise gives Rekor 5s per request with two retries and never
+      # recovers from its own 409 (npm/cli#10078). On a slow transparency log
+      # the first write lands server-side after the client gave up, the retry
+      # is answered 409 "equivalent entry already exists", and the publish
+      # fails after the whole build passed (v0.2.0, run 42380252526, twice).
+      # Two minutes is enough for a degraded Rekor and costs nothing when it
+      # is healthy.
       - name: Publish @promptci/core
         working-directory: packages/core
-        run: npm publish --provenance --access public
+        run: npm publish --provenance --access public --fetch-timeout=120000
 
       - name: Publish @promptci/cli
         working-directory: packages/cli
-        run: npm publish --provenance --access public
+        run: npm publish --provenance --access public --fetch-timeout=120000
 
       # Belt-and-suspenders: confirm what npm now actually serves for both
       # packages agrees with each other and with the tag, catching registry
