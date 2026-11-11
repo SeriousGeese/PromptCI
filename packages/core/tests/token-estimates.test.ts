@@ -96,7 +96,8 @@ describe('computeAddressableTokens', () => {
   it('ignores categories that are not about size', () => {
     const f = file('CLAUDE.md', tenLines);
     const loc = [{ filePath: f.path, startLine: 1, endLine: 5 }];
-    const cats = ['security', 'missing_context', 'command_validity'] as const;
+    // structure fixes move lines or correct a path; they do not remove text.
+    const cats = ['security', 'missing_context', 'command_validity', 'structure'] as const;
     expect(computeAddressableTokens(cats.map((c) => issue(c, c, loc)), [f])).toBe(0);
     for (const c of cats) expect(ADDRESSABLE_CATEGORIES.has(c)).toBe(false);
   });

@@ -12,12 +12,13 @@ import type { InstructionFile, IssueCategory, PromptCiIssue } from './types.js';
  * Categories whose savings come from removing or condensing text, so the lines
  * they flag count toward `estimatedAddressableTokens`.
  *
- * Deliberately excluded: `security`, `missing_context`, `command_validity`,
- * `ai_config`, `agent_practices` and `custom`. Those findings are about
- * correctness, absence or configuration, not size; fixing them rarely shrinks
- * the file (missing_context asks for MORE text), so counting their lines would
- * overstate what a visitor could save. Every finding still gets its own
- * `estimatedTokens` regardless of category.
+ * Deliberately excluded: `structure`, `security`, `missing_context`,
+ * `command_validity`, `ai_config`, `agent_practices` and `custom`. Those findings
+ * are about placement, correctness, absence or configuration, not size; fixing
+ * them rarely shrinks the file (structure fixes move lines or correct a path,
+ * missing_context asks for MORE text), so counting their lines would overstate
+ * what a visitor could save. Every finding still gets its own `estimatedTokens`
+ * regardless of category.
  */
 export const ADDRESSABLE_CATEGORIES: ReadonlySet<IssueCategory> = new Set<IssueCategory>([
   'duplicate',
@@ -25,7 +26,6 @@ export const ADDRESSABLE_CATEGORIES: ReadonlySet<IssueCategory> = new Set<IssueC
   'stale_instruction',
   'conflict',
   'vague_guidance',
-  'structure',
 ]);
 
 /** The chars/4 estimator shared with `InstructionFile.estimatedTokens`. */
