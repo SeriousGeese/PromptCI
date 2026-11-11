@@ -312,6 +312,11 @@ export function generateMarkdownReport(report: ScanReport): string {
   lines.push(`**Files scanned:** ${filesScanned.filter((f) => f.aliasOf === undefined).length}`);
   if (report.metrics) {
     lines.push(`**Estimated instruction tokens:** ${report.metrics.estimatedInstructionTokens} (always-loaded)`);
+    if (report.metrics.estimatedAddressableTokens !== undefined) {
+      lines.push(
+        `**In flagged sections:** up to ${report.metrics.estimatedAddressableTokens} tokens (always-loaded, overlaps counted once)`,
+      );
+    }
     if (report.metrics.estimatedOnDemandTokens) {
       lines.push(
         `**On-demand skill/agent tokens:** ${report.metrics.estimatedOnDemandTokens} ` +

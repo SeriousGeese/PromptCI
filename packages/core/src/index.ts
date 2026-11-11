@@ -37,6 +37,7 @@ export type { Frontmatter, FrontmatterValue, AiConfigFiles } from './ai-config.j
 export { analyzeContext } from './context-analysis.js';
 export type { ContextAnalysis } from './context-analysis.js';
 export { scan } from './scan.js';
+export { ADDRESSABLE_CATEGORIES, estimateTokens, annotateIssueTokens, computeAddressableTokens } from './token-estimates.js';
 export { computeFingerprint, createBaseline, filterNewIssues, assertValidBaseline } from './baseline.js';
 export { applyFixRecipe, resolveSafePath, isRepairable } from './fix-engine.js';
 export type { FileChange } from './fix-engine.js';

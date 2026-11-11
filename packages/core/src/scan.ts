@@ -11,6 +11,7 @@ import { parseSuppressions, buildValidationIssues, applySuppressions } from './s
 import type { SuppressionAnnotation } from './suppression.js';
 import { computeHealthScore, selectTopFixes } from './health-score.js';
 import { filterNewIssues } from './baseline.js';
+import { annotateIssueTokens, computeAddressableTokens } from './token-estimates.js';
 import { SKILL_SUPPLY_CHAIN_TAG } from './skill-supply-chain.js';
 import type { PromptCiIssue, ScanInput, ScanReport } from './types.js';
 
@@ -58,7 +59,9 @@ export async function scan(input: ScanInput): Promise<ScanReport> {
   // Suppressed issues are excluded from health score and topFixes.
   const annotations = parseSuppressions(allScannedFiles);
   const allIssues = [...issues, ...buildValidationIssues(annotations)];
-  const { active, suppressed } = applyScanSuppressions(allIssues, annotations, context);
+  const { active: activeRaw, suppressed: suppressedRaw } = applyScanSuppressions(allIssues, annotations, context);
+  const active = annotateIssueTokens(activeRaw, allScannedFiles);
+  const suppressed = annotateIssueTokens(suppressedRaw, allScannedFiles);
 
   const healthScore = computeHealthScore(active);
   const topFixes = selectTopFixes(active);
@@ -78,7 +81,10 @@ export async function scan(input: ScanInput): Promise<ScanReport> {
     repoPath: context.repoRoot,
     projectType: context.projectType,
     healthScore,
-    metrics: context.metrics,
+    metrics: {
+      ...context.metrics,
+      estimatedAddressableTokens: computeAddressableTokens(active, context.files),
+    },
     // Symlink aliases are inventory only (see RepoContext.aliasFiles): they are
     // not scanned, so they carry no annotations to parse above. Their content and
     // counts are zeroed so a consumer summing filesScanned does not count the
