@@ -8,7 +8,7 @@
  */
 
 /** Single source of truth for the marketing-site origin the CLI links to. */
-export const SITE_URL = 'https://promptci.dev';
+export const SITE_URL = 'https://promptci.seriousgeese.dev';
 
 function toCount(n: number): number {
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
