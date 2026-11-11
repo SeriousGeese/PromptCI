@@ -105,37 +105,12 @@ jobs:
       # that nobody labelled. Resolve gh on the runner that is ACTUALLY
       # executing rather than trusting a repo-wide variable (DnD-krocc).
       - name: Resolve gh CLI on this runner
-        run: |
-          set -euo pipefail
-          # RUNNER_NAME is a built-in the runner sets to its OWN name, so it is
-          # always the machine that actually ran the job. Defaulted because
-          # `set -u` would otherwise abort here with a cryptic unbound-variable
-          # error instead of the clear gh message below.
-          runner_name="${RUNNER_NAME:-unknown-runner}"
-          echo "RUNNER_HOST=${runner_name%-pr-review}" >> "$GITHUB_ENV"
-
-          # Ordered candidates: the admin hint first, then PATH, then known
-          # install locations. First executable wins.
-          for candidate in \
-            "${GH_CLI_HINT:-}" \
-            "$(command -v gh 2>/dev/null || true)" \
-            /home/linuxbrew/.linuxbrew/bin/gh \
-            /home/strickdd/.local/bin/gh \
-            /usr/local/bin/gh \
-            /usr/bin/gh \
-            /opt/homebrew/bin/gh
-          do
-            [ -n "$candidate" ] || continue
-            [ -x "$candidate" ] || continue
-            echo "GH_CLI=$candidate" >> "$GITHUB_ENV"
-            echo "Resolved gh on ${runner_name}: $candidate ($("$candidate" --version 2>&1 | head -1))"
-            exit 0
-          done
-          # Fail LOUDLY. Letting this through would surface later as a mystery
-          # "label lookup returned an error", which reads as a per-PR problem
-          # and hides the real cause: this runner is missing gh.
-          echo "::error::gh CLI not found on runner '${runner_name}'. Install gh there, or set the GH_CLI_PATH repo variable to a path that exists on every runner carrying the 'pr-review' label."
-          exit 1
+        # Probes each candidate with `gh --version` (an executable gh that crashes
+        # on launch no longer counts) and falls back to a pinned, sha256-verified
+        # static gh release. Exports GH_CLI and RUNNER_HOST as before.
+        uses: SeriousGeese/CICD/actions/resolve-gh@e8f77bd338861756b4c0f1f4a010f35855fb32f5 # main @ 2026-11-11
+        with:
+          hint: ${{ vars.GH_CLI_PATH }}
 
       # workflow_dispatch carries only a PR number, so fetch the fields the
       # pull_request payload would have supplied. Writes to $GITHUB_ENV, which
