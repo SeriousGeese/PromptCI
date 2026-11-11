@@ -1,4 +1,5 @@
 import * as nodePath from 'node:path';
+import { buildEstimateLink } from './estimate-link.js';
 import type { IssueSeverity, PromptCiIssue, ScanReport, TopFix, HistoryEntry } from '@promptci/core';
 
 export type SummaryOptions = {
@@ -93,6 +94,15 @@ export function formatSummary(report: ScanReport, options: SummaryOptions = {}):
   const suppressedCount = report.suppressedIssues?.length ?? 0;
   if (suppressedCount > 0) {
     lines.push(`  Suppressed: ${suppressedCount} (see report for details)`);
+  }
+
+  if (report.metrics) {
+    const tokens = report.metrics.estimatedInstructionTokens;
+    const addressable = Math.min(report.metrics.estimatedAddressableTokens ?? 0, tokens);
+    lines.push('');
+    lines.push(`  Tokens loaded per agent turn: ${tokens}`);
+    lines.push(`  In flagged sections: up to ${addressable}`);
+    lines.push(`  Estimate savings: ${buildEstimateLink(tokens, addressable)}`);
   }
 
   if (topFixes.length > 0) {

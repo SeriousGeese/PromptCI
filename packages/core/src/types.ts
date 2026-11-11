@@ -136,6 +136,14 @@ export type PromptCiIssue = {
   confidence: number;
   tags?: string[];
   impact?: 'high' | 'medium' | 'low';
+  /**
+   * Estimated tokens in the instruction-file lines this finding covers (same
+   * chars/4 estimator as `InstructionFile.estimatedTokens`; whole-file findings
+   * use the file's estimate). Set by `scan()`; absent when the finding points at
+   * no scanned instruction file. Findings overlap, so do NOT sum this across
+   * issues: use `ScanMetrics.estimatedAddressableTokens` for a de-duplicated total.
+   */
+  estimatedTokens?: number;
 };
 
 export type TopFix = {
@@ -206,6 +214,14 @@ export type ScanMetrics = {
   // inflate the always-loaded instruction totals above. Omitted when zero.
   onDemandFileCount?: number;
   estimatedOnDemandTokens?: number;
+  /**
+   * Upper bound on tokens that removing or condensing flagged text could save:
+   * tokens in the lines flagged by duplicate, context_bloat, stale_instruction,
+   * conflict, vague_guidance and structure findings, in always-loaded files only,
+   * overlapping ranges counted once. Never exceeds `estimatedInstructionTokens`.
+   * Set by `scan()`; absent from `context analyze`, which runs no detectors.
+   */
+  estimatedAddressableTokens?: number;
 };
 
 /**
