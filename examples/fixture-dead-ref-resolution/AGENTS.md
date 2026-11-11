@@ -17,6 +17,15 @@ The backend lives in a separate Java repository. Start in
 Translations live in `src/i18n/{de,en}.json`. The payments code that lived in
 `src/payments/` was removed.
 
+## Elsewhere
+
+The release check is `Scripts/verify-release.mjs`: the directory is
+`scripts/`, so the reference is broken on Linux and on GitHub, and is reported
+on every platform. Shared rules live in
+[the parent rules](../no-such-fixture/AGENTS.md) and
+[the root guide](../../no-such-guide.md), outside this repository, so they
+are not checked.
+
 ## Commands
 
 ```bash
