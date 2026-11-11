@@ -44,7 +44,7 @@
     "commander": "^15.0.0",
     "esbuild": "^0.28.2",
     "typescript": "*",
-    "vitest": "^5.0.5"
+    "vitest": "^5.1.0"
   },
   "publishConfig": {
     "access": "public"

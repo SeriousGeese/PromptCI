@@ -111,8 +111,11 @@ Open a test PR from an allow-listed author. Expect:
   the `pr-review` label. It is not a required check, so it never blocks
   manual merges.
 - **Every PR held on `<label lookup failed>`** — the runner's `gh` is missing
-  or every `gh` call lacks `--repo`; see the "Resolve gh CLI" step and the
-  fail-closed design notes in `scripts/pr-review.sh`.
+  or crashes on launch, or every `gh` call lacks `--repo`. The "Resolve gh CLI"
+  step (`SeriousGeese/CICD/actions/resolve-gh`) probes each candidate with
+  `gh --version`, falls back to a pinned static gh release, and lists why each
+  candidate was rejected; see also the fail-closed design notes in
+  `scripts/pr-review.sh`.
 - **Bot pushed a fix but CI never ran on it** — GITHUB_TOKEN pushes fire no
   workflows; the script dispatches `ci.yml` explicitly and fails closed if
   that dispatch fails (usually: the PR branch predates ci.yml's
