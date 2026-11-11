@@ -70,6 +70,16 @@ describe('detectPromptCacheFriendliness', () => {
     expect(issues.some(i => i.id.startsWith('prompt-cache-large-table'))).toBe(true);
   });
 
+  it('locates the large table by its line range', () => {
+    let tableContent = '# Data Reference\n| Use | Avoid |\n|---|---|\n';
+    for (let i = 0; i < 20; i++) {
+      tableContent += '| Use | Avoid |\n';
+    }
+    const file = makeFile(tableContent);
+    const issue = detectPromptCacheFriendliness([file]).find(i => i.id.startsWith('prompt-cache-large-table'));
+    expect(issue?.locations).toEqual([{ filePath: file.path, startLine: 2, endLine: 23 }]);
+  });
+
   it('does not flag small tables', () => {
     const tableContent = '# Reference\n| Key | Value |\n|---|---|\n| k1 | v1 |\n| k2 | v2 |\n';
     const file = makeFile(tableContent);

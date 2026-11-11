@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildEstimateLink, SITE_URL } from '../src/estimate-link.js';
+import { buildEstimateLink } from '../src/estimate-link.js';
 import { formatSummary } from '../src/summary.js';
 import type { ScanReport } from '@promptci/core';
 
@@ -25,12 +25,17 @@ function report(overrides: Partial<ScanReport> = {}): ScanReport {
 
 describe('buildEstimateLink', () => {
   it('carries exactly the two integers and the fragment', () => {
-    expect(buildEstimateLink(14200, 6800)).toBe(`${SITE_URL}/?tokens=14200&addressable=6800#estimate`);
+    expect(buildEstimateLink(14200, 6800)).toBe(
+      'https://promptci.seriousgeese.dev/?tokens=14200&addressable=6800#estimate',
+    );
   });
 
   it('coerces bad input to non-negative integers', () => {
-    expect(buildEstimateLink(12.9, -4)).toBe(`${SITE_URL}/?tokens=12&addressable=0#estimate`);
-    expect(buildEstimateLink(NaN, Infinity)).toBe(`${SITE_URL}/?tokens=0&addressable=0#estimate`);
+    expect(buildEstimateLink(12.9, -4)).toBe('https://promptci.seriousgeese.dev/?tokens=12&addressable=0#estimate');
+    expect(buildEstimateLink(NaN, Infinity)).toBe('https://promptci.seriousgeese.dev/?tokens=0&addressable=0#estimate');
+    expect(buildEstimateLink(1e300, 1)).toBe(
+      `https://promptci.seriousgeese.dev/?tokens=${Number.MAX_SAFE_INTEGER}&addressable=1#estimate`,
+    );
   });
 });
 
@@ -42,7 +47,7 @@ describe('formatSummary token lines', () => {
     const link = out
       .split('\n')
       .map((l) => l.trim())
-      .find((l) => l.includes(SITE_URL))!;
+      .find((l) => l.includes('https://promptci.seriousgeese.dev'))!;
     const url = new URL(link.slice(link.indexOf('http')));
     expect([...url.searchParams.keys()].sort()).toEqual(['addressable', 'tokens']);
     expect(url.searchParams.get('tokens')).toBe('14200');
@@ -56,6 +61,15 @@ describe('formatSummary token lines', () => {
     const r = report();
     r.metrics!.estimatedAddressableTokens = 99999;
     expect(formatSummary(r)).toContain('In flagged sections: up to 14200');
+  });
+
+  it('omits the block when there are no instruction files', () => {
+    const r = report();
+    r.metrics!.instructionFileCount = 0;
+    r.metrics!.estimatedInstructionTokens = 0;
+    const out = formatSummary(r);
+    expect(out).not.toContain('Tokens loaded');
+    expect(out).not.toContain('seriousgeese.dev');
   });
 
   it('omits the block when the report has no metrics', () => {

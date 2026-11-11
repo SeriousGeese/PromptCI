@@ -96,7 +96,7 @@ export function formatSummary(report: ScanReport, options: SummaryOptions = {}):
     lines.push(`  Suppressed: ${suppressedCount} (see report for details)`);
   }
 
-  if (report.metrics) {
+  if (report.metrics && report.metrics.instructionFileCount > 0) {
     const tokens = report.metrics.estimatedInstructionTokens;
     const addressable = Math.min(report.metrics.estimatedAddressableTokens ?? 0, tokens);
     lines.push('');

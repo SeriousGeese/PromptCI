@@ -11,7 +11,7 @@
 export const SITE_URL = 'https://promptci.seriousgeese.dev';
 
 function toCount(n: number): number {
-  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+  return Number.isFinite(n) && n > 0 ? Math.min(Math.floor(n), Number.MAX_SAFE_INTEGER) : 0;
 }
 
 export function buildEstimateLink(tokens: number, addressable: number): string {

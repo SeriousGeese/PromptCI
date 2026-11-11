@@ -144,22 +144,32 @@ export function detectPromptCacheFriendliness(files: InstructionFile[]): PromptC
     const lines = file.content.split(/\r?\n/);
     let maxTableRows = 0;
     let currentTableRows = 0;
-    for (const line of lines) {
+    let currentStart = 0;
+    let currentEnd = 0;
+    let maxStart = 0;
+    let maxEnd = 0;
+    for (const [index, line] of lines.entries()) {
       const trimmed = line.trim();
       if (trimmed.startsWith('|') && trimmed.endsWith('|')) {
         if (/^\|[-\s:|]+\|$/.test(trimmed)) {
           continue;
         }
+        if (currentTableRows === 0) currentStart = index + 1;
+        currentEnd = index + 1;
         currentTableRows++;
       } else {
         if (currentTableRows > maxTableRows) {
           maxTableRows = currentTableRows;
+          maxStart = currentStart;
+          maxEnd = currentEnd;
         }
         currentTableRows = 0;
       }
     }
     if (currentTableRows > maxTableRows) {
       maxTableRows = currentTableRows;
+      maxStart = currentStart;
+      maxEnd = currentEnd;
     }
 
     if (maxTableRows > 15) {
@@ -170,7 +180,7 @@ export function detectPromptCacheFriendliness(files: InstructionFile[]): PromptC
         title: 'Large table in instruction file',
         summary: `The instruction file "${fileName}" contains a large Markdown table (${maxTableRows} rows). Large tables bloat prompt context and reduce caching friendliness.`,
         filePaths: [file.path],
-        locations: [],
+        locations: [{ filePath: file.path, startLine: maxStart, endLine: maxEnd }],
         evidence: [`Markdown table with ${maxTableRows} rows found in ${fileName}.`],
         recommendation: 'Move large tables to separate documentation files (e.g. under docs/) or load them on-demand via tools instead of keeping them in always-loaded instructions.',
         fixRecipe: 'Extract the table to a separate document and link to it.',

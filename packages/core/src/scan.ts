@@ -60,8 +60,8 @@ export async function scan(input: ScanInput): Promise<ScanReport> {
   const annotations = parseSuppressions(allScannedFiles);
   const allIssues = [...issues, ...buildValidationIssues(annotations)];
   const { active: activeRaw, suppressed: suppressedRaw } = applyScanSuppressions(allIssues, annotations, context);
-  const active = annotateIssueTokens(activeRaw, allScannedFiles);
-  const suppressed = annotateIssueTokens(suppressedRaw, allScannedFiles);
+  const active = annotateIssueTokens(activeRaw, allScannedFiles, context.aliasFiles);
+  const suppressed = annotateIssueTokens(suppressedRaw, allScannedFiles, context.aliasFiles);
 
   const healthScore = computeHealthScore(active);
   const topFixes = selectTopFixes(active);
@@ -83,7 +83,7 @@ export async function scan(input: ScanInput): Promise<ScanReport> {
     healthScore,
     metrics: {
       ...context.metrics,
-      estimatedAddressableTokens: computeAddressableTokens(active, context.files),
+      estimatedAddressableTokens: computeAddressableTokens(active, context.files, context.aliasFiles),
     },
     // Symlink aliases are inventory only (see RepoContext.aliasFiles): they are
     // not scanned, so they carry no annotations to parse above. Their content and
