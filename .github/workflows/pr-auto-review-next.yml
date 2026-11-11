@@ -102,7 +102,7 @@ jobs:
 
     steps:
       # Must be first: every later step shells out to $GH_CLI.
-      - uses: SeriousGeese/CICD/actions/resolve-gh@e8f77bd338861756b4c0f1f4a010f35855fb32f5 # main @ 2026-11-11
+      - uses: SeriousGeese/CICD/actions/resolve-gh@4f8e9e6903f1743f4d2018b1981c54d726930738 # main @ 2026-09-08
         with:
           hint: ${{ vars.GH_CLI_PATH }}
 
