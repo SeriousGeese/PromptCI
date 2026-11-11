@@ -1,0 +1,8 @@
+{
+  "name": "fixture-dead-ref-resolution",
+  "private": true,
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run"
+  }
+}

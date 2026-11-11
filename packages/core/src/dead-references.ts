@@ -14,7 +14,10 @@
  * are always skipped. File paths need a recognisable extension; a directory or
  * extension-less path in a code span is only checked when its FIRST segment
  * exists in the repository (so `owner/repo`, `origin/main`, `@scope/pkg` and
- * paths describing some other project stay silent).
+ * paths describing some other project stay silent); one three or more levels
+ * below its first segment also needs its second segment to exist. A bare
+ * filename in a code span (`ci.yml`) resolves against any committed file of
+ * that name in the repository.
  *
  * Findings are heuristic — wording is intentionally cautious.
  */
@@ -106,7 +109,12 @@ const OUTPUT_DIRS: ReadonlySet<string> = new Set([
  */
 type RefKind = 'file' | 'rootedSource' | 'rootedPath' | 'linkPath';
 
-type CollectedRef = { ref: string; evidence: string; line: number; kind: RefKind };
+/**
+ * `codeSpan` marks a reference written in backticks. A code span names a file,
+ * while a link or an @-ref is a location a tool follows from the instruction
+ * file, so only a code span may resolve by name elsewhere in the tree.
+ */
+type CollectedRef = { ref: string; evidence: string; line: number; kind: RefKind; codeSpan?: boolean };
 
 /**
  * BUG-004: Bullet-list bare file paths in Repository Layout / Project Structure sections.
@@ -251,6 +259,10 @@ function isPlaceholderRef(ref: string): boolean {
   // BUG-009: Curly-brace template variables: public/locales/{locale}/{namespace}.json
   // These are pattern descriptions, not real file paths.
   if (/\{[A-Za-z][A-Za-z0-9_-]*\}/.test(ref)) return true;
+
+  // pcic-mh72: Brace alternation names several files at once, like a glob:
+  // `translations/{de,en,ru}.json`. It is a pattern, not a single path.
+  if (/\{[^{}/\\]*,[^{}/\\]*\}/.test(ref)) return true;
 
   // BUG-006 (eval): Ellipsis segments ("...") are glob placeholders, not real path components.
   // e.g. "src/test/java/.../unit/" is a structural description, not a literal path.
@@ -411,6 +423,13 @@ const SKIP_SOURCE_BACKTICK_FILE_TYPES = new Set([
   'readme', 'claude', 'agents', 'cursor', 'windsurf', 'copilot', 'gemini', 'cline', 'persona',
   'docs', 'prompt', 'unknown',
 ]);
+
+/**
+ * pcic-mh72: how many missing levels a code-span path may have below a first
+ * segment that is the only part of it present in this repository. Deeper than
+ * this, the first segment alone does not show the path belongs to this tree.
+ */
+const MAX_UNANCHORED_DEPTH = 2;
 
 /** Minimum confidence to emit a dead-reference issue. Below this the signal is too noisy. */
 const MIN_CONFIDENCE = 0.45;
@@ -639,6 +658,7 @@ function collectRefs(
         evidence: `\`${ref}\``,
         line: lineForOffset(lineOffsets, m.index),
         kind: rooted ? 'rootedSource' : 'file',
+        codeSpan: true,
       });
     }
   }
@@ -761,6 +781,38 @@ function existsAsSuffix(repoRoot: string, segments: string[], moduleStyle: boole
   return found;
 }
 
+/**
+ * pcic-mh72: every file name in the repository, mapped to the repo-relative
+ * paths that carry it. Built from one walk (same ignore list as the suffix
+ * search), only when a bare filename does not resolve directly, so a scan pays
+ * for at most one walk however many bare names it checks.
+ */
+type NameIndex = Map<string, string[]>;
+
+function buildNameIndex(repoRoot: string): NameIndex {
+  const index: NameIndex = new Map();
+  let entries: string[];
+  try {
+    entries = fg.sync('**', {
+      cwd: repoRoot,
+      dot: true,
+      onlyFiles: true,
+      followSymbolicLinks: false,
+      suppressErrors: true,
+      ignore: SUFFIX_SEARCH_IGNORE,
+    });
+  } catch {
+    entries = [];
+  }
+  for (const rel of entries) {
+    const name = rel.slice(rel.lastIndexOf('/') + 1);
+    const paths = index.get(name);
+    if (paths) paths.push(rel);
+    else index.set(name, [rel]);
+  }
+  return index;
+}
+
 /** Probe name used to ask the gitignore matcher whether a DIRECTORY is ignored. */
 const DIR_PROBE = '__promptci_dir_probe__';
 
@@ -772,10 +824,12 @@ const DIR_PROBE = '__promptci_dir_probe__';
 function judgeReference(
   ref: string,
   kind: RefKind,
+  codeSpan: boolean,
   fileDir: string,
   repoRoot: string,
   isIgnored: (repoRelativePath: string) => boolean,
   suffixCache: Map<string, boolean>,
+  nameIndex: () => NameIndex,
 ): number | null {
   // `.git/…` is a directory in one checkout and a file in a worktree.
   if (segmentsOf(ref)[0] === '.git') return null;
@@ -799,6 +853,18 @@ function judgeReference(
 
   if (kind === 'file') {
     if (candidates.some(fileExists)) return null;
+    // pcic-mh72: a bare filename in a code span (`deploy_pr.yml`,
+    // `verify-release.mjs`) names a file, not a location. Prose says "`ci.yml`
+    // runs the tests" about `.github/workflows/ci.yml`, so the name resolves
+    // wherever the repository commits a file by that exact name (case
+    // included). A name that exists nowhere, or only under a dependency or
+    // output tree or a gitignored path, is still reported. The trade-off: a
+    // bare name stays silent while ANY file carries it, so a stale `ci.yml`
+    // goes unreported if another `ci.yml` exists. Names too generic to judge
+    // (`index.ts`, `package.json`) were already skipped by isPlaceholderRef.
+    if (codeSpan && !/[/\\]/.test(target) && nameIndex().get(target)?.some((rel) => !isIgnored(rel))) {
+      return null;
+    }
     // BUG-C1: Source-code paths whose parent directory exists → lower confidence
     // (likely documentation references, not broken links).
     const ext = path.extname(ref.split('#')[0] ?? '').toLowerCase();
@@ -822,6 +888,20 @@ function judgeReference(
   // The first segment must be a DIRECTORY here (`package.json/scripts` is not a path).
   const anchorBases = [fileDir, repoRoot].filter((base) => dirExists(path.join(base, segments[0]!)));
   if (anchorBases.length === 0) return null;
+  // pcic-mh72: a lone top-level match is a weak anchor. Almost every project has
+  // a `src/`, so `src/main/java/edu/harvard/iq/dataverse/api/` (another
+  // project's layout, described in prose) matches here on `src` alone. When the
+  // second segment is not a directory here and the path continues three or more
+  // levels below the first segment, it is treated as describing some other tree.
+  // A shorter tail (`src/payments/`, `src/services/billing.ts`) is still checked.
+  // The trade-off: a deep path under a removed intermediate directory
+  // (`src/features/auth/components/` with `src/features/` gone) is not reported.
+  if (
+    segments.length - 1 > MAX_UNANCHORED_DEPTH &&
+    !anchorBases.some((base) => dirExists(path.join(base, segments[0]!, segments[1]!)))
+  ) {
+    return null;
+  }
   if (kind === 'rootedPath') {
     // `docs/update-readme`, `test/flaky-fix`: a branch name unless written as a directory.
     if (BRANCH_PREFIXES.has(segments[0]!.toLowerCase()) && !target.endsWith('/')) return null;
@@ -873,6 +953,8 @@ export function detectDeadReferences(
 
   let isIgnored: ((repoRelativePath: string) => boolean) | undefined;
   const suffixCache = new Map<string, boolean>();
+  let nameIndexCache: NameIndex | undefined;
+  const nameIndex = (): NameIndex => (nameIndexCache ??= buildNameIndex(repoRoot));
 
   for (const file of files) {
     const fileDir = path.dirname(file.path);
@@ -880,7 +962,7 @@ export function detectDeadReferences(
       skipSourceBackticks: SKIP_SOURCE_BACKTICK_FILE_TYPES.has(file.fileType),
     });
 
-    for (const { ref, evidence, line, kind } of refs) {
+    for (const { ref, evidence, line, kind, codeSpan } of refs) {
       // BUG-009: Skip obvious placeholder/example filenames (foo.ts, bar.go, etc.)
       if (isPlaceholderRef(ref)) continue;
 
@@ -892,7 +974,9 @@ export function detectDeadReferences(
 
       // Resolve relative to the instruction file first, then repo root.
       isIgnored ??= createGitIgnoreChecker(repoRoot);
-      const confidence = judgeReference(ref, kind, fileDir, repoRoot, isIgnored, suffixCache);
+      const confidence = judgeReference(
+        ref, kind, codeSpan ?? false, fileDir, repoRoot, isIgnored, suffixCache, nameIndex,
+      );
       if (confidence === null) continue;
 
       // Normalise for deduplication (case-insensitive, forward slashes). Directory
