@@ -219,6 +219,11 @@ export type ScanMetrics = {
    * tokens in the lines flagged by duplicate, context_bloat, stale_instruction,
    * conflict, vague_guidance and structure findings, in always-loaded files only,
    * overlapping ranges counted once. Never exceeds `estimatedInstructionTokens`.
+   * Whole-file findings (a location with no line range, such as total-size
+   * bloat or a version conflict) contribute 0. For a duplicate or conflict with
+   * several located sections the largest is excluded, since fixing keeps one
+   * copy. Baselined findings count (the text is still there); suppressed
+   * findings do not.
    * Set by `scan()`; absent from `context analyze`, which runs no detectors.
    */
   estimatedAddressableTokens?: number;
