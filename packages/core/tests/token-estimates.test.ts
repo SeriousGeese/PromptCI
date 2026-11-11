@@ -96,7 +96,8 @@ describe('computeAddressableTokens', () => {
   it('ignores categories that are not about size', () => {
     const f = file('CLAUDE.md', tenLines);
     const loc = [{ filePath: f.path, startLine: 1, endLine: 5 }];
-    const cats = ['security', 'missing_context', 'command_validity'] as const;
+    // structure fixes move lines or correct a path; they do not remove text.
+    const cats = ['security', 'missing_context', 'command_validity', 'structure'] as const;
     expect(computeAddressableTokens(cats.map((c) => issue(c, c, loc)), [f])).toBe(0);
     for (const c of cats) expect(ADDRESSABLE_CATEGORIES.has(c)).toBe(false);
   });
@@ -114,10 +115,39 @@ describe('computeAddressableTokens', () => {
   it('never exceeds the always-loaded total', () => {
     const f = file('CLAUDE.md', tenLines);
     const issues = [
-      issue('a', 'context_bloat', [{ filePath: f.path }]),
-      issue('b', 'duplicate', [{ filePath: f.path, startLine: 1, endLine: 999 }]),
+      issue('a', 'stale_instruction', [{ filePath: f.path, startLine: 1, endLine: 999 }]),
+      issue('b', 'vague_guidance', [{ filePath: f.path, startLine: 1, endLine: 10 }]),
     ];
     expect(computeAddressableTokens(issues, [f])).toBe(f.estimatedTokens);
+  });
+
+  it('counts a whole-file location as 0 while the finding keeps its own estimate', () => {
+    const f = file('CLAUDE.md', tenLines);
+    const bloat = issue('a', 'context_bloat', [{ filePath: f.path }]);
+    const conflict = issue('b', 'conflict', [{ filePath: f.path }]);
+    expect(computeAddressableTokens([bloat, conflict], [f])).toBe(0);
+    const [annotated] = annotateIssueTokens([bloat], [f]);
+    expect(annotated!.estimatedTokens).toBe(f.estimatedTokens);
+  });
+
+  it('keeps the largest section of a duplicate or conflict and counts the rest', () => {
+    const f = file('CLAUDE.md', tenLines);
+    const locs = [
+      { filePath: f.path, startLine: 1, endLine: 2 },
+      { filePath: f.path, startLine: 5, endLine: 9 },
+    ];
+    expect(computeAddressableTokens([issue('a', 'duplicate', locs)], [f])).toBe(20);
+    expect(computeAddressableTokens([issue('b', 'conflict', locs)], [f])).toBe(20);
+    expect(computeAddressableTokens([issue('c', 'vague_guidance', locs)], [f])).toBe(70);
+  });
+
+  it('resolves findings reported against a symlink alias to the real file', () => {
+    const real = { ...file('README.md', tenLines), relativePath: 'README.md' };
+    const alias: InstructionFile = { ...file('CLAUDE.md', tenLines), aliasOf: 'README.md' };
+    const issues = [issue('a', 'vague_guidance', [{ filePath: alias.path, startLine: 1, endLine: 3 }])];
+    expect(computeAddressableTokens(issues, [real], [alias])).toBe(30);
+    expect(annotateIssueTokens(issues, [real], [alias])[0]!.estimatedTokens).toBe(30);
+    expect(computeAddressableTokens(issues, [real])).toBe(0);
   });
 });
 

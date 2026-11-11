@@ -12,12 +12,13 @@ import type { InstructionFile, IssueCategory, PromptCiIssue } from './types.js';
  * Categories whose savings come from removing or condensing text, so the lines
  * they flag count toward `estimatedAddressableTokens`.
  *
- * Deliberately excluded: `security`, `missing_context`, `command_validity`,
- * `ai_config`, `agent_practices` and `custom`. Those findings are about
- * correctness, absence or configuration, not size; fixing them rarely shrinks
- * the file (missing_context asks for MORE text), so counting their lines would
- * overstate what a visitor could save. Every finding still gets its own
- * `estimatedTokens` regardless of category.
+ * Deliberately excluded: `structure`, `security`, `missing_context`,
+ * `command_validity`, `ai_config`, `agent_practices` and `custom`. Those findings
+ * are about placement, correctness, absence or configuration, not size; fixing
+ * them rarely shrinks the file (structure fixes move lines or correct a path,
+ * missing_context asks for MORE text), so counting their lines would overstate
+ * what a visitor could save. Every finding still gets its own `estimatedTokens`
+ * regardless of category.
  */
 export const ADDRESSABLE_CATEGORIES: ReadonlySet<IssueCategory> = new Set<IssueCategory>([
   'duplicate',
@@ -25,7 +26,6 @@ export const ADDRESSABLE_CATEGORIES: ReadonlySet<IssueCategory> = new Set<IssueC
   'stale_instruction',
   'conflict',
   'vague_guidance',
-  'structure',
 ]);
 
 /** The chars/4 estimator shared with `InstructionFile.estimatedTokens`. */
@@ -35,8 +35,12 @@ export function estimateTokens(charCount: number): number {
 
 type Range = [start: number, end: number]; // 1-based, inclusive
 
+// Windows and macOS file systems are case-insensitive by default; Linux is not.
+const CASE_INSENSITIVE_FS = process.platform === 'win32' || process.platform === 'darwin';
+
 function normPath(p: string): string {
-  return path.resolve(p).split(path.sep).join('/').toLowerCase();
+  const normalized = path.resolve(p).split(path.sep).join('/');
+  return CASE_INSENSITIVE_FS ? normalized.toLowerCase() : normalized;
 }
 
 /** Lines of a file with their char cost (line text plus its newline). */
@@ -70,9 +74,22 @@ function tokensInRanges(file: InstructionFile, costs: number[], ranges: Range[])
 
 type Resolver = (filePath: string) => InstructionFile | undefined;
 
-function makeResolver(files: InstructionFile[]): Resolver {
+/**
+ * Maps a location's path to the scanned file it refers to. A symlink alias
+ * (`CLAUDE.md -> README.md`) is registered under its own path and resolves to
+ * the real file in `files`, so findings reported against the alias still count.
+ * An alias whose target is not in `files` (for example an on-demand file when
+ * only always-loaded files are passed) resolves to nothing.
+ */
+function makeResolver(files: InstructionFile[], aliases: InstructionFile[] = []): Resolver {
   const byPath = new Map<string, InstructionFile>();
   for (const f of files) byPath.set(normPath(f.path), f);
+  const byRelative = new Map<string, InstructionFile>();
+  for (const f of files) if (f.relativePath) byRelative.set(f.relativePath, f);
+  for (const alias of aliases) {
+    const target = alias.aliasOf ? byRelative.get(alias.aliasOf) : undefined;
+    if (target) byPath.set(normPath(alias.path), target);
+  }
   return (filePath) => byPath.get(normPath(filePath));
 }
 
@@ -86,14 +103,24 @@ function locationRange(
   return [start, Math.max(start, loc.endLine ?? loc.startLine)];
 }
 
-/** Ranges the issue covers, grouped per scanned file. Locations outside `files` are ignored. */
-function issueRanges(issue: PromptCiIssue, resolve: Resolver): Map<InstructionFile, Range[]> {
-  const out = new Map<InstructionFile, Range[]>();
+type Entry = { file: InstructionFile; range: Range; whole: boolean };
+
+/** One entry per location that resolves to a scanned file; the rest are ignored. */
+function issueEntries(issue: PromptCiIssue, resolve: Resolver): Entry[] {
+  const out: Entry[] = [];
   for (const loc of issue.locations ?? []) {
     const file = resolve(loc.filePath);
     if (!file) continue;
+    out.push({ file, range: locationRange(loc, file), whole: loc.startLine === undefined });
+  }
+  return out;
+}
+
+function groupByFile(entries: Entry[]): Map<InstructionFile, Range[]> {
+  const out = new Map<InstructionFile, Range[]>();
+  for (const { file, range } of entries) {
     const list = out.get(file) ?? [];
-    list.push(locationRange(loc, file));
+    list.push(range);
     out.set(file, list);
   }
   return out;
@@ -107,11 +134,12 @@ function issueRanges(issue: PromptCiIssue, resolve: Resolver): Map<InstructionFi
 export function annotateIssueTokens(
   issues: PromptCiIssue[],
   files: InstructionFile[],
+  aliases: InstructionFile[] = [],
 ): PromptCiIssue[] {
-  const resolve = makeResolver(files);
+  const resolve = makeResolver(files, aliases);
   const costCache = new Map<InstructionFile, number[]>();
   return issues.map((issue) => {
-    const ranges = issueRanges(issue, resolve);
+    const ranges = groupByFile(issueEntries(issue, resolve));
     if (ranges.size === 0) return issue;
     let tokens = 0;
     for (const [file, list] of ranges) {
@@ -124,28 +152,64 @@ export function annotateIssueTokens(
 }
 
 /**
+ * Categories where the same text appears in several places and fixing keeps
+ * one copy: every location counts except the largest one.
+ */
+const KEEP_LARGEST_CATEGORIES: ReadonlySet<IssueCategory> = new Set<IssueCategory>([
+  'duplicate',
+  'conflict',
+]);
+
+/**
  * Tokens in the lines flagged by addressable-category findings, across
- * ALWAYS-LOADED files only. Overlapping ranges (from one or many findings) are
- * merged per file so a shared section counts once. On-demand files are not in
- * `alwaysLoaded`, so they can never contribute. The result is capped at the sum
- * of the always-loaded files' own estimates.
+ * ALWAYS-LOADED files only. Rules, in order:
+ *  - Whole-file locations (no `startLine`) contribute nothing: a finding about
+ *    the file as a whole (total size, a version conflict) says nothing about
+ *    which text could go, and would otherwise make the figure 100% of the load.
+ *  - For duplicate and conflict findings with several located sections, the
+ *    largest one is kept (fixing leaves one copy), the others count.
+ *  - Remaining ranges are merged per file, so overlaps count once.
+ * On-demand files are not in `alwaysLoaded`, so they never contribute. The
+ * result is capped at the sum of the always-loaded files' own estimates.
  */
 export function computeAddressableTokens(
   issues: PromptCiIssue[],
   alwaysLoaded: InstructionFile[],
+  aliases: InstructionFile[] = [],
 ): number {
-  const resolve = makeResolver(alwaysLoaded);
+  const resolve = makeResolver(alwaysLoaded, aliases);
+  const costCache = new Map<InstructionFile, number[]>();
+  const costsOf = (file: InstructionFile): number[] => {
+    let costs = costCache.get(file);
+    if (!costs) costCache.set(file, (costs = lineCosts(file)));
+    return costs;
+  };
+  const chars = (e: Entry): number => {
+    const costs = costsOf(e.file);
+    let sum = 0;
+    for (let l = Math.max(1, e.range[0]); l <= Math.min(e.range[1], costs.length); l++) sum += costs[l - 1]!;
+    return sum;
+  };
+
   const perFile = new Map<InstructionFile, Range[]>();
   for (const issue of issues) {
     if (!ADDRESSABLE_CATEGORIES.has(issue.category)) continue;
-    for (const [file, list] of issueRanges(issue, resolve)) {
-      perFile.set(file, [...(perFile.get(file) ?? []), ...list]);
+    let entries = issueEntries(issue, resolve).filter((e) => !e.whole);
+    if (KEEP_LARGEST_CATEGORIES.has(issue.category) && entries.length > 1) {
+      let largest = 0;
+      entries.forEach((e, i) => {
+        if (chars(e) > chars(entries[largest]!)) largest = i;
+      });
+      entries = entries.filter((_, i) => i !== largest);
+    }
+    for (const { file, range } of entries) {
+      const list = perFile.get(file);
+      if (list) list.push(range);
+      else perFile.set(file, [range]);
     }
   }
   let total = 0;
-  for (const [file, list] of perFile) {
-    total += tokensInRanges(file, lineCosts(file), list);
-  }
+  for (const [file, list] of perFile) total += tokensInRanges(file, costsOf(file), list);
   const ceiling = alwaysLoaded.reduce((sum, f) => sum + f.estimatedTokens, 0);
   return Math.min(total, ceiling);
 }
