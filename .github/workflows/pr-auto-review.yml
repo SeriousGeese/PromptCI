@@ -108,7 +108,7 @@ jobs:
         # Probes each candidate with `gh --version` (an executable gh that crashes
         # on launch no longer counts) and falls back to a pinned, sha256-verified
         # static gh release. Exports GH_CLI and RUNNER_HOST as before.
-        uses: SeriousGeese/CICD/actions/resolve-gh@e8f77bd338861756b4c0f1f4a010f35855fb32f5 # main @ 2026-11-11
+        uses: SeriousGeese/CICD/actions/resolve-gh@27af3715aa26dc0774650f3abfe44d21eea1269b # main @ 2026-11-11
         with:
           hint: ${{ vars.GH_CLI_PATH }}
 
