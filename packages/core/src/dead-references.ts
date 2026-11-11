@@ -19,6 +19,11 @@
  * filename in a code span (`ci.yml`) resolves against any committed file of
  * that name in the repository.
  *
+ * Every lookup stays inside the scan root and matches names with exact case
+ * (pcic-xhzb, see RepoTree): references that leave the root are not checked,
+ * and a directory that cannot be listed leaves its references unchecked and
+ * named in an info-level issue instead of reported as broken.
+ *
  * Findings are heuristic — wording is intentionally cautious.
  */
 
@@ -29,7 +34,7 @@ import fg from 'fast-glob';
 import type { InstructionFile, PromptCiIssue } from './types.js';
 import { fencedBlocks, scanFencedLines } from './markdown-fences.js';
 import { createGitIgnoreChecker } from './gitignore.js';
-import { isWithinRoot } from './path-containment.js';
+import { isWithinRoot, realPath } from './path-containment.js';
 
 // ── Patterns ──────────────────────────────────────────────────────────────────
 
@@ -370,14 +375,6 @@ function stripFragment(ref: string): string {
   return ref.split('#')[0].split('?')[0].trim();
 }
 
-function fileExists(p: string): boolean {
-  try {
-    return fs.existsSync(p);
-  } catch {
-    return false;
-  }
-}
-
 /**
  * BUG-C1: Source-code file extensions. When a path has one of these extensions
  * and its parent directory exists (but the file itself doesn't), the reference
@@ -433,14 +430,6 @@ const MAX_UNANCHORED_DEPTH = 2;
 
 /** Minimum confidence to emit a dead-reference issue. Below this the signal is too noisy. */
 const MIN_CONFIDENCE = 0.45;
-
-function parentDirExists(p: string): boolean {
-  try {
-    return fs.existsSync(path.dirname(p));
-  } catch {
-    return false;
-  }
-}
 
 function issueId(normRef: string): string {
   const key = `dead-ref:${normRef}`;
@@ -729,16 +718,180 @@ function underOutputDir(ref: string): boolean {
   return segmentsOf(ref).some((s) => OUTPUT_DIRS.has(s.toLowerCase()));
 }
 
+/** What the repository holds at a path. */
+type Lookup =
+  | { state: 'found'; path: string; isDir: boolean }
+  | { state: 'missing' }
+  /** The path, or a link on the way to it, leads outside the scan root. */
+  | { state: 'outside' }
+  /** A directory on the way could not be listed: neither present nor absent. */
+  | { state: 'unreadable' };
+
+type Listing = Map<string, fs.Dirent> | 'missing' | 'unreadable';
+
+/** The `code` of a filesystem error (`EACCES`, `ENOENT`, …), when it has one. */
+function errorCode(err: unknown): string | undefined {
+  const code = (err as { code?: unknown } | null)?.code;
+  return typeof code === 'string' ? code : undefined;
+}
+
+/** Links followed for one lookup before it gives up (a cycle, or a chain no real tree has). */
+const MAX_LINK_HOPS = 40;
+
 /**
- * An extension-less module path names the file that carries the extension:
- * `src/lib/db` is `src/lib/db.ts`. True when the directory holds `<name>.*`.
+ * pcic-xhzb: the only way the detector asks the filesystem about a reference.
+ *
+ * - Contained. A path is looked up by listing the directories from the scan
+ *   root down to it, so nothing outside the root is ever listed, stat'ed or
+ *   opened. A committed link is read (`readlink`, a property of the link,
+ *   which lives in the tree) and followed only while its target stays inside
+ *   the root; a link out of the tree makes the lookup `outside` without
+ *   touching what it points at. A hosted scan runs against a server temp
+ *   directory, and an existence check outside it would tell whoever wrote the
+ *   scanned repository whether a server path exists.
+ * - Exact case. A segment matches a directory entry of exactly that name, so
+ *   `Deploy_PR.yml` does not resolve to `deploy_pr.yml` on a case-insensitive
+ *   filesystem (Windows, macOS). The result is the same on every platform, and
+ *   the same as on Linux and GitHub, where the reference is broken.
+ * - Honest about failure. A directory that cannot be listed makes the lookup
+ *   `unreadable`, never `missing`, and is recorded so the scan can say so.
+ *
+ * Listings are cached for the scan, so each directory is read at most once.
  */
-function stemSiblingExists(abs: string): boolean {
-  try {
-    const base = path.basename(abs);
-    return fs.readdirSync(path.dirname(abs)).some((entry) => entry.startsWith(`${base}.`));
-  } catch {
+class RepoTree {
+  readonly root: string;
+  /** The root's real path, when it differs (a root under a symlink, like macOS `/var`). */
+  private readonly realRoot: string | undefined;
+  private readonly listings = new Map<string, Listing>();
+  /** Repo-relative directory → why it could not be listed. */
+  readonly unreadable = new Map<string, string>();
+
+  constructor(repoRoot: string) {
+    this.root = path.resolve(repoRoot);
+    const real = realPath(this.root);
+    this.realRoot = real !== null && real !== this.root ? real : undefined;
+  }
+
+  /** Forward-slash path relative to the root (`.` for the root itself); never absolute. */
+  relative(abs: string): string {
+    return path.relative(this.root, abs).split(path.sep).join('/') || '.';
+  }
+
+  noteUnreadable(dir: string, reason: string): void {
+    const abs = path.resolve(this.root, dir);
+    // Only in-root names are ever recorded: the report must not carry a server path.
+    if (!isWithinRoot(this.root, abs)) return;
+    const rel = this.relative(abs);
+    if (!this.unreadable.has(rel)) this.unreadable.set(rel, reason);
+  }
+
+  /** The entries of an in-root directory, by exact name. */
+  private list(dir: string): Listing {
+    let listing = this.listings.get(dir);
+    if (listing === undefined) {
+      try {
+        listing = new Map(fs.readdirSync(dir, { withFileTypes: true }).map((d) => [d.name, d]));
+      } catch (err) {
+        const code = errorCode(err);
+        if (code === 'ENOENT' || code === 'ENOTDIR') {
+          listing = 'missing';
+        } else {
+          listing = 'unreadable';
+          this.noteUnreadable(dir, code ?? 'error');
+        }
+      }
+      this.listings.set(dir, listing);
+    }
+    return listing;
+  }
+
+  /** In-root equivalent of a link target written against the root's real path. */
+  private fromRealRoot(p: string): string {
+    if (this.realRoot === undefined || isWithinRoot(this.root, p) || !isWithinRoot(this.realRoot, p)) return p;
+    return path.join(this.root, path.relative(this.realRoot, p));
+  }
+
+  lookup(candidate: string): Lookup {
+    let target = path.resolve(this.root, candidate);
+    for (let hop = 0; hop <= MAX_LINK_HOPS; hop++) {
+      // Lexical containment first: `..`, absolute, other-drive and UNC paths stop here.
+      if (!isWithinRoot(this.root, target)) return { state: 'outside' };
+      const parts = path.relative(this.root, target).split(path.sep).filter(Boolean);
+      let dir = this.root;
+      let isDir = true;
+      let next: string | undefined;
+      for (let i = 0; i < parts.length; i++) {
+        if (!isDir) return { state: 'missing' }; // a file in the middle of a path
+        const listing = this.list(dir);
+        if (listing === 'missing') return { state: 'missing' };
+        if (listing === 'unreadable') return { state: 'unreadable' };
+        const name = parts[i]!;
+        const entry = listing.get(name);
+        if (!entry) return { state: 'missing' };
+        const entryPath = path.join(dir, name);
+        if (entry.isSymbolicLink()) {
+          let link: string;
+          try {
+            link = fs.readlinkSync(entryPath);
+          } catch (err) {
+            this.noteUnreadable(entryPath, errorCode(err) ?? 'unreadable link');
+            return { state: 'unreadable' };
+          }
+          // Resolved lexically against the link's own directory, then re-walked
+          // from the root: the containment check above runs before anything
+          // under the target is touched.
+          next = path.join(this.fromRealRoot(path.resolve(dir, link)), ...parts.slice(i + 1));
+          break;
+        }
+        isDir = entry.isDirectory();
+        dir = entryPath;
+      }
+      if (next === undefined) return { state: 'found', path: dir, isDir };
+      target = next;
+    }
+    this.noteUnreadable(candidate, 'symlink loop');
+    return { state: 'unreadable' };
+  }
+
+  isDir(candidate: string): boolean {
+    const found = this.lookup(candidate);
+    return found.state === 'found' && found.isDir;
+  }
+
+  /**
+   * An extension-less module path names the file that carries the extension:
+   * `src/lib/db` is `src/lib/db.ts`. True when the directory holds `<name>.*`.
+   */
+  hasStemSibling(candidate: string): boolean {
+    const dir = this.lookup(path.dirname(candidate));
+    if (dir.state !== 'found' || !dir.isDir) return false;
+    const listing = this.list(dir.path);
+    if (typeof listing === 'string') return false;
+    const prefix = `${path.basename(candidate)}.`;
+    for (const name of listing.keys()) if (name.startsWith(prefix)) return true;
     return false;
+  }
+
+  /**
+   * fast-glob's directory reads, routed through node:fs here so a directory the
+   * walk cannot list is recorded instead of silently dropping out of the result.
+   * The walk itself (`cwd` = root, links not followed) never leaves the root.
+   */
+  walkFs(onError: () => void): Partial<fg.FileSystemAdapter> {
+    const readdirSync = (dir: string, options?: { withFileTypes: true }): unknown => {
+      try {
+        return options ? fs.readdirSync(dir, options) : fs.readdirSync(dir);
+      } catch (err) {
+        const code = errorCode(err);
+        // A directory deleted mid-walk has nothing left to miss.
+        if (code !== 'ENOENT') {
+          this.noteUnreadable(dir, code ?? 'error');
+          onError();
+        }
+        throw err;
+      }
+    };
+    return { readdirSync: readdirSync as fg.FileSystemAdapter['readdirSync'] };
   }
 }
 
@@ -751,12 +904,43 @@ const SUFFIX_SEARCH_IGNORE = [
 ];
 
 /**
+ * Runs one repository walk. `complete` is false when any directory could not
+ * be listed: what the walk did not find may still exist (pcic-xhzb).
+ */
+function walk(tree: RepoTree, patterns: string[], onlyFiles: boolean): { entries: string[]; complete: boolean } {
+  let complete = true;
+  let entries: string[] = [];
+  try {
+    entries = fg.sync(patterns, {
+      cwd: tree.root,
+      dot: true,
+      onlyFiles,
+      followSymbolicLinks: false,
+      // Errors are recorded by walkFs and the walk goes on past them.
+      suppressErrors: true,
+      ignore: SUFFIX_SEARCH_IGNORE,
+      fs: tree.walkFs(() => { complete = false; }),
+    });
+  } catch (err) {
+    tree.noteUnreadable('.', errorCode(err) ?? 'walk failed');
+    complete = false;
+  }
+  return { entries, complete };
+}
+
+/**
  * True when the path exists somewhere below the repo root as a suffix — an
  * abbreviated reference such as `Scripts/Interfaces/` for Unity's
  * `Assets/Scripts/Interfaces/`, or a package-relative `src/lib/db.ts` in a
  * monorepo's root instructions. Such a path is imprecise, not stale.
+ * `unknown` when it was not found but the walk could not list everything.
  */
-function existsAsSuffix(repoRoot: string, segments: string[], moduleStyle: boolean, cache: Map<string, boolean>): boolean {
+function existsAsSuffix(
+  tree: RepoTree,
+  segments: string[],
+  moduleStyle: boolean,
+  cache: Map<string, boolean | 'unknown'>,
+): boolean | 'unknown' {
   const rel = segments.join('/');
   const key = `${moduleStyle ? 'm' : 'x'}:${rel}`;
   const cached = cache.get(key);
@@ -764,19 +948,8 @@ function existsAsSuffix(repoRoot: string, segments: string[], moduleStyle: boole
   const escaped = fg.escapePath(rel);
   const patterns = [`**/${escaped}`];
   if (moduleStyle) patterns.push(`**/${escaped}.*`);
-  let found: boolean;
-  try {
-    found = fg.sync(patterns, {
-      cwd: repoRoot,
-      dot: true,
-      onlyFiles: false,
-      followSymbolicLinks: false,
-      suppressErrors: true,
-      ignore: SUFFIX_SEARCH_IGNORE,
-    }).length > 0;
-  } catch {
-    found = false;
-  }
+  const { entries, complete } = walk(tree, patterns, false);
+  const found = entries.length > 0 ? true : complete ? false : 'unknown';
   cache.set(key, found);
   return found;
 }
@@ -785,52 +958,54 @@ function existsAsSuffix(repoRoot: string, segments: string[], moduleStyle: boole
  * pcic-mh72: every file name in the repository, mapped to the repo-relative
  * paths that carry it. Built from one walk (same ignore list as the suffix
  * search), only when a bare filename does not resolve directly, so a scan pays
- * for at most one walk however many bare names it checks.
+ * for at most one walk however many bare names it checks. `complete` is false
+ * when part of the tree could not be listed (pcic-xhzb).
  */
-type NameIndex = Map<string, string[]>;
+type NameIndex = { paths: Map<string, string[]>; complete: boolean };
 
-function buildNameIndex(repoRoot: string): NameIndex {
-  const index: NameIndex = new Map();
-  let entries: string[];
-  try {
-    entries = fg.sync('**', {
-      cwd: repoRoot,
-      dot: true,
-      onlyFiles: true,
-      followSymbolicLinks: false,
-      suppressErrors: true,
-      ignore: SUFFIX_SEARCH_IGNORE,
-    });
-  } catch {
-    entries = [];
-  }
+function buildNameIndex(tree: RepoTree): NameIndex {
+  const paths = new Map<string, string[]>();
+  const { entries, complete } = walk(tree, ['**'], true);
   for (const rel of entries) {
     const name = rel.slice(rel.lastIndexOf('/') + 1);
-    const paths = index.get(name);
-    if (paths) paths.push(rel);
-    else index.set(name, [rel]);
+    const list = paths.get(name);
+    if (list) list.push(rel);
+    else paths.set(name, [rel]);
   }
-  return index;
+  return { paths, complete };
 }
 
 /** Probe name used to ask the gitignore matcher whether a DIRECTORY is ignored. */
 const DIR_PROBE = '__promptci_dir_probe__';
 
+/** What one scan shares across every reference it judges. */
+type JudgeContext = {
+  tree: RepoTree;
+  isIgnored: (repoRelativePath: string) => boolean;
+  suffixCache: Map<string, boolean | 'unknown'>;
+  nameIndex: () => NameIndex;
+};
+
 /**
- * Confidence that `ref` is a dead reference, or `null` when it resolves, is
- * expected to be absent (gitignored, generated output), or is not specific
- * enough to judge.
+ * Returned when part of the tree the verdict depends on could not be read: the
+ * reference is neither resolved nor reported, and the scan says what it skipped.
+ */
+const UNJUDGED = 'unjudged';
+
+/**
+ * Confidence that `ref` is a dead reference; `null` when it resolves, is
+ * expected to be absent (gitignored, generated output), lies outside the scan
+ * root, or is not specific enough to judge; {@link UNJUDGED} when the answer
+ * depends on a directory that could not be listed.
  */
 function judgeReference(
   ref: string,
   kind: RefKind,
   codeSpan: boolean,
   fileDir: string,
-  repoRoot: string,
-  isIgnored: (repoRelativePath: string) => boolean,
-  suffixCache: Map<string, boolean>,
-  nameIndex: () => NameIndex,
-): number | null {
+  ctx: JudgeContext,
+): number | null | typeof UNJUDGED {
+  const { tree, isIgnored } = ctx;
   // `.git/…` is a directory in one checkout and a file in a worktree.
   if (segmentsOf(ref)[0] === '.git') return null;
   // pcic-2b6.8 kinds: generated output / dependency trees are never committed.
@@ -840,53 +1015,78 @@ function judgeReference(
 
   const pathLike = kind === 'rootedPath' || kind === 'linkPath';
   const target = pathLike ? stripFragment(ref) : ref;
-  const candidates = [...new Set([path.resolve(fileDir, target), path.resolve(repoRoot, target)])];
-  const inRoot = candidates.filter((c) => isWithinRoot(repoRoot, c));
+
+  // pcic-xhzb: only candidates inside the scan root are looked up. One that
+  // leaves it — `../../etc/x.md`, `/etc/x.md`, `C:\x.md`, `\\host\share\x.md`,
+  // or a path through a committed link out of the tree — is dropped before
+  // any filesystem access, and a reference with no candidate left is not
+  // judged at all: not resolved, not reported. Reporting it would claim a
+  // file is missing without having looked; a monorepo package scanned on its
+  // own legitimately points at `../../AGENTS.md`. Skipping is also what the
+  // directory kinds below and home-rooted paths (`~/…`) already did.
+  // An absolute path is skipped even when it happens to point into the root:
+  // its verdict would depend on where the repository is checked out, and the
+  // same input must give the same report. Both platforms' forms count (`/x`,
+  // `C:\x`, `\\host\share\x`), so a Windows and a Linux scan agree, and a
+  // Windows scan never opens an SMB connection for `\\host\…`.
+  if (path.posix.isAbsolute(target) || path.win32.isAbsolute(target)) return null;
+  const lookups: Array<{ abs: string; found: Lookup }> = [];
+  for (const abs of new Set([path.resolve(fileDir, target), path.resolve(tree.root, target)])) {
+    if (!isWithinRoot(tree.root, abs)) continue;
+    const found = tree.lookup(abs);
+    if (found.state !== 'outside') lookups.push({ abs, found });
+  }
+  if (lookups.length === 0) return null;
 
   // The repository's own ignore rules say the path is local state (pcic-2b6.8,
   // same matcher the skills detector uses).
-  for (const candidate of inRoot) {
-    const rel = path.relative(repoRoot, candidate).replace(/\\/g, '/');
+  for (const { abs } of lookups) {
+    const rel = path.relative(tree.root, abs).replace(/\\/g, '/');
     if (!rel) continue;
     if (isIgnored(rel) || (pathLike && isIgnored(`${rel}/${DIR_PROBE}`))) return null;
   }
 
+  const moduleStyle = pathLike && !target.endsWith('/');
+  if (lookups.some(({ abs, found }) => found.state === 'found' || (moduleStyle && tree.hasStemSibling(abs)))) {
+    return null;
+  }
+  if (lookups.some(({ found }) => found.state === 'unreadable')) return UNJUDGED;
+
   if (kind === 'file') {
-    if (candidates.some(fileExists)) return null;
     // pcic-mh72: a bare filename in a code span (`deploy_pr.yml`,
     // `verify-release.mjs`) names a file, not a location. Prose says "`ci.yml`
     // runs the tests" about `.github/workflows/ci.yml`, so the name resolves
     // wherever the repository commits a file by that exact name (case
-    // included). A name that exists nowhere, or only under a dependency or
-    // output tree or a gitignored path, is still reported. The trade-off: a
-    // bare name stays silent while ANY file carries it, so a stale `ci.yml`
-    // goes unreported if another `ci.yml` exists. Names too generic to judge
-    // (`index.ts`, `package.json`) were already skipped by isPlaceholderRef.
-    if (codeSpan && !/[/\\]/.test(target) && nameIndex().get(target)?.some((rel) => !isIgnored(rel))) {
-      return null;
+    // included, on every platform: pcic-xhzb). A name that exists nowhere, or
+    // only under a dependency or output tree or a gitignored path, is still
+    // reported. The trade-off: a bare name stays silent while ANY file carries
+    // it, so a stale `ci.yml` goes unreported if another `ci.yml` exists.
+    // Names too generic to judge (`index.ts`, `package.json`) were already
+    // skipped by isPlaceholderRef.
+    if (codeSpan && !/[/\\]/.test(target)) {
+      const index = ctx.nameIndex();
+      if (index.paths.get(target)?.some((rel) => !isIgnored(rel))) return null;
+      // pcic-xhzb: a walk that could not list everything is no evidence of absence.
+      if (!index.complete) return UNJUDGED;
     }
     // BUG-C1: Source-code paths whose parent directory exists → lower confidence
     // (likely documentation references, not broken links).
     const ext = path.extname(ref.split('#')[0] ?? '').toLowerCase();
     const isSourceCodeRef = SOURCE_CODE_EXTENSIONS.has(ext);
-    const anyParentExists = candidates.some(parentDirExists);
+    const anyParentExists = lookups.some(({ abs }) => tree.isDir(path.dirname(abs)));
     return isSourceCodeRef && anyParentExists ? 0.5 : 0.85;
   }
-
-  // pcic-2b6.8 kinds: only paths that stay inside the repository are judged.
-  if (inRoot.length === 0) return null;
-  const moduleStyle = pathLike && !target.endsWith('/');
-  if (inRoot.some((c) => fileExists(c) || (moduleStyle && stemSiblingExists(c)))) return null;
 
   if (kind === 'linkPath') return 0.8;
 
   // Code-span paths: report only when the path's FIRST segment exists here, so
   // the reference demonstrably names part of THIS repository — `owner/repo`,
   // `origin/main`, `@scope/pkg` and another project's `internal/x/y.go` stay silent.
+  // A `..` anywhere (`../shared/`, `src/../x/`) is not a path into this tree.
   const segments = segmentsOf(ref);
-  if (segments.length < 2 || segments[0] === '..') return null;
+  if (segments.length < 2 || segments.includes('..')) return null;
   // The first segment must be a DIRECTORY here (`package.json/scripts` is not a path).
-  const anchorBases = [fileDir, repoRoot].filter((base) => dirExists(path.join(base, segments[0]!)));
+  const anchorBases = [fileDir, tree.root].filter((base) => tree.isDir(path.join(base, segments[0]!)));
   if (anchorBases.length === 0) return null;
   // pcic-mh72: a lone top-level match is a weak anchor. Almost every project has
   // a `src/`, so `src/main/java/edu/harvard/iq/dataverse/api/` (another
@@ -898,7 +1098,7 @@ function judgeReference(
   // (`src/features/auth/components/` with `src/features/` gone) is not reported.
   if (
     segments.length - 1 > MAX_UNANCHORED_DEPTH &&
-    !anchorBases.some((base) => dirExists(path.join(base, segments[0]!, segments[1]!)))
+    !anchorBases.some((base) => tree.isDir(path.join(base, segments[0]!, segments[1]!)))
   ) {
     return null;
   }
@@ -906,18 +1106,14 @@ function judgeReference(
     // `docs/update-readme`, `test/flaky-fix`: a branch name unless written as a directory.
     if (BRANCH_PREFIXES.has(segments[0]!.toLowerCase()) && !target.endsWith('/')) return null;
     // `client/server`, `public/private`: alternatives when both halves exist side by side.
-    if (segments.length === 2 && anchorBases.some((base) => fileExists(path.join(base, segments[1]!)))) return null;
+    if (segments.length === 2 && anchorBases.some((base) => tree.lookup(path.join(base, segments[1]!)).state === 'found')) {
+      return null;
+    }
   }
-  if (existsAsSuffix(repoRoot, segments, moduleStyle, suffixCache)) return null;
+  const suffix = existsAsSuffix(tree, segments, moduleStyle, ctx.suffixCache);
+  if (suffix === true) return null;
+  if (suffix === 'unknown') return UNJUDGED;
   return 0.6;
-}
-
-function dirExists(p: string): boolean {
-  try {
-    return fs.statSync(p).isDirectory();
-  } catch {
-    return false;
-  }
 }
 
 // ── Detector ─────────────────────────────────────────────────────────────────
@@ -951,10 +1147,12 @@ export function detectDeadReferences(
     minConfidence: number;
   }>();
 
-  let isIgnored: ((repoRelativePath: string) => boolean) | undefined;
-  const suffixCache = new Map<string, boolean>();
+  const tree = new RepoTree(repoRoot);
+  let ctx: JudgeContext | undefined;
   let nameIndexCache: NameIndex | undefined;
-  const nameIndex = (): NameIndex => (nameIndexCache ??= buildNameIndex(repoRoot));
+  const nameIndex = (): NameIndex => (nameIndexCache ??= buildNameIndex(tree));
+  // pcic-xhzb: references left unjudged because part of the tree could not be listed.
+  const unjudged = new Map<string, { filePaths: Set<string>; fileLines: Map<string, number>; evidence: string }>();
 
   for (const file of files) {
     const fileDir = path.dirname(file.path);
@@ -973,11 +1171,18 @@ export function detectDeadReferences(
       if (isHomeRooted(ref)) continue;
 
       // Resolve relative to the instruction file first, then repo root.
-      isIgnored ??= createGitIgnoreChecker(repoRoot);
-      const confidence = judgeReference(
-        ref, kind, codeSpan ?? false, fileDir, repoRoot, isIgnored, suffixCache, nameIndex,
-      );
+      ctx ??= { tree, isIgnored: createGitIgnoreChecker(repoRoot), suffixCache: new Map(), nameIndex };
+      const confidence = judgeReference(ref, kind, codeSpan ?? false, fileDir, ctx);
       if (confidence === null) continue;
+      if (confidence === UNJUDGED) {
+        const evidenceText = `Not checked: ${evidence}`;
+        const entry = unjudged.get(evidenceText) ?? { filePaths: new Set(), fileLines: new Map(), evidence: evidenceText };
+        entry.filePaths.add(file.path);
+        const seen = entry.fileLines.get(file.path);
+        if (seen === undefined || line < seen) entry.fileLines.set(file.path, line);
+        unjudged.set(evidenceText, entry);
+        continue;
+      }
 
       // Normalise for deduplication (case-insensitive, forward slashes). Directory
       // forms also drop `./` and the trailing slash, so `src/api/`, `./src/api`
@@ -1046,5 +1251,56 @@ export function detectDeadReferences(
     });
   }
 
+  if (unjudged.size > 0) issues.push(incompleteCheckIssue(tree, [...unjudged.values()]));
+
   return issues;
+}
+
+/** Evidence lines listed per kind before the rest is summarised. */
+const MAX_INCOMPLETE_EVIDENCE = 10;
+
+/**
+ * pcic-xhzb: a directory the scan could not list is named, never turned into
+ * findings. Without this, an unreadable directory emptied the name index (or
+ * part of it) and every bare name filed there was reported as broken, with no
+ * sign the scan had failed. Like the supply-chain scan's `unscanned-files`,
+ * the gap is an `info` issue: visible in every report, never a CI failure on
+ * its own. Paths are repo-relative, so a hosted scan never shows its temp dir.
+ */
+function incompleteCheckIssue(
+  tree: RepoTree,
+  refs: Array<{ filePaths: Set<string>; fileLines: Map<string, number>; evidence: string }>,
+): PromptCiIssue {
+  const capped = (lines: string[], noun: string): string[] =>
+    lines.length > MAX_INCOMPLETE_EVIDENCE
+      ? [...lines.slice(0, MAX_INCOMPLETE_EVIDENCE), `…and ${lines.length - MAX_INCOMPLETE_EVIDENCE} more ${noun}`]
+      : lines;
+  const dirs = [...tree.unreadable].sort(([a], [b]) => a.localeCompare(b));
+  const dirLines = dirs.map(([dir, reason]) => `Could not list: ${dir === '.' ? './' : `${dir}/`} (${reason})`);
+  const filePaths = [...new Set(refs.flatMap((r) => [...r.filePaths]))];
+  const firstLine = new Map<string, number>();
+  for (const r of refs) {
+    for (const [fp, line] of r.fileLines) {
+      const seen = firstLine.get(fp);
+      if (seen === undefined || line < seen) firstLine.set(fp, line);
+    }
+  }
+  return {
+    id: issueId('(dead-reference check incomplete)'),
+    severity: 'info',
+    category: 'structure',
+    title: 'Dead-reference check incomplete: part of the repository could not be read',
+    summary:
+      `${refs.length} reference(s) were not checked because ${dirs.length || 'some'} director${dirs.length === 1 ? 'y' : 'ies'} ` +
+      'could not be listed. They may or may not exist; no broken-reference finding was reported for them.',
+    filePaths,
+    locations: filePaths.map((fp) => {
+      const startLine = firstLine.get(fp);
+      return startLine !== undefined ? { filePath: fp, startLine } : { filePath: fp };
+    }),
+    evidence: [...capped(dirLines, 'directories'), ...capped(refs.map((r) => r.evidence), 'references')],
+    recommendation:
+      'Make the listed directories readable by the scan, or exclude them, and scan again to check these references.',
+    confidence: 0.8,
+  };
 }

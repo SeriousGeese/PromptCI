@@ -169,6 +169,8 @@ describe('fixture-dead-ref-resolution', () => {
     expect(refs).toEqual([
       'Broken directory reference: payments/',
       'Broken file reference: nightly-release.yml',
+      // pcic-xhzb: wrong-case directory, reported on case-insensitive filesystems too.
+      'Broken file reference: verify-release.mjs',
     ]);
 
     const commands = report.issues.filter((i) => i.category === 'command_validity').map((i) => i.title);
