@@ -17,26 +17,47 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import fg from 'fast-glob';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { detectDeadReferences } from '../src/dead-references.js';
 import type { InstructionFile, PromptCiIssue } from '../src/types.js';
 
-/** Every path argument handed to node:fs while `recording` is on. */
-const fsCalls: string[] = [];
-let recording = false;
+/**
+ * Every path argument handed to the filesystem while `recording` is on. Two
+ * recorders feed it: the `node:fs` mock below sees the detector's own calls,
+ * and the CommonJS `fs` patch here sees what dependencies (fast-glob,
+ * @nodelib) call, which a `vi.mock` of the ES module never intercepts. The
+ * patch runs before any import, so fast-glob captures the patched functions.
+ */
+const { fsCalls, record, state } = vi.hoisted(() => {
+  const calls: string[] = [];
+  const flags = { recording: false };
+  const rec = (args: unknown[]): void => {
+    if (!flags.recording) return;
+    for (const arg of args) {
+      if (typeof arg === 'string') calls.push(arg);
+      else if (arg instanceof URL) calls.push(arg.pathname);
+      else if (Buffer.isBuffer(arg)) calls.push(arg.toString());
+    }
+  };
+  // The CommonJS module object that `require('fs')` returns to dependencies.
+  const cjsFs = process.getBuiltinModule('node:fs') as unknown as Record<string, unknown>;
+  for (const [key, value] of Object.entries(cjsFs)) {
+    if (typeof value !== 'function' || /^[A-Z]/.test(key) || key.startsWith('_')) continue;
+    const original = value as ((...a: unknown[]) => unknown) & Record<string, unknown>;
+    const patched = Object.assign(function (this: unknown, ...args: unknown[]) {
+      rec(args);
+      return original.apply(this, args);
+    }, original);
+    cjsFs[key] = patched;
+  }
+  return { fsCalls: calls, record: rec, state: flags };
+});
 /** Directories whose listing fails with EACCES, as an unreadable directory would. */
 const unreadableDirs = new Set<string>();
 
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs')>();
-  const record = (args: unknown[]): void => {
-    if (!recording) return;
-    for (const arg of args) {
-      if (typeof arg === 'string') fsCalls.push(arg);
-      else if (arg instanceof URL) fsCalls.push(arg.pathname);
-      else if (Buffer.isBuffer(arg)) fsCalls.push(arg.toString());
-    }
-  };
   const wrapped: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(actual)) {
     if (typeof value !== 'function' || /^[A-Z]/.test(key)) {
@@ -95,7 +116,7 @@ afterAll(() => {
 });
 
 afterEach(() => {
-  recording = false;
+  state.recording = false;
   fsCalls.length = 0;
   unreadableDirs.clear();
 });
@@ -113,11 +134,11 @@ function file(content: string, rel = 'AGENTS.md'): InstructionFile {
 }
 
 function detect(content: string, rel?: string): PromptCiIssue[] {
-  recording = true;
+  state.recording = true;
   try {
     return detectDeadReferences([file(content, rel)], repo);
   } finally {
-    recording = false;
+    state.recording = false;
   }
 }
 
@@ -153,6 +174,16 @@ describe('references that leave the scan root', () => {
     expect(outOfRootCalls()).toEqual([]);
   });
 
+  it('sees the filesystem calls fast-glob makes on its own (the CommonJS recorder is wired)', () => {
+    state.recording = true;
+    try {
+      fg.sync('*', { cwd: path.join(repo, 'docs') });
+    } finally {
+      state.recording = false;
+    }
+    expect(fsCalls.some((p) => path.resolve(p) === path.join(repo, 'docs'))).toBe(true);
+  });
+
   it('never touches the filesystem outside the root for `..` and absolute references', () => {
     const issues = detect(escapingRefs());
     expect(outOfRootCalls()).toEqual([]);
@@ -185,6 +216,7 @@ describe('references that leave the scan root', () => {
     const issues = detect([
       'See `C:\\Windows\\win.ini.md` and `\\\\attacker.example\\share\\payload.md`.',
       'And [unc](//attacker.example/share/payload.md) and `D:/elsewhere/notes.md`.',
+      'And the drive-relative `C:elsewhere-notes.md` and [d](D:elsewhere-guide.md).',
     ].join('\n'));
     expect(issues).toEqual([]);
     expect(outOfRootCalls()).toEqual([]);
@@ -207,6 +239,26 @@ describe('references that leave the scan root', () => {
       expect(touched).toEqual([]);
     } finally {
       fs.rmSync(link, { recursive: true, force: true });
+    }
+  });
+
+  it('gives up on a link cycle without reporting it as broken, and names the link', () => {
+    const a = path.join(repo, 'loop-a');
+    const b = path.join(repo, 'loop-b');
+    fs.symlinkSync(b, a, 'junction');
+    fs.symlinkSync(a, b, 'junction');
+    try {
+      const issues = detect('See `loop-a/notes.md`.');
+      expect(brokenTitles(issues)).toEqual([]);
+      const notice = issues.find((i) => i.title.startsWith('Dead-reference check incomplete'));
+      expect(notice?.evidence).toEqual(expect.arrayContaining([
+        expect.stringMatching(/^Could not read: loop-[ab] \(symlink loop\)$/),
+        'Not checked: `loop-a/notes.md`',
+      ]));
+      expect(outOfRootCalls()).toEqual([]);
+    } finally {
+      fs.rmSync(a, { recursive: true, force: true });
+      fs.rmSync(b, { recursive: true, force: true });
     }
   });
 
@@ -259,8 +311,9 @@ describe('a repository walk that fails', () => {
     expect(brokenTitles(issues)).toEqual(['Broken file reference: gone.md']);
     const notice = issues.find((i) => i.title.startsWith('Dead-reference check incomplete'));
     expect(notice).toBeDefined();
-    expect(notice!.severity).toBe('info');
-    expect(notice!.evidence).toContain('Could not list: private/ (EACCES)');
+    // A warning, like the findings it stands in for: a `--fail-on warning` gate is not passed silently.
+    expect(notice!.severity).toBe('warning');
+    expect(notice!.evidence).toContain('Could not read: private/ (EACCES)');
     expect(notice!.evidence).toEqual(expect.arrayContaining([
       'Not checked: `hidden.yml`',
       'Not checked: `nowhere.yml`',

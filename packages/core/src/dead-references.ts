@@ -22,7 +22,7 @@
  * Every lookup stays inside the scan root and matches names with exact case
  * (pcic-xhzb, see RepoTree): references that leave the root are not checked,
  * and a directory that cannot be listed leaves its references unchecked and
- * named in an info-level issue instead of reported as broken.
+ * named in one "check incomplete" warning instead of reported as broken.
  *
  * Findings are heuristic — wording is intentionally cautious.
  */
@@ -763,7 +763,7 @@ class RepoTree {
   /** The root's real path, when it differs (a root under a symlink, like macOS `/var`). */
   private readonly realRoot: string | undefined;
   private readonly listings = new Map<string, Listing>();
-  /** Repo-relative directory → why it could not be listed. */
+  /** What could not be read, as shown in the report (`dir/` or a link's path) → why. */
   readonly unreadable = new Map<string, string>();
 
   constructor(repoRoot: string) {
@@ -777,12 +777,14 @@ class RepoTree {
     return path.relative(this.root, abs).split(path.sep).join('/') || '.';
   }
 
-  noteUnreadable(dir: string, reason: string): void {
-    const abs = path.resolve(this.root, dir);
+  /** Record what could not be read: a directory (shown as `dir/`) or a link (shown as its path). */
+  noteUnreadable(p: string, reason: string, kind: 'dir' | 'link' = 'dir'): void {
+    const abs = path.resolve(this.root, p);
     // Only in-root names are ever recorded: the report must not carry a server path.
     if (!isWithinRoot(this.root, abs)) return;
     const rel = this.relative(abs);
-    if (!this.unreadable.has(rel)) this.unreadable.set(rel, reason);
+    const shown = kind === 'link' ? rel : rel === '.' ? './' : `${rel}/`;
+    if (!this.unreadable.has(shown)) this.unreadable.set(shown, reason);
   }
 
   /** The entries of an in-root directory, by exact name. */
@@ -813,6 +815,7 @@ class RepoTree {
 
   lookup(candidate: string): Lookup {
     let target = path.resolve(this.root, candidate);
+    let lastLink = '';
     for (let hop = 0; hop <= MAX_LINK_HOPS; hop++) {
       // Lexical containment first: `..`, absolute, other-drive and UNC paths stop here.
       if (!isWithinRoot(this.root, target)) return { state: 'outside' };
@@ -834,9 +837,10 @@ class RepoTree {
           try {
             link = fs.readlinkSync(entryPath);
           } catch (err) {
-            this.noteUnreadable(entryPath, errorCode(err) ?? 'unreadable link');
+            this.noteUnreadable(entryPath, errorCode(err) ?? 'unreadable link', 'link');
             return { state: 'unreadable' };
           }
+          lastLink = entryPath;
           // Resolved lexically against the link's own directory, then re-walked
           // from the root: the containment check above runs before anything
           // under the target is touched.
@@ -849,7 +853,8 @@ class RepoTree {
       if (next === undefined) return { state: 'found', path: dir, isDir };
       target = next;
     }
-    this.noteUnreadable(candidate, 'symlink loop');
+    // More links than the kernel itself follows (Linux MAXSYMLINKS): a cycle.
+    this.noteUnreadable(lastLink, 'symlink loop', 'link');
     return { state: 'unreadable' };
   }
 
@@ -1029,7 +1034,9 @@ function judgeReference(
   // same input must give the same report. Both platforms' forms count (`/x`,
   // `C:\x`, `\\host\share\x`), so a Windows and a Linux scan agree, and a
   // Windows scan never opens an SMB connection for `\\host\…`.
-  if (path.posix.isAbsolute(target) || path.win32.isAbsolute(target)) return null;
+  // A drive-relative `C:notes.md` is skipped too: Windows resolves it against
+  // that drive's working directory, Linux reads it as a file name.
+  if (path.posix.isAbsolute(target) || path.win32.isAbsolute(target) || /^[A-Za-z]:/.test(target)) return null;
   const lookups: Array<{ abs: string; found: Lookup }> = [];
   for (const abs of new Set([path.resolve(fileDir, target), path.resolve(tree.root, target)])) {
     if (!isWithinRoot(tree.root, abs)) continue;
@@ -1263,9 +1270,12 @@ const MAX_INCOMPLETE_EVIDENCE = 10;
  * pcic-xhzb: a directory the scan could not list is named, never turned into
  * findings. Without this, an unreadable directory emptied the name index (or
  * part of it) and every bare name filed there was reported as broken, with no
- * sign the scan had failed. Like the supply-chain scan's `unscanned-files`,
- * the gap is an `info` issue: visible in every report, never a CI failure on
- * its own. Paths are repo-relative, so a hosted scan never shows its temp dir.
+ * sign the scan had failed. The gap is a `warning`, the severity of the
+ * findings it stands in for, so a `--fail-on warning` gate that a broken
+ * reference would have tripped is not passed silently by a scan that could
+ * not look (the supply-chain scan's `unscanned-files` likewise warns about
+ * content it could not read). Paths are repo-relative, so a hosted scan never
+ * shows its temp dir.
  */
 function incompleteCheckIssue(
   tree: RepoTree,
@@ -1276,7 +1286,7 @@ function incompleteCheckIssue(
       ? [...lines.slice(0, MAX_INCOMPLETE_EVIDENCE), `…and ${lines.length - MAX_INCOMPLETE_EVIDENCE} more ${noun}`]
       : lines;
   const dirs = [...tree.unreadable].sort(([a], [b]) => a.localeCompare(b));
-  const dirLines = dirs.map(([dir, reason]) => `Could not list: ${dir === '.' ? './' : `${dir}/`} (${reason})`);
+  const dirLines = dirs.map(([shown, reason]) => `Could not read: ${shown} (${reason})`);
   const filePaths = [...new Set(refs.flatMap((r) => [...r.filePaths]))];
   const firstLine = new Map<string, number>();
   for (const r of refs) {
@@ -1287,20 +1297,22 @@ function incompleteCheckIssue(
   }
   return {
     id: issueId('(dead-reference check incomplete)'),
-    severity: 'info',
+    severity: 'warning',
     category: 'structure',
     title: 'Dead-reference check incomplete: part of the repository could not be read',
     summary:
-      `${refs.length} reference(s) were not checked because ${dirs.length || 'some'} director${dirs.length === 1 ? 'y' : 'ies'} ` +
-      'could not be listed. They may or may not exist; no broken-reference finding was reported for them.',
+      `${refs.length} reference(s) were not checked because part of the repository could not be read ` +
+      `(${dirs.length} location${dirs.length === 1 ? '' : 's'}). They may or may not exist; ` +
+      'no broken-reference finding was reported for them.',
     filePaths,
     locations: filePaths.map((fp) => {
       const startLine = firstLine.get(fp);
       return startLine !== undefined ? { filePath: fp, startLine } : { filePath: fp };
     }),
-    evidence: [...capped(dirLines, 'directories'), ...capped(refs.map((r) => r.evidence), 'references')],
+    evidence: [...capped(dirLines, 'locations'), ...capped(refs.map((r) => r.evidence), 'references')],
     recommendation:
-      'Make the listed directories readable by the scan, or exclude them, and scan again to check these references.',
+      'Make the listed locations readable by the user running the scan (or fix the symlink), then scan again to ' +
+      'check these references.',
     confidence: 0.8,
   };
 }
