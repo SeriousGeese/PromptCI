@@ -8,7 +8,8 @@ import { fileIdPath } from './finding-id.js';
 import { anyWorkspaceHasScript, isKnownBinary, selectWorkspaces } from './workspace-manifests.js';
 import { makefileDefines, readMakefile } from './makefile.js';
 import type { MakefileFacts } from './makefile.js';
-import { realPathWithinRoot } from './path-containment.js';
+import { RepoTree, incompleteCheckIssue, isAbsoluteAnywhere } from './repo-tree.js';
+import type { Lookup, UncheckedRef } from './repo-tree.js';
 
 /**
  * Command Validity Detector
@@ -22,6 +23,12 @@ import { realPathWithinRoot } from './path-containment.js';
  *  - Inline backtick commands
  *  - Prose patterns like "run pnpm test"
  *  - Multi-command lines joined with && are split and each segment validated
+ *
+ * Every path a command names is looked up through RepoTree (pcic-x1vl, the
+ * dead-reference containment of pcic-xhzb): inside the scan root only, with
+ * exact case. A path that leaves the root is not checked, and a directory that
+ * cannot be listed leaves its commands unchecked and named in one "check
+ * incomplete" warning instead of reported as missing.
  *
  * Findings are heuristic — cautious wording is intentional.
  */
@@ -38,32 +45,87 @@ function issueId(filePath: string, cmdText: string): string {
   return `cmd-validity-${hash}`;
 }
 
-/** Returns true when a repo-relative path exists on disk. */
-function fileExists(repoRoot: string, relativePath: string): boolean {
-  try {
-    const full = path.resolve(repoRoot, relativePath);
-    return fs.existsSync(full);
-  } catch {
-    return false;
+/**
+ * Returned when the verdict depends on a directory that could not be listed:
+ * the command is neither validated nor reported, and the scan says what it
+ * skipped (pcic-x1vl, as dead-references does since pcic-xhzb).
+ */
+const UNJUDGED: unique symbol = Symbol('unjudged');
+type Verdict = string | null | typeof UNJUDGED;
+
+/** Separators in a documented path: `/` everywhere, `\` too where the platform treats it as one. */
+const PATH_SEPARATORS = path.sep === '\\' ? /[\\/]/ : /\//;
+
+/**
+ * pcic-x1vl: `rel`, a path a command names, joined to `fromDir` (inside the
+ * root) one segment at a time; `null` when the path cannot be placed inside
+ * the scan root without knowing where the root is. That is:
+ * - absolute in any platform's form (`/x`, `C:\x`, `C:x`, `\\host\x`), even
+ *   when it happens to point into the root: its verdict would depend on where
+ *   the repository is checked out;
+ * - computed from the environment (`~/x`, `$HOME/x`, `%APPDATA%\x`, backticks);
+ * - climbing above the root at any point, even when a later segment names the
+ *   root's own directory again (`../<root name>/x`): resolving it would make
+ *   the verdict depend on, and so reveal, the name of the directory the scan
+ *   runs in.
+ */
+function withinRoot(tree: RepoTree, fromDir: string, rel: string): string | null {
+  if (isAbsoluteAnywhere(rel) || /^~|[$`%]/.test(rel)) return null;
+  const parts = path.relative(tree.root, fromDir).split(path.sep).filter(Boolean);
+  if (parts.includes('..') || path.isAbsolute(parts.join(path.sep))) return null;
+  for (const segment of rel.split(PATH_SEPARATORS)) {
+    if (segment === '' || segment === '.') continue;
+    if (segment !== '..') parts.push(segment);
+    else if (parts.pop() === undefined) return null;
   }
+  return path.join(tree.root, ...parts);
 }
 
-function isDirectory(repoRoot: string, relativePath: string): boolean {
-  try {
-    return fs.statSync(path.resolve(repoRoot, relativePath)).isDirectory();
-  } catch {
-    return false;
-  }
+/**
+ * pcic-x1vl: what the repository holds at `rel`, a path a command names,
+ * resolved against the command's directory. The only way this detector asks
+ * the filesystem about such a path. A path {@link withinRoot} cannot place is
+ * `outside` before any lookup, and RepoTree never touches anything outside the
+ * scan root: one through a committed link out of the tree is `outside` too.
+ * Names match with exact case, so the verdict is the same on every platform,
+ * and the same as on Linux and in CI.
+ */
+function locate(tree: RepoTree, baseDir: string, rel: string): Lookup {
+  const abs = withinRoot(tree, baseDir, rel);
+  return abs === null ? { state: 'outside' } : tree.lookup(abs);
 }
 
+/**
+ * The finding for a path a command needs, by what {@link locate} found.
+ * pcic-x1vl: a path outside the scan root is not judged, whether or not it
+ * exists. Reporting it would claim a file is missing without having looked,
+ * and checking it would tell whoever wrote the instruction file whether a path
+ * on the scanning machine exists (in the hosted product, the server's). A
+ * monorepo package scanned on its own can legitimately run `../../scripts/x.sh`.
+ */
+function missingUnless(found: Lookup, message: string): Verdict {
+  if (found.state === 'missing') return message;
+  if (found.state === 'unreadable') return UNJUDGED;
+  return null;
+}
+
+/**
+ * The name and scripts of a package.json; `null` when there is none to read
+ * (or it does not parse); `unreadable` when a directory on the way could not
+ * be listed, so whether it exists is unknown.
+ */
 function readPackageScripts(
-  repoRoot: string,
+  tree: RepoTree,
   packageJsonPath: string,
-): { name?: string; scripts: Record<string, string> } | null {
-  // A manifest committed as a symlink to a file outside the repo is not read.
-  if (!realPathWithinRoot(repoRoot, packageJsonPath)) return null;
+): { name?: string; scripts: Record<string, string> } | null | 'unreadable' {
+  // pcic-x1vl: looked up through the tree, so a manifest path that leaves the
+  // root (`cd` through a link out of the tree) is never touched, and a
+  // manifest committed as a link out of the tree is not read.
+  const found = tree.lookup(packageJsonPath);
+  if (found.state === 'unreadable') return 'unreadable';
+  if (found.state !== 'found' || found.isDir) return null;
   try {
-    const raw = fs.readFileSync(packageJsonPath, 'utf8');
+    const raw = fs.readFileSync(found.path, 'utf8');
     const parsed = JSON.parse(raw) as Record<string, unknown>;
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return null;
     const scripts = typeof parsed.scripts === 'object' && parsed.scripts !== null && !Array.isArray(parsed.scripts)
@@ -100,30 +162,46 @@ function normalizePnpmFilter(value: string | undefined): string | undefined {
     .trim();
 }
 
-function workspacePackageJsonCandidates(repoRoot: string, selector: string): string[] {
+/**
+ * The package.json files a workspace selector may name. `complete` is false
+ * when a workspace directory could not be listed (pcic-x1vl): a selector that
+ * matches nothing may still name a package in it.
+ */
+function workspacePackageJsonCandidates(tree: RepoTree, selector: string): { candidates: string[]; complete: boolean } {
   const candidates = new Set<string>();
+  let complete = true;
   const selectorAsPath = selector.replace(/\\/g, '/');
   if (selectorAsPath.startsWith('.') || selectorAsPath.includes('/')) {
-    candidates.add(path.join(repoRoot, selectorAsPath, 'package.json'));
+    // pcic-x1vl: a selector path that leaves the root is not looked up.
+    const dir = withinRoot(tree, tree.root, selectorAsPath);
+    if (dir !== null) candidates.add(path.join(dir, 'package.json'));
   }
 
   for (const dir of ['apps', 'packages', 'libs']) {
-    const absDir = path.join(repoRoot, dir);
-    try {
-      for (const entry of fs.readdirSync(absDir, { withFileTypes: true })) {
-        if (entry.isDirectory()) {
-          candidates.add(path.join(absDir, entry.name, 'package.json'));
-        }
+    const absDir = path.join(tree.root, dir);
+    const entries = tree.entries(absDir);
+    if (entries === 'unreadable') complete = false;
+    if (typeof entries === 'string') continue; // workspace directory absent (or not inside the root)
+    for (const entry of entries.values()) {
+      if (entry.isDirectory()) {
+        candidates.add(path.join(absDir, entry.name, 'package.json'));
       }
-    } catch {
-      // Workspace directory absent.
     }
   }
 
-  return [...candidates];
+  return { candidates: [...candidates], complete };
 }
 
-function workspaceHasScript(context: RepoContext, selector: string | undefined, scriptName: string): boolean {
+/**
+ * True when the workspace(s) a selector names define the script; `unknown`
+ * when none found does but a manifest or workspace directory could not be read.
+ */
+function workspaceHasScript(
+  context: RepoContext,
+  tree: RepoTree,
+  selector: string | undefined,
+  scriptName: string,
+): boolean | 'unknown' {
   const normalizedSelector = normalizePnpmFilter(selector);
   if (!normalizedSelector) return false;
 
@@ -134,9 +212,12 @@ function workspaceHasScript(context: RepoContext, selector: string | undefined, 
     return selectWorkspaces(context, normalizedSelector).some((ws) => !!ws.scripts[scriptName]);
   }
 
-  for (const candidate of workspacePackageJsonCandidates(context.repoRoot, normalizedSelector)) {
-    const pkg = readPackageScripts(context.repoRoot, candidate);
-    if (!pkg) continue;
+  const { candidates, complete } = workspacePackageJsonCandidates(tree, normalizedSelector);
+  let unknown = !complete;
+  for (const candidate of candidates) {
+    const pkg = readPackageScripts(tree, candidate);
+    if (pkg === 'unreadable') unknown = true;
+    if (!pkg || pkg === 'unreadable') continue;
     const packageDir = path.dirname(candidate).replace(/\\/g, '/');
     const relDir = path.relative(context.repoRoot, packageDir).replace(/\\/g, '/');
     const selectorMatches =
@@ -146,7 +227,7 @@ function workspaceHasScript(context: RepoContext, selector: string | undefined, 
     if (selectorMatches && !!pkg.scripts[scriptName]) return true;
   }
 
-  return false;
+  return unknown ? 'unknown' : false;
 }
 
 /** Returns true when a path string looks like a file reference (not a flag). */
@@ -222,9 +303,9 @@ type ExtractedCommand = {
 function resolveCwd(current: string | null, target: string): string | null {
   if (current === null) return null;
   const cleaned = target.replace(/^['"]|['"]$/g, '').trim();
-  if (!cleaned || cleaned.startsWith('/') || cleaned.startsWith('~') || /^[a-zA-Z]:[\\/]/.test(cleaned)) {
-    return null; // absolute or home path — not resolvable to a repo-relative dir
-  }
+  // Absolute in any platform's form (`/x`, `C:\x`, drive-relative `C:x`, `\\host\x`)
+  // or home: not resolvable to a repo-relative dir (pcic-x1vl: on every platform alike).
+  if (!cleaned || isAbsoluteAnywhere(cleaned) || cleaned.startsWith('~')) return null;
   // `cd -`, `cd $DIR`, `cd "$(git rev-parse --show-toplevel)"`, `cd %TEMP%`,
   // `cd <dir>`: computed or placeholder targets name no knowable directory.
   if (/^-|[$`%<>{}*?]/.test(cleaned)) return null;
@@ -476,6 +557,7 @@ function cwdOverride(parts: string[]): string | undefined {
 
 function findMissingScript(
   context: RepoContext,
+  tree: RepoTree,
   cwd: string | null,
   parts: string[],
   scriptName: string,
@@ -483,7 +565,7 @@ function findMissingScript(
   tool: string,
   lookup: ScriptLookup,
   onScript?: (name: string) => void,
-): string | null {
+): Verdict {
   const names = scriptName.includes('/')
     ? scriptName.split('/').map((s) => s.trim()).filter(Boolean)
     : [scriptName];
@@ -503,8 +585,8 @@ function findMissingScript(
 
   const selector = lookup.workspaceName ?? workspaceSelector(tool, parts);
   const allWorkspaces = runsInAllWorkspaces(tool, parts);
-  const inWorkspaceScope = (name: string): boolean =>
-    allWorkspaces ? anyWorkspaceHasScript(context, name) : workspaceHasScript(context, selector, name);
+  const inWorkspaceScope = (name: string): boolean | 'unknown' =>
+    allWorkspaces ? anyWorkspaceHasScript(context, name) : workspaceHasScript(context, tree, selector, name);
 
   // With discovered workspaces, an explicit selector means ONLY the selected
   // packages: the root manifest's same-named script is not what runs, and a
@@ -516,8 +598,10 @@ function findMissingScript(
 
   const inSubdir = cwd !== '.' && cwd !== '';
   const dirPkg = inSubdir
-    ? readPackageScripts(context.repoRoot, path.join(context.repoRoot, cwd, 'package.json'))
+    ? readPackageScripts(tree, path.join(tree.root, cwd, 'package.json'))
     : null;
+  // pcic-x1vl: a directory on the way could not be listed — say so, don't guess.
+  if (dirPkg === 'unreadable') return UNJUDGED;
   // cd'd into a directory whose package.json we can't read — don't guess.
   if (inSubdir && !dirPkg) return null;
   const rootScriptsLoaded = Object.keys(context.packageJson.scripts).length > 0;
@@ -549,13 +633,18 @@ function findMissingScript(
       // NOT reachable here, so it must not mask a genuinely missing subdir
       // script.
       if (dirPkg.scripts[name]) continue;
-      if (inWorkspaceScope(name)) continue;
+      const inWorkspace = inWorkspaceScope(name);
+      if (inWorkspace === true) continue;
+      if (inWorkspace === 'unknown') return UNJUDGED;
       return `${tool} script "${name}" does not appear in ${cwd}/package.json scripts`;
     }
 
     // Repo-root context: the workspace target(s) or the root manifest.
-    if (inWorkspaceScope(name)) continue;
+    const inWorkspace = inWorkspaceScope(name);
+    if (inWorkspace === true) continue;
     if (context.packageJson.scripts[name]) continue;
+    // pcic-x1vl: a selected workspace may define it in a directory that could not be read.
+    if (inWorkspace === 'unknown') return UNJUDGED;
     return `${tool} script "${name}" does not appear in package.json scripts`;
   }
   return null;
@@ -581,10 +670,11 @@ function validatePackageManagerScript(
   tool: 'pnpm' | 'npm' | 'yarn' | 'bun',
   parts: string[],
   context: RepoContext,
+  tree: RepoTree,
   cwd: string | null,
   baseDir: string | null,
   onScript?: (name: string) => void,
-): string | null {
+): Verdict {
   const subIdx = firstNonFlagArgIndex(parts);
   const sub = parts[subIdx];
   if (!sub) return null;
@@ -613,8 +703,11 @@ function validatePackageManagerScript(
     // `bun <x>` / `bun run <x>` also run files — a path is not a script name.
     if (!explicitRun && BUN_BUILTINS.has(scriptName)) return null;
     if (isLikelyFilePath(scriptName)) {
-      if (baseDir && /\.[cm]?[jt]sx?$/.test(scriptName) && !fileExists(baseDir, scriptName)) {
-        return `File "${scriptName}" referenced by "bun" does not appear to exist in the repository`;
+      if (baseDir && /\.[cm]?[jt]sx?$/.test(scriptName)) {
+        return missingUnless(
+          locate(tree, baseDir, scriptName),
+          `File "${scriptName}" referenced by "bun" does not appear to exist in the repository`,
+        );
       }
       return null;
     }
@@ -622,6 +715,7 @@ function validatePackageManagerScript(
 
   return findMissingScript(
     context,
+    tree,
     cwd,
     parts,
     scriptName,
@@ -658,7 +752,7 @@ const MAKE_FLAGS_WITH_OPTIONAL_NUMBER = new Set(['-j', '-l', '--jobs', '--load-a
  */
 function validateMakeTargets(
   parts: string[],
-  context: RepoContext,
+  tree: RepoTree,
   cwd: string,
   makefileFor: (dir: string) => MakefileFacts | undefined,
 ): string | null {
@@ -693,17 +787,18 @@ function validateMakeTargets(
   const facts = makefileFor(dir);
   if (!facts || facts.unverifiable) return null;
 
-  const baseDir = dir === '.' ? context.repoRoot : path.join(context.repoRoot, dir);
   let entries: string[] | undefined;
   for (const goal of goals) {
     const target = goal.replace(/^['"]|['"]$/g, '');
     if (!target || isLikelyFilePath(target) || !/^[A-Za-z0-9_.+-]+$/.test(target)) continue;
     if (makefileDefines(facts, target)) continue;
     // make can build `target` from `target.c` etc. with its built-in rules.
-    try {
-      entries ??= fs.readdirSync(baseDir);
-    } catch {
-      entries = [];
+    // Listed through the tree (pcic-x1vl), like the Makefile it found there;
+    // a directory it cannot list leaves those rules unknowable, so stay silent.
+    if (entries === undefined) {
+      const listing = tree.entries(dir);
+      if (typeof listing === 'string') return null;
+      entries = [...listing.keys()];
     }
     if (entries.some((e) => e === target || e.startsWith(`${target}.`))) continue;
     return `make target "${target}" does not appear in ${facts.file}`;
@@ -728,24 +823,27 @@ function validateSegment(
     makefileFor?: (dir: string) => MakefileFacts | undefined;
     /** Repo-relative POSIX directory of the instruction file ('.' = root). */
     fileDir?: string;
+    /** The scan's view of the repository; one per analysis, so listings are shared. */
+    tree?: RepoTree;
   } = {},
-): string | null {
+): Verdict {
   if (PLACEHOLDER_RE.test(seg)) return null;
 
   const parts = seg.trim().split(/\s+/);
   if (parts.length === 0) return null;
   const tool = parts[0]!;
+  const tree = opts.tree ?? new RepoTree(context.repoRoot);
 
   // Base directory for file-existence checks — respects a `cd`-established cwd.
   const baseDir = cwd === null
     ? null
     : cwd !== '.' && cwd !== ''
-      ? path.join(context.repoRoot, cwd)
-      : context.repoRoot;
+      ? path.join(tree.root, cwd)
+      : tree.root;
 
   // ── Package manager scripts ────────────────────────────────────────────────
   if (tool === 'pnpm' || tool === 'npm' || tool === 'yarn' || tool === 'bun') {
-    return validatePackageManagerScript(tool, parts, context, cwd, baseDir, onScript);
+    return validatePackageManagerScript(tool, parts, context, tree, cwd, baseDir, onScript);
   }
 
   // ── File-executing commands ────────────────────────────────────────────────
@@ -754,8 +852,12 @@ function validateSegment(
     // Skip flags (and known flags' values, e.g. `--loader ts-node/esm`) to
     // find the actual script/file argument.
     const filePart = parts[firstNonFlagArgIndex(parts)];
-    if (filePart && isLikelyFilePath(filePart) && !fileExists(baseDir, filePart)) {
-      return `File "${filePart}" referenced by "${tool}" does not appear to exist in the repository`;
+    if (filePart && isLikelyFilePath(filePart)) {
+      const verdict = missingUnless(
+        locate(tree, baseDir, filePart),
+        `File "${filePart}" referenced by "${tool}" does not appear to exist in the repository`,
+      );
+      if (verdict !== null) return verdict;
     }
   }
 
@@ -767,30 +869,34 @@ function validateSegment(
     const makeCwd = cwd === '.' && fileDir !== '.' && opts.makefileFor(fileDir) ? fileDir : cwd;
     // A code span like `make sure` is English, not a make invocation.
     if (!opts.fenced && parts.length === 2 && MAKE_PROSE_WORDS.has(parts[1]!.toLowerCase())) return null;
-    return validateMakeTargets(parts, context, makeCwd, opts.makefileFor);
+    return validateMakeTargets(parts, tree, makeCwd, opts.makefileFor);
   }
 
   // ── Direct script invocations: ./scripts/foo.sh ───────────────────────────
   if (baseDir && (tool.startsWith('./') || tool.startsWith('../'))) {
+    const found = locate(tree, baseDir, tool);
     // pcic-2b6.8: a bare `./src` or `./docs/` in an inline code span is a
     // directory mention, not a script invocation — it is dead-references' to
     // judge. Only a shell-fence line (meant to be run) still reports an absent
     // extensionless `./gradlew`; an existing directory is never a missing script.
     if (parts.length === 1 && path.extname(tool.replace(/\/+$/, '')) === '') {
-      if (isDirectory(baseDir, tool)) return null;
+      if (found.state === 'found' && found.isDir) return null;
       if (!opts.fenced || tool.endsWith('/')) return null;
     }
-    if (!fileExists(baseDir, tool)) {
-      return `Script "${tool}" does not appear to exist in the repository`;
-    }
+    const verdict = missingUnless(found, `Script "${tool}" does not appear to exist in the repository`);
+    if (verdict !== null) return verdict;
   }
 
   // ── docker compose -f <file> ───────────────────────────────────────────────
   if (baseDir && tool === 'docker' && parts[1] === 'compose' && parts.includes('-f')) {
     const fIdx = parts.indexOf('-f');
     const composeFile = parts[fIdx + 1];
-    if (composeFile && isLikelyFilePath(composeFile) && !fileExists(baseDir, composeFile)) {
-      return `Docker Compose file "${composeFile}" does not appear to exist in the repository`;
+    if (composeFile && isLikelyFilePath(composeFile)) {
+      const verdict = missingUnless(
+        locate(tree, baseDir, composeFile),
+        `Docker Compose file "${composeFile}" does not appear to exist in the repository`,
+      );
+      if (verdict !== null) return verdict;
     }
   }
 
@@ -798,9 +904,12 @@ function validateSegment(
   if (baseDir && tool === 'dotnet' && parts[1] === 'test' && parts[2]) {
     const target = parts[2];
     if (isLikelyFilePath(target)) {
-      if (!fileExists(baseDir, target)) {
-        return `dotnet test target "${target}" does not appear to exist`;
-      }
+      const found = locate(tree, baseDir, target);
+      // Outside the root: not judged at all, so the extension check below
+      // cannot tell an existing outside file from a missing one either.
+      if (found.state === 'outside') return null;
+      const verdict = missingUnless(found, `dotnet test target "${target}" does not appear to exist`);
+      if (verdict !== null) return verdict;
       if (!/\.(sln|csproj|fsproj)$/.test(target)) {
         return `dotnet test target "${target}" should be a .sln, .csproj, or .fsproj file`;
       }
@@ -858,12 +967,15 @@ function computeCommandAnalysis(context: RepoContext): CommandAnalysis {
   const issues: PromptCiIssue[] = [];
   const evaluatedScripts = new Map<string, Set<string>>();
   const reported = new Set<string>();
+  const tree = new RepoTree(context.repoRoot);
+  // pcic-x1vl: commands left unchecked because part of the tree could not be listed.
+  const unchecked = new Map<string, UncheckedRef>();
   // Makefiles by repo-relative directory: the root one comes from the context,
   // subdirectory ones (`make -C dir`, `cd dir && make`) are read once each.
   const makefiles = new Map<string, MakefileFacts | undefined>();
   const makefileFor = (dir: string): MakefileFacts | undefined => {
     if (dir === '.' || dir === '') return context.makefile;
-    if (!makefiles.has(dir)) makefiles.set(dir, readMakefile(context.repoRoot, dir));
+    if (!makefiles.has(dir)) makefiles.set(dir, readMakefile(context.repoRoot, dir, tree));
     return makefiles.get(dir);
   };
 
@@ -884,8 +996,18 @@ function computeCommandAnalysis(context: RepoContext): CommandAnalysis {
         fenced: cmd.fenced === true,
         makefileFor,
         fileDir: fileDir.startsWith('..') ? '.' : fileDir,
+        tree,
       });
       if (!error) continue;
+      if (error === UNJUDGED) {
+        const evidence = `Not checked: \`${cmd.text}\``;
+        const entry = unchecked.get(evidence) ?? { filePaths: new Set(), fileLines: new Map(), evidence };
+        entry.filePaths.add(file.path);
+        const seen = entry.fileLines.get(file.path);
+        if (seen === undefined || cmd.line < seen) entry.fileLines.set(file.path, cmd.line);
+        unchecked.set(evidence, entry);
+        continue;
+      }
 
       // Deduplicate same command text appearing twice in the same file
       const dedupeKey = `${file.path}|${cmd.text}`;
@@ -907,6 +1029,17 @@ function computeCommandAnalysis(context: RepoContext): CommandAnalysis {
         confidence: 0.8,
       });
     }
+  }
+
+  if (unchecked.size > 0) {
+    issues.push(incompleteCheckIssue(tree, [...unchecked.values()], {
+      id: issueId('', '(command check incomplete)'),
+      category: 'command_validity',
+      title: 'Command check incomplete: part of the repository could not be read',
+      unit: 'command',
+      unknown: 'The files they name may or may not exist',
+      finding: 'missing-command',
+    }));
   }
 
   return { issues, evaluatedScripts };

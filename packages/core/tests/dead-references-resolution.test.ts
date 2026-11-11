@@ -174,6 +174,11 @@ describe('fixture-dead-ref-resolution', () => {
     ]);
 
     const commands = report.issues.filter((i) => i.category === 'command_validity').map((i) => i.title);
-    expect(commands).toEqual(['Possible reference to missing command or file: `npm run dev`']);
+    expect(commands).toEqual([
+      'Possible reference to missing command or file: `npm run dev`',
+      // pcic-x1vl: wrong-case path, reported on case-insensitive filesystems too;
+      // the `..` and absolute scripts outside the fixture are not checked.
+      'Possible reference to missing command or file: `node Scripts/verify-release.mjs`',
+    ]);
   });
 });

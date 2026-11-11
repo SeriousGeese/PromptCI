@@ -13,8 +13,7 @@
  */
 
 import * as fs from 'node:fs';
-import * as path from 'node:path';
-import { resolveReadableWithinRoot } from './path-containment.js';
+import { RepoTree } from './repo-tree.js';
 import { MAX_FILE_SIZE } from './scanner.js';
 
 export type MakefileFacts = {
@@ -144,22 +143,30 @@ export function makefileDefines(facts: MakefileFacts, target: string): boolean {
 
 /**
  * Read the Makefile make would use in a repo-relative directory ('.' = root).
- * `undefined` when there is none (or it is oversized, unreadable, or a symlink
- * leaving the repo).
+ * `undefined` when there is none (or it is oversized, unreadable, or it or a
+ * directory on the way is a symlink leaving the repo).
+ *
+ * pcic-x1vl: `dir` comes from a documented command (`make -C dir`, `cd dir`),
+ * so it is looked up through RepoTree: nothing outside the root is touched,
+ * not even through a committed link, and names match with exact case (on a
+ * case-insensitive filesystem `makefile` would otherwise also "find"
+ * `Makefile` and report the wrong file name). Pass the scan's tree to share
+ * its listings.
  */
-export function readMakefile(repoRoot: string, dir: string): MakefileFacts | undefined {
+export function readMakefile(
+  repoRoot: string,
+  dir: string,
+  tree: RepoTree = new RepoTree(repoRoot),
+): MakefileFacts | undefined {
   for (const name of MAKEFILE_NAMES) {
     const rel = dir === '.' || dir === '' ? name : `${dir}/${name}`;
-    const abs = resolveReadableWithinRoot(repoRoot, rel);
-    if (!abs) continue;
+    const found = tree.lookup(rel);
+    if (found.state !== 'found' || found.isDir) continue;
     try {
-      const stat = fs.statSync(abs);
+      const stat = fs.statSync(found.path);
       if (!stat.isFile()) continue;
-      // An exact-case match: on a case-insensitive filesystem `makefile` would
-      // otherwise also "find" `Makefile` and report the wrong file name.
-      if (!fs.readdirSync(path.dirname(abs)).includes(name)) continue;
       if (stat.size > MAX_FILE_SIZE) return { file: rel, targets: [], patterns: [], unverifiable: true };
-      return parseMakefileTargets(fs.readFileSync(abs, 'utf8'), rel);
+      return parseMakefileTargets(fs.readFileSync(found.path, 'utf8'), rel);
     } catch {
       continue;
     }

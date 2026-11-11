@@ -31,4 +31,12 @@ are not checked.
 ```bash
 npm run build
 npm run dev
+node scripts/verify-release.mjs
+node Scripts/verify-release.mjs
+node ../no-such-fixture/release.mjs
+bash /opt/no-such-fixture/setup.sh
 ```
+
+The second release command uses the wrong case and is reported on every
+platform. The last two run scripts outside this repository, so they are not
+checked.

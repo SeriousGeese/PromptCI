@@ -22,26 +22,50 @@ import type { RepoContext } from '../src/repo-context.js';
 import type { InstructionFile } from '../src/types.js';
 import type { Mock } from 'vitest';
 import * as fs from 'node:fs';
+import * as path from 'node:path';
 
 vi.mock('node:fs', () => ({
-  existsSync: vi.fn(),
   readFileSync: vi.fn(),
   readdirSync: vi.fn(),
+  readlinkSync: vi.fn(),
 }));
 
-const mockExists = (fs.existsSync as Mock);
 const mockReadFile = (fs.readFileSync as Mock);
 const mockReaddir = (fs.readdirSync as Mock);
 
 beforeEach(() => {
   vi.clearAllMocks();
   // Default: no files exist (safest default for file-reference checks)
-  mockExists.mockReturnValue(false);
   mockReadFile.mockImplementation(() => {
     throw new Error('not found');
   });
   mockReaddir.mockReturnValue([]);
 });
+
+/**
+ * Puts these repo-relative files on the mocked disk. The detector looks a path
+ * up by listing the directories from the repo root down (RepoTree, pcic-x1vl),
+ * so this serves those listings; everything else is absent.
+ */
+function onDisk(...rels: string[]): void {
+  const dirs = new Map<string, Map<string, boolean>>();
+  for (const rel of rels) {
+    const parts = rel.split('/');
+    let dir = '';
+    parts.forEach((name, i) => {
+      const children = dirs.get(dir) ?? new Map<string, boolean>();
+      children.set(name, children.get(name) === true || i < parts.length - 1);
+      dirs.set(dir, children);
+      dir = dir ? `${dir}/${name}` : name;
+    });
+  }
+  mockReaddir.mockImplementation((dir: unknown) => {
+    const rel = path.relative(path.resolve('/repo'), path.resolve(String(dir))).split(path.sep).join('/');
+    const children = dirs.get(rel);
+    if (!children) throw Object.assign(new Error(`ENOENT: ${rel}`), { code: 'ENOENT' });
+    return [...children].map(([name, isDir]) => ({ name, isDirectory: () => isDir, isSymbolicLink: () => false }));
+  });
+}
 
 function makeContext(
   files: InstructionFile[],
@@ -146,11 +170,7 @@ describe('detectCommandValidity — package scripts', () => {
   });
 
   it('does NOT flag a pnpm filtered workspace script that exists in the target package', () => {
-    mockReaddir.mockImplementation((dir: unknown) => {
-      const normalized = String(dir).replace(/\\/g, '/');
-      if (normalized.endsWith('/apps')) return [{ name: 'web', isDirectory: () => true }];
-      return [];
-    });
+    onDisk('apps/web/package.json');
     mockReadFile.mockImplementation((filePath: unknown) => {
       const normalized = String(filePath).replace(/\\/g, '/');
       if (normalized.endsWith('/apps/web/package.json')) {
@@ -185,6 +205,7 @@ describe('detectCommandValidity — package scripts', () => {
 
 describe('detectCommandValidity — cd-established working directory', () => {
   const withAppsWebScripts = (scripts: Record<string, string>) => {
+    onDisk('apps/web/package.json');
     mockReadFile.mockImplementation((filePath: unknown) => {
       const normalized = String(filePath).replace(/\\/g, '/');
       if (normalized.endsWith('/apps/web/package.json')) {
@@ -293,7 +314,6 @@ describe('detectCommandValidity — slash-joined script shorthand', () => {
 
 describe('detectCommandValidity — file references', () => {
   it('flags missing file in node command', () => {
-    mockExists.mockReturnValue(false);
     const content = 'Run `node scripts/migrate.js`';
     const context = makeContext([makeFile(content)]);
     const issues = detectCommandValidity(context);
@@ -302,7 +322,7 @@ describe('detectCommandValidity — file references', () => {
   });
 
   it('does NOT flag node command when file exists', () => {
-    mockExists.mockReturnValue(true);
+    onDisk('scripts/migrate.js');
     const content = 'Run `node scripts/migrate.js`';
     const context = makeContext([makeFile(content)]);
     const issues = detectCommandValidity(context);
@@ -310,7 +330,6 @@ describe('detectCommandValidity — file references', () => {
   });
 
   it('flags missing bash script path', () => {
-    mockExists.mockReturnValue(false);
     const content = 'Run `bash scripts/setup.sh`';
     const context = makeContext([makeFile(content)]);
     const issues = detectCommandValidity(context);
@@ -319,7 +338,6 @@ describe('detectCommandValidity — file references', () => {
   });
 
   it('flags missing python script path', () => {
-    mockExists.mockReturnValue(false);
     const content = '```bash\npython scripts/generate.py\n```';
     const context = makeContext([makeFile(content)]);
     const issues = detectCommandValidity(context);
@@ -328,7 +346,6 @@ describe('detectCommandValidity — file references', () => {
   });
 
   it('flags missing direct ./script.sh invocation', () => {
-    mockExists.mockReturnValue(false);
     const content = 'Run `./scripts/bootstrap.sh` to set up.';
     const context = makeContext([makeFile(content)]);
     const issues = detectCommandValidity(context);
@@ -337,7 +354,7 @@ describe('detectCommandValidity — file references', () => {
   });
 
   it('does NOT flag when ./script.sh exists', () => {
-    mockExists.mockReturnValue(true);
+    onDisk('scripts/bootstrap.sh');
     const content = 'Run `./scripts/bootstrap.sh` to set up.';
     const context = makeContext([makeFile(content)]);
     const issues = detectCommandValidity(context);
@@ -345,9 +362,7 @@ describe('detectCommandValidity — file references', () => {
   });
 
   it('flags missing docker compose file', () => {
-    mockExists.mockImplementation((p: unknown) =>
-      !String(p).endsWith('docker-compose.prod.yml'),
-    );
+    onDisk('docker-compose.yml');
     const content = '`docker compose -f docker-compose.prod.yml up`';
     const context = makeContext([makeFile(content)]);
     const issues = detectCommandValidity(context);
@@ -435,7 +450,7 @@ describe('detectCommandValidity — prose extraction', () => {
   });
 
   it('preserves file extensions in prose commands before trailing punctuation', () => {
-    mockExists.mockImplementation((p: unknown) => String(p).replace(/\\/g, '/').endsWith('scripts/setup.js'));
+    onDisk('scripts/setup.js');
     const content = 'Before developing, run node scripts/setup.js.';
     const context = makeContext([makeFile(content)]);
     const issues = detectCommandValidity(context);
@@ -498,7 +513,7 @@ describe('detectCommandValidity — yarn run <script>', () => {
 
 describe('detectCommandValidity — dotnet test targets', () => {
   it('flags a dotnet test target with wrong extension (.dll) even when file exists', () => {
-    mockExists.mockReturnValue(true);
+    onDisk('MyTests.dll');
     const content = '`dotnet test MyTests.dll`';
     const context = makeContext([makeFile(content)]);
     const issues = detectCommandValidity(context);
@@ -507,7 +522,7 @@ describe('detectCommandValidity — dotnet test targets', () => {
   });
 
   it('does NOT flag dotnet test with an existing .csproj target', () => {
-    mockExists.mockReturnValue(true);
+    onDisk('MyProject.csproj');
     const content = '`dotnet test MyProject.csproj`';
     const context = makeContext([makeFile(content)]);
     const issues = detectCommandValidity(context);
@@ -515,7 +530,7 @@ describe('detectCommandValidity — dotnet test targets', () => {
   });
 
   it('does NOT flag dotnet test with an existing .fsproj target', () => {
-    mockExists.mockReturnValue(true);
+    onDisk('MyProject.fsproj');
     const content = '`dotnet test MyProject.fsproj`';
     const context = makeContext([makeFile(content)]);
     const issues = detectCommandValidity(context);
@@ -523,7 +538,6 @@ describe('detectCommandValidity — dotnet test targets', () => {
   });
 
   it('flags dotnet test with a missing .sln target', () => {
-    mockExists.mockReturnValue(false);
     const content = '`dotnet test MySolution.sln`';
     const context = makeContext([makeFile(content)]);
     const issues = detectCommandValidity(context);
@@ -534,7 +548,6 @@ describe('detectCommandValidity — dotnet test targets', () => {
 
   it('does NOT flag dotnet test when target has no file extension (not a file path)', () => {
     // isLikelyFilePath returns false for a bare word with no extension or separator
-    mockExists.mockReturnValue(false);
     const content = '`dotnet test MyTestsFolder`';
     const context = makeContext([makeFile(content)]);
     const issues = detectCommandValidity(context);
@@ -546,7 +559,6 @@ describe('detectCommandValidity — dotnet test targets', () => {
 
 describe('detectCommandValidity — tsx file references', () => {
   it('flags a missing file referenced by tsx', () => {
-    mockExists.mockReturnValue(false);
     const content = 'Run `tsx src/generate.ts`';
     const context = makeContext([makeFile(content)]);
     const issues = detectCommandValidity(context);
@@ -555,7 +567,7 @@ describe('detectCommandValidity — tsx file references', () => {
   });
 
   it('does NOT flag tsx when the file exists', () => {
-    mockExists.mockReturnValue(true);
+    onDisk('src/generate.ts');
     const content = 'Run `tsx src/generate.ts`';
     const context = makeContext([makeFile(content)]);
     const issues = detectCommandValidity(context);
@@ -567,7 +579,6 @@ describe('detectCommandValidity — tsx file references', () => {
 
 describe('detectCommandValidity — CV1 fence-state inversion', () => {
   it('does not invert block state after a ```json fence and still validates the following ```bash block', () => {
-    mockExists.mockReturnValue(false);
     const content = [
       '```json',
       '{ "a": 1 }',
@@ -585,7 +596,6 @@ describe('detectCommandValidity — CV1 fence-state inversion', () => {
   });
 
   it('does not scan a ```json block for commands even though it is now correctly tracked', () => {
-    mockExists.mockReturnValue(false);
     const content = ['```json', '{ "scripts": { "pnpm run fake": true } }', '```'].join('\n');
     const context = makeContext([makeFile(content)], { build: 'tsc' });
     const issues = detectCommandValidity(context);
@@ -689,7 +699,7 @@ describe('detectCommandValidity — CV4 semicolon/or separators', () => {
 
 describe('detectCommandValidity — CV5 flag value mistaken for file path', () => {
   it('validates the real script target, not a --loader flag value', () => {
-    mockExists.mockImplementation((p: unknown) => String(p).replace(/\\/g, '/').endsWith('src/x.ts'));
+    onDisk('src/x.ts');
     const content = 'Run `node --loader ts-node/esm src/x.ts` to start.';
     const context = makeContext([makeFile(content)]);
     const issues = detectCommandValidity(context);
@@ -697,7 +707,6 @@ describe('detectCommandValidity — CV5 flag value mistaken for file path', () =
   });
 
   it('still flags a missing real script target after a --loader flag', () => {
-    mockExists.mockReturnValue(false);
     const content = 'Run `node --loader ts-node/esm src/missing.ts` to start.';
     const context = makeContext([makeFile(content)]);
     const issues = detectCommandValidity(context);
