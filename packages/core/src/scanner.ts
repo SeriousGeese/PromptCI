@@ -6,6 +6,7 @@ import type { FileType, InstructionFile, InstructionSection, ScanInput } from '.
 import { scanFencedLines } from './markdown-fences.js';
 import { isWithinRoot, realPath, realPathWithinRoot } from './path-containment.js';
 import { createGitSymlinkOracle } from './git-symlinks.js';
+import { RepoTree } from './repo-tree.js';
 import type { GitSymlinkOracle } from './git-symlinks.js';
 
 const DEFAULT_PATTERNS = [
@@ -224,13 +225,12 @@ const CLINE_DIR_PATTERNS: ReadonlySet<string> = new Set([
  * WHOLE repo. `suppressErrors` now contains that too; dropping the globs
  * keeps the default scan from relying on it.
  */
-async function defaultPatterns(repoRoot: string): Promise<string[]> {
-  let clineIsDir = false;
-  try {
-    clineIsDir = (await fs.stat(path.join(repoRoot, '.clinerules'))).isDirectory();
-  } catch {
-    // absent — the directory globs would match nothing anyway
-  }
+function defaultPatterns(tree: RepoTree): string[] {
+  // pcic-e6xa: `.clinerules` is a fixed name, but whether it is a FILE or a
+  // DIRECTORY changes what the scan reads — so it is asked through the tree,
+  // which never follows a link out of the root and lets a caller's inventory
+  // answer when the repository is not on disk (pcic-csf).
+  const clineIsDir = tree.isDir('.clinerules');
   return clineIsDir ? DEFAULT_PATTERNS : DEFAULT_PATTERNS.filter((p) => !CLINE_DIR_PATTERNS.has(p));
 }
 
@@ -433,12 +433,18 @@ export function foldTextSymlinks(files: InstructionFile[], aliases: InstructionF
  *    folded into an alias of that file, so both platforms scan the same repo alike
  *    (see {@link foldTextSymlinks}).
  */
-export async function scanFilesWithAliases(input: ScanInput): Promise<ScanFilesResult> {
+export async function scanFilesWithAliases(input: ScanInput, tree?: RepoTree): Promise<ScanFilesResult> {
   const repoRoot = path.resolve(input.repoPath);
   const realRoot = resolveReal(repoRoot) ?? repoRoot;
+  // The scan's tree when the caller has one (buildRepoContext); otherwise a
+  // plain one over this root, carrying any inventory the input named.
+  const repoTree = tree ?? new RepoTree(repoRoot, {
+    ...(input.knownPaths !== undefined ? { knownPaths: input.knownPaths } : {}),
+    ...(input.knownPathsComplete !== undefined ? { knownPathsComplete: input.knownPathsComplete } : {}),
+  });
   const patterns = (input.include && input.include.length > 0)
     ? input.include
-    : await defaultPatterns(repoRoot);
+    : defaultPatterns(repoTree);
   const ignorePatterns = [
     ...IGNORE_DIRS.map((d) => `**/${d}/**`),
     ...(input.exclude ?? []),

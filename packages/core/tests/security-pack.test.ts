@@ -4,8 +4,28 @@ import { detectSecurityPack } from '../src/security-pack.js';
 import { emptyAiConfigFiles } from '../src/ai-config.js';
 import type { InstructionFile } from '../src/types.js';
 import type { RepoContext } from '../src/repo-context.js';
+import { RepoTree } from '../src/repo-tree.js';
 
 vi.mock('node:fs');
+
+/**
+ * pcic-e6xa: every existence signal the security pack reads (`.env`,
+ * `supabase/migrations`, `.promptci`, a build directory) and every file it
+ * reads (`.gitignore`, `.promptci/config.json`) now goes through the scan's
+ * tree rather than `fs.existsSync`/`fs.readFileSync` directly. These tests
+ * state the repository as a path -> content map and hand it over as a complete
+ * `knownPaths` inventory (pcic-csf): the fixture IS what the detector sees, and
+ * a path ending in `/` is a directory with nothing readable in it.
+ */
+function repo(files: Record<string, string>): RepoTree {
+  const knownPaths = Object.keys(files).map((rel) => (rel.endsWith('/') ? rel + '.keep' : rel));
+  vi.mocked(fs.readFileSync).mockImplementation((target: unknown) => {
+    // `/repo` resolves to `C:/repo` on Windows, so match the root by suffix.
+    const rel = String(target).replace(/\\/g, '/').replace(/^.*\/repo\//, '');
+    return files[rel] ?? '';
+  });
+  return new RepoTree('/repo', { knownPaths, knownPathsComplete: true });
+}
 
 function makeFile(content: string, filePath = '/repo/CLAUDE.md'): InstructionFile {
   return {
@@ -48,9 +68,9 @@ describe('detectSecurityPack', () => {
 
   describe('Secret Safeguard', () => {
     it('flags missing secret safeguard when .env exists', () => {
-      vi.mocked(fs.existsSync).mockReturnValueOnce(true); // .env
       const context = {
         ...mockContext,
+        tree: repo({ '.env': '' }),
         files: [makeFile('# Rules\nUse TypeScript.')],
       };
       const issues = detectSecurityPack(context);
@@ -58,9 +78,9 @@ describe('detectSecurityPack', () => {
     });
 
     it('does NOT flag when secret safeguard is present', () => {
-      vi.mocked(fs.existsSync).mockReturnValueOnce(true); // .env
       const context = {
         ...mockContext,
+        tree: repo({ '.env': '' }),
         files: [makeFile('# Rules\nNever print or commit secrets.')],
       };
       const issues = detectSecurityPack(context);
@@ -70,11 +90,9 @@ describe('detectSecurityPack', () => {
 
   describe('Supabase Safeguard', () => {
     it('flags missing supabase safeguard when supabase/migrations exists', () => {
-      vi.mocked(fs.existsSync).mockImplementation((p: string) => 
-        p.replace(/\\/g, '/').includes('supabase/migrations')
-      );
       const context = {
         ...mockContext,
+        tree: repo({ 'supabase/migrations/0001_init.sql': '' }),
         files: [makeFile('# Rules\nUse TypeScript.')],
       };
       const issues = detectSecurityPack(context);
@@ -82,11 +100,9 @@ describe('detectSecurityPack', () => {
     });
 
     it('does NOT flag when supabase safeguard is present', () => {
-      vi.mocked(fs.existsSync).mockImplementation((p: string) => 
-        p.replace(/\\/g, '/').includes('supabase/migrations')
-      );
       const context = {
         ...mockContext,
+        tree: repo({ 'supabase/migrations/0001_init.sql': '' }),
         files: [makeFile('# Rules\nSupabase service role key must stay server-side.')],
       };
       const issues = detectSecurityPack(context);
@@ -94,9 +110,9 @@ describe('detectSecurityPack', () => {
     });
 
     it('flags missing supabase safeguard from parsed @supabase dependency facts', () => {
-      vi.mocked(fs.existsSync).mockReturnValue(false);
       const context = {
         ...mockContext,
+        tree: repo({}),
         files: [makeFile('# Rules\nUse TypeScript.')],
         packageJson: {
           ...mockContext.packageJson,
@@ -134,11 +150,9 @@ describe('detectSecurityPack', () => {
 
   describe('.promptci/ Safeguard', () => {
     it('flags missing .promptci/ safeguard when folder exists', () => {
-      vi.mocked(fs.existsSync).mockImplementation((p: string) => 
-        p.replace(/\\/g, '/').includes('.promptci')
-      );
       const context = {
         ...mockContext,
+        tree: repo({ '.promptci/': '' }),
         files: [makeFile('# Rules\nUse TypeScript.')],
       };
       const issues = detectSecurityPack(context);
@@ -146,11 +160,9 @@ describe('detectSecurityPack', () => {
     });
 
     it('does NOT flag when .promptci/ safeguard is present', () => {
-      vi.mocked(fs.existsSync).mockImplementation((p: string) => 
-        p.replace(/\\/g, '/').includes('.promptci')
-      );
       const context = {
         ...mockContext,
+        tree: repo({ '.promptci/': '' }),
         files: [makeFile('# Rules\nDo not commit .promptci reports.')],
       };
       const issues = detectSecurityPack(context);
@@ -198,19 +210,9 @@ describe('detectSecurityPack', () => {
 
   describe('Cost 9 Hygiene Checks', () => {
     it('flags missing .promptci/ in .gitignore', () => {
-      vi.mocked(fs.existsSync).mockImplementation((p: string) => {
-        const normalized = p.replace(/\\/g, '/');
-        if (normalized.endsWith('.gitignore')) return true;
-        return false;
-      });
-      vi.mocked(fs.readFileSync).mockImplementation((p: unknown) => {
-        const normalized = String(p).replace(/\\/g, '/');
-        if (normalized.endsWith('.gitignore')) return 'node_modules/';
-        return '';
-      });
-
       const context = {
         ...mockContext,
+        tree: repo({ '.gitignore': 'node_modules/' }),
         files: [makeFile('# Rules\nUse TypeScript.')],
       };
       const issues = detectSecurityPack(context);
@@ -218,19 +220,9 @@ describe('detectSecurityPack', () => {
     });
 
     it('does not flag when .promptci/ is ignored in .gitignore', () => {
-      vi.mocked(fs.existsSync).mockImplementation((p: string) => {
-        const normalized = p.replace(/\\/g, '/');
-        if (normalized.endsWith('.gitignore')) return true;
-        return false;
-      });
-      vi.mocked(fs.readFileSync).mockImplementation((p: unknown) => {
-        const normalized = String(p).replace(/\\/g, '/');
-        if (normalized.endsWith('.gitignore')) return '.promptci/\nnode_modules/';
-        return '';
-      });
-
       const context = {
         ...mockContext,
+        tree: repo({ '.gitignore': '.promptci/\nnode_modules/' }),
         files: [makeFile('# Rules\nUse TypeScript.')],
       };
       const issues = detectSecurityPack(context);
@@ -240,21 +232,9 @@ describe('detectSecurityPack', () => {
     // BUG-7: the recommended pattern carves out baseline.json so the CI
     // ratchet (--baseline / --fail-on-new) can still read it.
     it('accepts the baseline-preserving .promptci/* carve-out', () => {
-      vi.mocked(fs.existsSync).mockImplementation((p: string) => {
-        const normalized = p.replace(/\\/g, '/');
-        if (normalized.endsWith('.gitignore')) return true;
-        return false;
-      });
-      vi.mocked(fs.readFileSync).mockImplementation((p: unknown) => {
-        const normalized = String(p).replace(/\\/g, '/');
-        if (normalized.endsWith('.gitignore')) {
-          return '**/.promptci/*\n!**/.promptci/baseline.json\n!**/.promptci/config.json\nnode_modules/';
-        }
-        return '';
-      });
-
       const context = {
         ...mockContext,
+        tree: repo({ '.gitignore': '**/.promptci/*\n!**/.promptci/baseline.json\n!**/.promptci/config.json\nnode_modules/' }),
         files: [makeFile('# Rules\nUse TypeScript.')],
       };
       const issues = detectSecurityPack(context);
@@ -262,19 +242,9 @@ describe('detectSecurityPack', () => {
     });
 
     it('recommends carving out baseline.json rather than ignoring .promptci wholesale', () => {
-      vi.mocked(fs.existsSync).mockImplementation((p: string) => {
-        const normalized = p.replace(/\\/g, '/');
-        if (normalized.endsWith('.gitignore')) return true;
-        return false;
-      });
-      vi.mocked(fs.readFileSync).mockImplementation((p: unknown) => {
-        const normalized = String(p).replace(/\\/g, '/');
-        if (normalized.endsWith('.gitignore')) return 'node_modules/';
-        return '';
-      });
-
       const context = {
         ...mockContext,
+        tree: repo({ '.gitignore': 'node_modules/' }),
         files: [makeFile('# Rules\nUse TypeScript.')],
       };
       const issue = detectSecurityPack(context).find(
@@ -287,23 +257,9 @@ describe('detectSecurityPack', () => {
     });
 
     it('flags unignored build/coverage directories', () => {
-      vi.mocked(fs.existsSync).mockImplementation((p: string) => {
-        const normalized = p.replace(/\\/g, '/');
-        if (normalized.endsWith('.gitignore')) return true;
-        if (normalized.endsWith('/coverage') || normalized.endsWith('/dist')) return true;
-        return false;
-      });
-      vi.mocked(fs.readFileSync).mockImplementation((p: unknown) => {
-        const normalized = String(p).replace(/\\/g, '/');
-        if (normalized.endsWith('.gitignore')) return 'node_modules/\n.promptci/';
-        return '';
-      });
-      vi.mocked(fs.statSync).mockImplementation(() => {
-        return { isDirectory: () => true } as unknown as fs.Stats;
-      });
-
       const context = {
         ...mockContext,
+        tree: repo({ '.gitignore': 'node_modules/\n.promptci/', 'coverage/': '', 'dist/': '' }),
         files: [makeFile('# Rules\nUse TypeScript.')],
       };
       const issues = detectSecurityPack(context);
@@ -314,23 +270,9 @@ describe('detectSecurityPack', () => {
     });
 
     it('flags broad include pattern scanning generated directories', () => {
-      vi.mocked(fs.existsSync).mockImplementation((p: string) => {
-        const normalized = p.replace(/\\/g, '/');
-        if (normalized.endsWith('.gitignore')) return true;
-        if (normalized.endsWith('.promptci/config.json')) return true;
-        return false;
-      });
-      vi.mocked(fs.readFileSync).mockImplementation((p: unknown) => {
-        const normalized = String(p).replace(/\\/g, '/');
-        if (normalized.endsWith('.gitignore')) return '.promptci/';
-        if (normalized.endsWith('.promptci/config.json')) {
-          return JSON.stringify({ include: ['**/*'] });
-        }
-        return '';
-      });
-
       const context = {
         ...mockContext,
+        tree: repo({ '.gitignore': '.promptci/', '.promptci/config.json': JSON.stringify({ include: ['**/*'] }) }),
         files: [
           makeFile('# Scanned file', '/repo/coverage/index.html'),
           makeFile('# Scanned file', '/repo/dist/bundle.md'),
@@ -403,36 +345,13 @@ describe('detectSecurityPack', () => {
 
   describe('SP3: .gitignore substring-matching fixes', () => {
     it('does NOT treat a negation line ("!.promptci/") as ignoring .promptci', () => {
-      vi.mocked(fs.existsSync).mockImplementation((p: string) => {
-        const normalized = p.replace(/\\/g, '/');
-        return normalized.endsWith('.gitignore');
-      });
-      vi.mocked(fs.readFileSync).mockImplementation((p: unknown) => {
-        const normalized = String(p).replace(/\\/g, '/');
-        if (normalized.endsWith('.gitignore')) return '!.promptci/\nnode_modules/';
-        return '';
-      });
-
-      const context = { ...mockContext, files: [makeFile('# Rules\nUse TypeScript.')] };
+      const context = { ...mockContext, tree: repo({ '.gitignore': '!.promptci/\nnode_modules/' }), files: [makeFile('# Rules\nUse TypeScript.')] };
       const issues = detectSecurityPack(context);
       expect(issues.some((i) => i.id === 'security-pack-no-promptci-gitignore')).toBe(true);
     });
 
     it('does NOT let "distribution.md" satisfy the "dist" unignored-dir check', () => {
-      vi.mocked(fs.existsSync).mockImplementation((p: string) => {
-        const normalized = p.replace(/\\/g, '/');
-        if (normalized.endsWith('.gitignore')) return true;
-        if (normalized.endsWith('/dist')) return true;
-        return false;
-      });
-      vi.mocked(fs.readFileSync).mockImplementation((p: unknown) => {
-        const normalized = String(p).replace(/\\/g, '/');
-        if (normalized.endsWith('.gitignore')) return '.promptci/\ndistribution.md';
-        return '';
-      });
-      vi.mocked(fs.statSync).mockImplementation(() => ({ isDirectory: () => true } as unknown as fs.Stats));
-
-      const context = { ...mockContext, files: [makeFile('# Rules\nUse TypeScript.')] };
+      const context = { ...mockContext, tree: repo({ '.gitignore': '.promptci/\ndistribution.md', 'dist/': '' }), files: [makeFile('# Rules\nUse TypeScript.')] };
       const issues = detectSecurityPack(context);
       const unignoredIssue = issues.find((i) => i.id === 'security-pack-unignored-dirs');
       expect(unignoredIssue).toBeDefined();
@@ -440,20 +359,7 @@ describe('detectSecurityPack', () => {
     });
 
     it('does NOT let "builds-notes/" satisfy the "build" unignored-dir check', () => {
-      vi.mocked(fs.existsSync).mockImplementation((p: string) => {
-        const normalized = p.replace(/\\/g, '/');
-        if (normalized.endsWith('.gitignore')) return true;
-        if (normalized.endsWith('/build')) return true;
-        return false;
-      });
-      vi.mocked(fs.readFileSync).mockImplementation((p: unknown) => {
-        const normalized = String(p).replace(/\\/g, '/');
-        if (normalized.endsWith('.gitignore')) return '.promptci/\nbuilds-notes/';
-        return '';
-      });
-      vi.mocked(fs.statSync).mockImplementation(() => ({ isDirectory: () => true } as unknown as fs.Stats));
-
-      const context = { ...mockContext, files: [makeFile('# Rules\nUse TypeScript.')] };
+      const context = { ...mockContext, tree: repo({ '.gitignore': '.promptci/\nbuilds-notes/', 'build/': '' }), files: [makeFile('# Rules\nUse TypeScript.')] };
       const issues = detectSecurityPack(context);
       const unignoredIssue = issues.find((i) => i.id === 'security-pack-unignored-dirs');
       expect(unignoredIssue).toBeDefined();
@@ -461,20 +367,7 @@ describe('detectSecurityPack', () => {
     });
 
     it('still recognizes a genuine exact "dist" gitignore entry as ignoring it', () => {
-      vi.mocked(fs.existsSync).mockImplementation((p: string) => {
-        const normalized = p.replace(/\\/g, '/');
-        if (normalized.endsWith('.gitignore')) return true;
-        if (normalized.endsWith('/dist')) return true;
-        return false;
-      });
-      vi.mocked(fs.readFileSync).mockImplementation((p: unknown) => {
-        const normalized = String(p).replace(/\\/g, '/');
-        if (normalized.endsWith('.gitignore')) return '.promptci/\ndist/';
-        return '';
-      });
-      vi.mocked(fs.statSync).mockImplementation(() => ({ isDirectory: () => true } as unknown as fs.Stats));
-
-      const context = { ...mockContext, files: [makeFile('# Rules\nUse TypeScript.')] };
+      const context = { ...mockContext, tree: repo({ '.gitignore': '.promptci/\ndist/', 'dist/': '' }), files: [makeFile('# Rules\nUse TypeScript.')] };
       const issues = detectSecurityPack(context);
       const unignoredIssue = issues.find((i) => i.id === 'security-pack-unignored-dirs');
       expect(unignoredIssue?.evidence.some((e) => e.includes('"dist"'))).toBeFalsy();

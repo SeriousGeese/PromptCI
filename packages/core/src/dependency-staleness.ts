@@ -44,6 +44,8 @@ import { resolveReadableWithinRoot } from './path-containment.js';
 import { isKnownBinary, parseWorkspaceManifest } from './workspace-manifests.js';
 import type { WorkspaceManifest } from './workspace-manifests.js';
 import { MAX_FILE_SIZE } from './scanner.js';
+import { treeFor } from './repo-tree.js';
+import type { RepoTree } from './repo-tree.js';
 
 // ── Name filters ──────────────────────────────────────────────────────────────
 
@@ -717,25 +719,22 @@ function isPlaceholder(name: string): boolean {
 }
 
 /** `<repo>/<dir>/<base>/<name>` through the symlink-aware containment check, or null. */
-function containedPath(repoRoot: string, ...parts: string[]): string | null {
-  return resolveReadableWithinRoot(repoRoot, path.posix.join(...parts));
-}
-
-function pathExists(repoRoot: string, ...parts: string[]): boolean {
-  const abs = containedPath(repoRoot, ...parts);
-  if (abs === null) return false;
-  try {
-    return fs.existsSync(abs);
-  } catch {
-    return false;
-  }
+/**
+ * pcic-e6xa: whether the repository holds a path, asked through the scan's
+ * tree. These names are built from fixed parts plus a package name mentioned
+ * in an instruction file, so the tree keeps the lookup inside the scan root
+ * (never through a committed link out of it) and lets a caller's file
+ * inventory answer when the repository is not on disk (pcic-csf).
+ */
+function pathExists(tree: RepoTree, ...parts: string[]): boolean {
+  return tree.exists(path.posix.join(...parts));
 }
 
 /** A directory or file named `name` at the root of the repo or of any workspace (or in its src/). */
-function localDirectoryExists(repoRoot: string, manifests: Manifests, name: string): boolean {
+function localDirectoryExists(tree: RepoTree, manifests: Manifests, name: string): boolean {
   for (const dir of new Set(['.', ...manifests.dirs])) {
     for (const base of ['.', 'src']) {
-      if (pathExists(repoRoot, dir, base, name)) return true;
+      if (pathExists(tree, dir, base, name)) return true;
     }
   }
   return false;
@@ -810,7 +809,7 @@ function checkPackages(context: RepoContext, files: InstructionFile[], manifests
     if (!viaInstall) {
       // An import is weaker evidence than an install command: path aliases
       // (`@lib/x`, `components/x`, tsconfig `paths`) look exactly like packages.
-      if (scope === undefined && (ALIAS_LIKE_NAMES.has(pkg) || localDirectoryExists(context.repoRoot, manifests, pkg))) continue;
+      if (scope === undefined && (ALIAS_LIKE_NAMES.has(pkg) || localDirectoryExists(treeFor(context), manifests, pkg))) continue;
       if (manifests.aliasNames.has(pkg) || (scope !== undefined && manifests.aliasScopes.has(scope))) continue;
       // An import of one of this monorepo's own packages by its directory or short name.
       if (manifests.localNames.has(pkg)) continue;
@@ -942,28 +941,17 @@ const APP_ROUTER_API_RE = /\bServer Components?\b|\broute handlers?\b|\bapp\s+ro
 
 const APP_ROUTER_FILE_RE = /^(?:layout|page)\.(?:tsx|ts|jsx|js|mdx)$/;
 
-function dirHasAppRouter(repoRoot: string, dir: string): boolean {
+function dirHasAppRouter(tree: RepoTree, dir: string): boolean {
   for (const app of ['app', 'src/app']) {
-    try {
-      const abs = containedPath(repoRoot, dir, app);
-      if (abs !== null && fs.readdirSync(abs).some((f) => APP_ROUTER_FILE_RE.test(f))) return true;
-    } catch {
-      // no such directory
-    }
+    const entries = tree.entries(path.posix.join(dir, app));
+    if (typeof entries === 'string') continue;
+    for (const name of entries.keys()) if (APP_ROUTER_FILE_RE.test(name)) return true;
   }
   return false;
 }
 
-function dirHasPagesRouter(repoRoot: string, dir: string): boolean {
-  for (const pages of ['pages', 'src/pages']) {
-    try {
-      const abs = containedPath(repoRoot, dir, pages);
-      if (abs !== null && fs.statSync(abs).isDirectory()) return true;
-    } catch {
-      // no such directory
-    }
-  }
-  return false;
+function dirHasPagesRouter(tree: RepoTree, dir: string): boolean {
+  return ['pages', 'src/pages'].some((pages) => tree.isDir(path.posix.join(dir, pages)));
 }
 
 function checkGetInitialProps(context: RepoContext, files: InstructionFile[], manifests: Manifests): PromptCiIssue[] {
@@ -974,8 +962,9 @@ function checkGetInitialProps(context: RepoContext, files: InstructionFile[], ma
   const nextDirs = manifests.nextDirs;
   if (nextDirs.length === 0) return [];
   // Hybrid apps still need getInitialProps in pages/; only a pure app-router project makes it dead guidance.
-  if (nextDirs.some((dir) => dirHasPagesRouter(context.repoRoot, dir))) return [];
-  if (!nextDirs.some((dir) => dirHasAppRouter(context.repoRoot, dir))) return [];
+  const tree = treeFor(context);
+  if (nextDirs.some((dir) => dirHasPagesRouter(tree, dir))) return [];
+  if (!nextDirs.some((dir) => dirHasAppRouter(tree, dir))) return [];
 
   return [
     {

@@ -1,34 +1,25 @@
 import type { RepoContext } from '../repo-context.js';
 import type { PromptCiIssue } from '../types.js';
-import * as path from 'node:path';
-import * as fs from 'node:fs';
+import { treeFor } from '../repo-tree.js';
 
 export function detectNextJs(context: RepoContext): PromptCiIssue[] {
   const issues: PromptCiIssue[] = [];
-  const { packageJson, repoRoot, files } = context;
+  const { packageJson, files } = context;
 
   const hasNextDep = !!(packageJson.dependencies['next'] || packageJson.devDependencies['next']);
-  const hasNextConfig = fs.existsSync(path.join(repoRoot, 'next.config.js')) || 
-                        fs.existsSync(path.join(repoRoot, 'next.config.mjs')) ||
-                        fs.existsSync(path.join(repoRoot, 'next.config.ts')) ||
-                        fs.existsSync(path.join(repoRoot, 'apps', 'web', 'next.config.js')) ||
-                        fs.existsSync(path.join(repoRoot, 'apps', 'web', 'next.config.mjs')) ||
-                        fs.existsSync(path.join(repoRoot, 'apps', 'web', 'next.config.ts'));
+  // pcic-e6xa: see the note in frameworks/go.ts.
+  const tree = treeFor(context);
+  const hasNextConfig = ['', 'apps/web/'].some((prefix) =>
+    ['js', 'mjs', 'ts'].some((ext) => tree.isFile(`${prefix}next.config.${ext}`)));
 
   if (!hasNextDep && !hasNextConfig) {
     return [];
   }
 
-  const hasAppDir =
-    fs.existsSync(path.join(repoRoot, 'app')) ||
-    fs.existsSync(path.join(repoRoot, 'src', 'app')) ||
-    fs.existsSync(path.join(repoRoot, 'apps', 'web', 'app')) ||
-    fs.existsSync(path.join(repoRoot, 'apps', 'web', 'src', 'app'));
-  const hasPagesDir =
-    fs.existsSync(path.join(repoRoot, 'pages')) ||
-    fs.existsSync(path.join(repoRoot, 'src', 'pages')) ||
-    fs.existsSync(path.join(repoRoot, 'apps', 'web', 'pages')) ||
-    fs.existsSync(path.join(repoRoot, 'apps', 'web', 'src', 'pages'));
+  const routerDir = (name: string): boolean =>
+    ['', 'src/', 'apps/web/', 'apps/web/src/'].some((prefix) => tree.isDir(`${prefix}${name}`));
+  const hasAppDir = routerDir('app');
+  const hasPagesDir = routerDir('pages');
 
   // Check for missing App Router guidance
   if (hasAppDir) {

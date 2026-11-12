@@ -30,6 +30,8 @@ import {
 import type { FrontmatterSurface } from './ai-config.js';
 import { isHomeRooted } from './dead-references.js';
 import { createGitIgnoreChecker } from './gitignore.js';
+import type { IgnoreVerdict } from './gitignore.js';
+import { treeFor } from './repo-tree.js';
 
 /** A description shorter than this (after trimming) is treated as effectively empty. */
 const MIN_DESCRIPTION_CHARS = 12;
@@ -168,7 +170,11 @@ function isCommitProhibition(lineText: string, ref: string): boolean {
 export function detectSkills(context: RepoContext): PromptCiIssue[] {
   const issues: PromptCiIssue[] = [];
   const parsed: ParsedSkill[] = [];
-  let isIgnored: ((repoRelativePath: string) => boolean) | undefined;
+  let isIgnored: ((repoRelativePath: string) => IgnoreVerdict) | undefined;
+  // pcic-e6xa: every existence check below goes through the scan's tree, so a
+  // skill cannot point the scan outside the repository through a committed link
+  // and a caller's file inventory answers first (pcic-csf).
+  const tree = treeFor(context);
 
   for (const filePath of context.aiConfig.skills) {
     const content = readTextWithinRoot(context.repoRoot, filePath);
@@ -244,10 +250,13 @@ export function detectSkills(context: RepoContext): PromptCiIssue[] {
       if (isHomeRooted(ref) || /^\/?\.git\//.test(ref)) continue;
       const candidates = resolutionCandidates(skillDir, ref);
       if (!candidates) continue; // e.g. `/usr/bin/tool.sh` — a system path, not a repo file
-      if (candidates.some((candidate) => isFileWithinRoot(context.repoRoot, candidate))) continue;
+      if (candidates.some((candidate) => isFileWithinRoot(tree, candidate))) continue;
       // Local/generated state the repo's own ignore rules say is never checked in.
-      isIgnored ??= createGitIgnoreChecker(context.repoRoot);
-      if (candidates.some((candidate) => isIgnored!(candidate))) continue;
+      isIgnored ??= createGitIgnoreChecker(tree);
+      // pcic-csf: `'unknown'` means an applicable `.gitignore` exists whose text
+      // the scan does not have — the reference may be ignored local state, so
+      // say nothing rather than report it broken on unread rules.
+      if (candidates.some((candidate) => isIgnored!(candidate) !== false)) continue;
       if (isCommitProhibition(bodyLines[line - 1] ?? '', ref)) continue;
       const leadingSlash = ref.startsWith('/');
       issues.push(base({

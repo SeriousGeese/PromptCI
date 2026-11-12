@@ -23,6 +23,7 @@ import {
   SCRIPT_EXT_RE,
   aiConfigIssue as base,
 } from './ai-config.js';
+import { treeFor } from './repo-tree.js';
 
 /** curl/wget piped straight into a shell — the classic remote-code-execution footgun. */
 const CURL_PIPE_SH_RE = /\b(curl|wget)\b[^|]*\|\s*(sudo\s+)?(sh|bash|zsh|dash)\b/i;
@@ -153,6 +154,9 @@ function hasUnquotedProjectDir(command: string): boolean {
 
 export function detectHooksSettings(context: RepoContext): PromptCiIssue[] {
   const issues: PromptCiIssue[] = [];
+  // pcic-e6xa: one tree for the whole run, so its directory listings are read
+  // once and every reference below is looked up inside the scan root only.
+  const tree = treeFor(context);
 
   for (const filePath of context.aiConfig.settings) {
     const raw = readTextWithinRoot(context.repoRoot, filePath);
@@ -220,7 +224,7 @@ export function detectHooksSettings(context: RepoContext): PromptCiIssue[] {
 
       // Missing local script references.
       for (const ref of extractScriptRefs(command)) {
-        if (isFileWithinRoot(context.repoRoot, ref)) continue;
+        if (isFileWithinRoot(tree, ref)) continue;
         const key = `${filePath}|${ref}`;
         if (reportedMissing.has(key)) continue;
         reportedMissing.add(key);

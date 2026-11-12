@@ -33,6 +33,7 @@ import fg from 'fast-glob';
 import type { FixEdit, InstructionFile, PromptCiIssue } from './types.js';
 import { fencedBlocks, scanFencedLines } from './markdown-fences.js';
 import { createGitIgnoreChecker } from './gitignore.js';
+import type { IgnoreVerdict } from './gitignore.js';
 import { isWithinRoot } from './path-containment.js';
 import { RepoTree, errorCode, incompleteCheckIssue, isAbsoluteAnywhere } from './repo-tree.js';
 import type { Lookup } from './repo-tree.js';
@@ -832,7 +833,7 @@ const DIR_PROBE = '__promptci_dir_probe__';
 /** What one scan shares across every reference it judges. */
 type JudgeContext = {
   tree: RepoTree;
-  isIgnored: (repoRelativePath: string) => boolean;
+  isIgnored: (repoRelativePath: string) => IgnoreVerdict;
   suffixCache: Map<string, boolean | 'unknown'>;
   nameIndex: () => NameIndex;
 };
@@ -892,12 +893,22 @@ function judgeReference(
   if (lookups.length === 0) return null;
 
   // The repository's own ignore rules say the path is local state (pcic-2b6.8,
-  // same matcher the skills detector uses).
+  // same matcher the skills detector uses). When those rules are not available
+  // the reference may well BE ignored local state, so it is never reported
+  // broken on the strength of rules nobody read: a `.gitignore` a caller's
+  // inventory listed without fetching (pcic-csf) is silent, and one the scan
+  // genuinely could not read is left unjudged and named in the notice below,
+  // the same way an unlistable directory is.
+  let ignoreRulesUnreadable = false;
   for (const { abs } of lookups) {
     const rel = path.relative(tree.root, abs).replace(/\\/g, '/');
     if (!rel) continue;
-    if (isIgnored(rel) || (pathLike && isIgnored(`${rel}/${DIR_PROBE}`))) return null;
+    for (const verdict of [isIgnored(rel), ...(pathLike ? [isIgnored(`${rel}/${DIR_PROBE}`)] : [])]) {
+      if (verdict === true || verdict === 'unfetched') return null;
+      if (verdict === 'unreadable') ignoreRulesUnreadable = true;
+    }
   }
+  if (ignoreRulesUnreadable) return UNJUDGED;
 
   const moduleStyle = pathLike && !target.endsWith('/');
   if (lookups.some(({ abs, found }) => found.state === 'found' || (moduleStyle && tree.hasStemSibling(abs)))) {
@@ -918,7 +929,7 @@ function judgeReference(
     // skipped by isPlaceholderRef.
     if (codeSpan && !/[/\\]/.test(target)) {
       const index = ctx.nameIndex();
-      if (index.paths.get(target)?.some((rel) => !isIgnored(rel))) return null;
+      if (index.paths.get(target)?.some((rel) => isIgnored(rel) !== true)) return null;
       // pcic-xhzb: a walk that could not list everything is no evidence of absence.
       if (!index.complete) return UNJUDGED;
     }
@@ -1032,7 +1043,7 @@ function movedLinkEdit(
 
   const index = ctx.nameIndex();
   if (!index.complete) return undefined;
-  const candidates = (index.paths.get(base) ?? []).filter((rel) => !ctx.isIgnored(rel));
+  const candidates = (index.paths.get(base) ?? []).filter((rel) => ctx.isIgnored(rel) !== true);
   if (candidates.length !== 1) return undefined;
 
   const absCandidate = path.resolve(ctx.tree.root, candidates[0]!);
@@ -1078,6 +1089,12 @@ function movedLinkEdit(
 export function detectDeadReferences(
   files: InstructionFile[],
   repoRoot: string,
+  /**
+   * The scan's view of the repository. Pass `context.tree` so the listings and
+   * any caller-supplied file inventory (pcic-csf) are shared with every other
+   * detector; omitted, a plain filesystem-backed tree over `repoRoot` is used.
+   */
+  sharedTree?: RepoTree,
 ): PromptCiIssue[] {
   // normRef → { displayRef, filePaths, fileLines, evidenceLines, minConfidence }
   const byRef = new Map<string, {
@@ -1099,7 +1116,7 @@ export function detectDeadReferences(
     allRewritable: boolean;
   }>();
 
-  const tree = new RepoTree(repoRoot);
+  const tree = sharedTree ?? new RepoTree(repoRoot);
   let ctx: JudgeContext | undefined;
   let nameIndexCache: NameIndex | undefined;
   const nameIndex = (): NameIndex => (nameIndexCache ??= buildNameIndex(tree));
@@ -1126,7 +1143,7 @@ export function detectDeadReferences(
       if (isHomeRooted(ref)) continue;
 
       // Resolve relative to the instruction file first, then repo root.
-      ctx ??= { tree, isIgnored: createGitIgnoreChecker(repoRoot), suffixCache: new Map(), nameIndex };
+      ctx ??= { tree, isIgnored: createGitIgnoreChecker(tree), suffixCache: new Map(), nameIndex };
       const confidence = judgeReference(ref, kind, codeSpan ?? false, fileDir, ctx);
       if (confidence === null) continue;
       if (confidence === UNJUDGED) {

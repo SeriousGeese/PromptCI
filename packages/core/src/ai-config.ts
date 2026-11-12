@@ -19,6 +19,7 @@ import fg from 'fast-glob';
 import micromatch from 'micromatch';
 import { MAX_FILE_SIZE, BINARY_CHECK_BYTES, isBinary } from './scanner.js';
 import { resolveReadableWithinRoot, resolveWithinRoot } from './path-containment.js';
+import { RepoTree } from './repo-tree.js';
 import type { PromptCiIssue, ScanInput } from './types.js';
 
 // ── Path helpers ──────────────────────────────────────────────────────────────
@@ -34,9 +35,19 @@ export function toPosix(p: string): string {
 // value cannot point the detector at `/etc/passwd`.
 export { resolveWithinRoot, resolveReadableWithinRoot };
 
-/** True when a repo-relative path exists and is a regular file. */
-export function isFileWithinRoot(repoRoot: string, relativePath: string): boolean {
-  const abs = resolveReadableWithinRoot(repoRoot, relativePath);
+/**
+ * True when a repo-relative path exists and is a regular file.
+ *
+ * pcic-e6xa: pass the scan's {@link RepoTree} (`treeFor(context)`) rather than
+ * the root string wherever the answer feeds a finding. The tree looks the path
+ * up by listing the root downwards, so a committed link out of the repository
+ * is never followed and names match with exact case on every platform; it also
+ * lets a caller's file inventory answer (pcic-csf). The root-string form
+ * remains for callers inside file DISCOVERY, which walks the real filesystem.
+ */
+export function isFileWithinRoot(repoRootOrTree: string | RepoTree, relativePath: string): boolean {
+  if (typeof repoRootOrTree !== 'string') return repoRootOrTree.isFile(relativePath);
+  const abs = resolveReadableWithinRoot(repoRootOrTree, relativePath);
   if (!abs) return false;
   try {
     return fs.statSync(abs).isFile();

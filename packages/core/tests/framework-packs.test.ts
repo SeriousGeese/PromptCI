@@ -4,8 +4,19 @@ import { runFrameworkPacks } from '../src/framework-packs.js';
 import { emptyAiConfigFiles } from '../src/ai-config.js';
 import type { InstructionFile } from '../src/types.js';
 import type { RepoContext } from '../src/repo-context.js';
+import { RepoTree } from '../src/repo-tree.js';
 
 vi.mock('node:fs');
+
+/**
+ * pcic-e6xa: the framework probes ask the scan's tree what the repository
+ * holds, not `fs.existsSync`. These tests name those paths directly through a
+ * complete `knownPaths` inventory (pcic-csf), so the fixture IS the file list
+ * each probe sees and no filesystem call is made at all.
+ */
+function tree(...knownPaths: string[]): RepoTree {
+  return new RepoTree('/repo', { knownPaths, knownPathsComplete: true });
+}
 
 function makeFile(content: string, filePath = '/repo/CLAUDE.md'): InstructionFile {
   return {
@@ -44,11 +55,9 @@ const mockContext: RepoContext = {
 describe('Framework Packs', () => {
   describe('Next.js Pack', () => {
     it('flags missing App Router guidance when app/ exists', () => {
-      vi.mocked(fs.existsSync).mockImplementation((p: string) => 
-        p.replace(/\\/g, '/') === '/repo/app'
-      );
       const context: RepoContext = {
         ...mockContext,
+        tree: tree('app/page.tsx'),
         packageJson: { ...mockContext.packageJson, dependencies: { 'next': '14.0.0' } },
         files: [makeFile('# Rules\nUse TypeScript.')],
       };
@@ -57,13 +66,9 @@ describe('Framework Packs', () => {
     });
 
     it('flags missing App Router guidance for an apps/web Next.js app', () => {
-      vi.mocked(fs.existsSync).mockImplementation((p: string) => {
-        const normalized = p.replace(/\\/g, '/');
-        return normalized.includes('/repo/apps/web/next.config.ts') ||
-          normalized.includes('/repo/apps/web/src/app');
-      });
       const context: RepoContext = {
         ...mockContext,
+        tree: tree('apps/web/next.config.ts', 'apps/web/src/app/page.tsx'),
         files: [makeFile('# Rules\nUse TypeScript.')],
       };
       const issues = runFrameworkPacks(context);
@@ -71,11 +76,9 @@ describe('Framework Packs', () => {
     });
 
     it('flags stale Pages Router guidance when only app/ exists', () => {
-      vi.mocked(fs.existsSync).mockImplementation((p: string) => 
-        p.replace(/\\/g, '/') === '/repo/app'
-      );
       const context: RepoContext = {
         ...mockContext,
+        tree: tree('app/page.tsx'),
         packageJson: { ...mockContext.packageJson, dependencies: { 'next': '14.0.0' } },
         files: [makeFile('# Rules\nUse getStaticProps for data fetching.')],
       };
@@ -84,11 +87,9 @@ describe('Framework Packs', () => {
     });
 
     it('does not flag when guidance is present', () => {
-      vi.mocked(fs.existsSync).mockImplementation((p: string) => 
-        p.replace(/\\/g, '/') === '/repo/app'
-      );
       const context: RepoContext = {
         ...mockContext,
+        tree: tree('app/page.tsx'),
         packageJson: { ...mockContext.packageJson, dependencies: { 'next': '14.0.0' } },
         files: [makeFile('# Rules\nUse App Router and Server Components.')],
       };
@@ -121,11 +122,9 @@ describe('Framework Packs', () => {
     });
 
     it('flags multiple environment managers', () => {
-      vi.mocked(fs.existsSync).mockImplementation((p: string) => 
-        p.replace(/\\/g, '/').includes('Pipfile') || p.replace(/\\/g, '/').includes('environment.yml')
-      );
       const context: RepoContext = {
         ...mockContext,
+        tree: tree('Pipfile', 'environment.yml'),
         files: [],
       };
       const issues = runFrameworkPacks(context);
@@ -149,11 +148,9 @@ describe('Framework Packs', () => {
 
   describe('Unity Pack', () => {
     it('flags missing Unity guidance when assets exist', () => {
-      vi.mocked(fs.existsSync).mockImplementation((p: string) => 
-        p.replace(/\\/g, '/').includes('/repo/Assets') || p.replace(/\\/g, '/').includes('ProjectVersion.txt')
-      );
       const context: RepoContext = {
         ...mockContext,
+        tree: tree('Assets/Scripts/Player.cs', 'ProjectSettings/ProjectVersion.txt'),
         projectType: 'unity',
         files: [makeFile('# Rules\nUse C#.')],
       };
@@ -164,11 +161,9 @@ describe('Framework Packs', () => {
     });
 
     it('flags missing MonoBehaviour lifecycle guidance for a bare MonoBehaviour mention', () => {
-      vi.mocked(fs.existsSync).mockImplementation((p: string) =>
-        p.replace(/\\/g, '/').includes('/repo/Assets') || p.replace(/\\/g, '/').includes('ProjectVersion.txt')
-      );
       const context: RepoContext = {
         ...mockContext,
+        tree: tree('Assets/Scripts/Player.cs', 'ProjectSettings/ProjectVersion.txt'),
         projectType: 'unity',
         files: [makeFile('# Rules\nMonoBehaviour components exist. Use [SerializeField]. Run Unity Test Runner.')],
       };
@@ -177,11 +172,9 @@ describe('Framework Packs', () => {
     });
 
     it('does not flag when Unity guidance is present', () => {
-      vi.mocked(fs.existsSync).mockImplementation((p: string) =>
-        p.replace(/\\/g, '/').includes('/repo/Assets') || p.replace(/\\/g, '/').includes('ProjectVersion.txt')
-      );
       const context: RepoContext = {
         ...mockContext,
+        tree: tree('Assets/Scripts/Player.cs', 'ProjectSettings/ProjectVersion.txt'),
         projectType: 'unity',
         files: [makeFile('# Rules\nAvoid empty Update in MonoBehaviour. Expose via SerializeField. Test in Play Mode.')],
       };
@@ -190,11 +183,9 @@ describe('Framework Packs', () => {
     });
 
     it('FW2: still flags missing serialization guidance when the only Unity signal is a bare "prefab" mention', () => {
-      vi.mocked(fs.existsSync).mockImplementation((p: string) =>
-        p.replace(/\\/g, '/').includes('/repo/Assets') || p.replace(/\\/g, '/').includes('ProjectVersion.txt')
-      );
       const context: RepoContext = {
         ...mockContext,
+        tree: tree('Assets/Scripts/Player.cs', 'ProjectSettings/ProjectVersion.txt'),
         projectType: 'unity',
         files: [makeFile('# Rules\nWe use prefabs for reusable UI components.')],
       };
@@ -206,11 +197,9 @@ describe('Framework Packs', () => {
     });
 
     it('FW2: does NOT flag serialization guidance when real prefab-safety guidance is present', () => {
-      vi.mocked(fs.existsSync).mockImplementation((p: string) =>
-        p.replace(/\\/g, '/').includes('/repo/Assets') || p.replace(/\\/g, '/').includes('ProjectVersion.txt')
-      );
       const context: RepoContext = {
         ...mockContext,
+        tree: tree('Assets/Scripts/Player.cs', 'ProjectSettings/ProjectVersion.txt'),
         projectType: 'unity',
         files: [makeFile('# Rules\nFollow prefab safety rules: never edit .meta files manually.')],
       };
@@ -221,10 +210,10 @@ describe('Framework Packs', () => {
 
   describe('.NET Pack', () => {
     it('flags missing validation commands and obsolete framework refs', () => {
-      vi.mocked(fs.readdirSync).mockImplementation(() => ['MyProj.csproj'] as unknown as string[]);
       vi.mocked(fs.readFileSync).mockImplementation(() => '<TargetFramework>net8.0</TargetFramework>');
       const context: RepoContext = {
         ...mockContext,
+        tree: tree('MyProj.csproj'),
         projectType: 'dotnet',
         files: [makeFile('# Rules\nTarget netcoreapp3.1 API version.')],
       };
@@ -234,10 +223,10 @@ describe('Framework Packs', () => {
     });
 
     it('does not flag when dotnet commands and current framework version are correct', () => {
-      vi.mocked(fs.readdirSync).mockImplementation(() => ['MyProj.csproj'] as unknown as string[]);
       vi.mocked(fs.readFileSync).mockImplementation(() => '<TargetFramework>net8.0</TargetFramework>');
       const context: RepoContext = {
         ...mockContext,
+        tree: tree('MyProj.csproj'),
         projectType: 'dotnet',
         files: [makeFile('# Rules\nTarget net8.0 as framework. Before finishing run dotnet build && dotnet test.')],
       };
@@ -246,10 +235,10 @@ describe('Framework Packs', () => {
     });
 
     it('flags obsolete framework refs for a net10.0 project', () => {
-      vi.mocked(fs.readdirSync).mockImplementation(() => ['MyProj.csproj'] as unknown as string[]);
       vi.mocked(fs.readFileSync).mockImplementation(() => '<TargetFramework>net10.0</TargetFramework>');
       const context: RepoContext = {
         ...mockContext,
+        tree: tree('MyProj.csproj'),
         projectType: 'dotnet',
         files: [makeFile('# Rules\nTarget netcoreapp3.1 API version. Run dotnet build && dotnet test.')],
       };
@@ -260,11 +249,9 @@ describe('Framework Packs', () => {
 
   describe('Go Pack', () => {
     it('flags missing Go testing commands when go.mod exists', () => {
-      vi.mocked(fs.existsSync).mockImplementation((p: string) => 
-        p.replace(/\\/g, '/').includes('go.mod')
-      );
       const context: RepoContext = {
         ...mockContext,
+        tree: tree('go.mod'),
         files: [makeFile('# Rules\nWrite Go code.')],
       };
       const issues = runFrameworkPacks(context);
@@ -272,11 +259,9 @@ describe('Framework Packs', () => {
     });
 
     it('does not treat cargo test as go test', () => {
-      vi.mocked(fs.existsSync).mockImplementation((p: string) =>
-        p.replace(/\\/g, '/').includes('go.mod')
-      );
       const context: RepoContext = {
         ...mockContext,
+        tree: tree('go.mod'),
         files: [makeFile('# Rules\nRun cargo test before merging.')],
       };
       const issues = runFrameworkPacks(context);
@@ -284,11 +269,9 @@ describe('Framework Packs', () => {
     });
 
     it('does not flag when go test is in instructions', () => {
-      vi.mocked(fs.existsSync).mockImplementation((p: string) =>
-        p.replace(/\\/g, '/').includes('go.mod')
-      );
       const context: RepoContext = {
         ...mockContext,
+        tree: tree('go.mod'),
         files: [makeFile('# Rules\nRun go test ./... before merge.')],
       };
       const issues = runFrameworkPacks(context);
@@ -296,9 +279,9 @@ describe('Framework Packs', () => {
     });
 
     it('FW1: does NOT enable the Go pack for prose like "let\'s go build something" with no go.mod', () => {
-      vi.mocked(fs.existsSync).mockReturnValue(false); // no go.mod anywhere
       const context: RepoContext = {
         ...mockContext,
+        tree: tree(), // no go.mod anywhere
         files: [makeFile("# Rules\nOkay, let's go build something great today!")],
       };
       const issues = runFrameworkPacks(context);
@@ -308,9 +291,9 @@ describe('Framework Packs', () => {
     });
 
     it('FW1: still enables the Go pack for a backtick-quoted go command with no go.mod detected', () => {
-      vi.mocked(fs.existsSync).mockReturnValue(false); // go.mod not found on disk
       const context: RepoContext = {
         ...mockContext,
+        tree: tree(), // go.mod not found on disk
         files: [makeFile('# Rules\nRun `go build ./...` to compile.')],
       };
       const issues = runFrameworkPacks(context);
@@ -322,12 +305,10 @@ describe('Framework Packs', () => {
 
   describe('Rust Pack', () => {
     it('flags missing cargo verification and rust version mismatch', () => {
-      vi.mocked(fs.existsSync).mockImplementation((p: string) => 
-        p.replace(/\\/g, '/').includes('Cargo.toml')
-      );
       vi.mocked(fs.readFileSync).mockImplementation(() => 'rust-version = "1.75"');
       const context: RepoContext = {
         ...mockContext,
+        tree: tree('Cargo.toml'),
         files: [makeFile('# Rules\nRust 1.70 is standard.')],
       };
       const issues = runFrameworkPacks(context);
@@ -336,12 +317,10 @@ describe('Framework Packs', () => {
     });
 
     it('does not flag when cargo commands and MSRV are aligned', () => {
-      vi.mocked(fs.existsSync).mockImplementation((p: string) => 
-        p.replace(/\\/g, '/').includes('Cargo.toml')
-      );
       vi.mocked(fs.readFileSync).mockImplementation(() => 'rust-version = "1.75"');
       const context: RepoContext = {
         ...mockContext,
+        tree: tree('Cargo.toml'),
         files: [makeFile('# Rules\nRust 1.75 is the MSRV. Run cargo clippy && cargo test.')],
       };
       const issues = runFrameworkPacks(context);
@@ -349,12 +328,10 @@ describe('Framework Packs', () => {
     });
 
     it('does not flag semver patch differences when major.minor MSRV matches', () => {
-      vi.mocked(fs.existsSync).mockImplementation((p: string) =>
-        p.replace(/\\/g, '/').includes('Cargo.toml')
-      );
       vi.mocked(fs.readFileSync).mockImplementation(() => 'rust-version = "1.82.0"');
       const context: RepoContext = {
         ...mockContext,
+        tree: tree('Cargo.toml'),
         files: [makeFile('# Rules\nRust 1.82 is the MSRV. Run cargo clippy && cargo test.')],
       };
       const issues = runFrameworkPacks(context);

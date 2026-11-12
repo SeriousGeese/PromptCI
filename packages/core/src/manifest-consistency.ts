@@ -19,14 +19,14 @@
  */
 
 import * as crypto from 'node:crypto';
-import * as fs from 'node:fs';
-import * as path from 'node:path';
 import type { InstructionFile, PromptCiIssue } from './types.js';
 import type { RepoContext } from './repo-context.js';
 import { buildCodeMask } from './markdown-fences.js';
 import { fileIdPath } from './finding-id.js';
 import { BUN_BUILTINS, analyzeCommands } from './command-validity.js';
 import { anyWorkspaceHasScript, isKnownBinary } from './workspace-manifests.js';
+import { treeFor } from './repo-tree.js';
+import type { RepoTree } from './repo-tree.js';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -60,7 +60,7 @@ function issueId(key: string): string {
 function checkPipVsPoetry(
   files: InstructionFile[],
   pyprojectContent: string,
-  repoRoot: string,
+  tree: RepoTree,
 ): PromptCiIssue | null {
   const isPoetry =
     /\[tool\.poetry\]/.test(pyprojectContent) ||
@@ -69,8 +69,13 @@ function checkPipVsPoetry(
 
   // Only flag when requirements.txt is genuinely absent — some Poetry projects
   // export a requirements.txt as an artefact; if it exists the instruction is valid.
-  const reqTxtPath = path.join(repoRoot, 'requirements.txt');
-  if (fs.existsSync(reqTxtPath)) return null;
+  //
+  // pcic-e6xa: asked through the scan's tree. The name is fixed, but a
+  // `requirements.txt` committed as a link out of the repository used to decide
+  // whether this `high` finding fires, and in the hosted product the scan root
+  // is a server temp directory. The tree also lets a caller's file inventory
+  // answer when the repository is not on disk (pcic-csf).
+  if (tree.exists('requirements.txt')) return null;
 
   const PIP_INSTALL_REQUIREMENTS_RE = /pip\s+install\s+-r\s+requirements\.txt/i;
   const offendingFiles = files.filter((f) => PIP_INSTALL_REQUIREMENTS_RE.test(f.content));
@@ -810,10 +815,10 @@ function checkJsToolingMismatch(context: RepoContext): PromptCiIssue[] {
  *
  * @param files    Scanned instruction files.
  * @param manifests Raw text of any manifest files that were read by the scanner.
- * @param repoRoot  Absolute path to the repo root (used for file existence checks).
+ * File-existence checks go through `context.tree` (pcic-e6xa).
  */
 export function detectManifestConsistency(context: RepoContext): PromptCiIssue[] {
-  const { files, manifests, repoRoot } = context;
+  const { files, manifests } = context;
   const issues: PromptCiIssue[] = [];
 
   if (manifests.packageJson) {
@@ -827,7 +832,7 @@ export function detectManifestConsistency(context: RepoContext): PromptCiIssue[]
   if (pmIssue) issues.push(pmIssue);
 
   if (manifests.pyproject) {
-    const toolingIssue = checkPipVsPoetry(files, manifests.pyproject, repoRoot);
+    const toolingIssue = checkPipVsPoetry(files, manifests.pyproject, treeFor(context));
     if (toolingIssue) issues.push(toolingIssue);
 
     issues.push(...checkPythonVersionMismatch(files, manifests.pyproject));

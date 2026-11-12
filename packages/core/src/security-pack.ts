@@ -1,12 +1,11 @@
 import * as crypto from 'node:crypto';
 import * as path from 'node:path';
-import * as fs from 'node:fs';
 import type { PromptCiIssue } from './types.js';
 import type { RepoContext } from './repo-context.js';
 import { matchEvidence } from './evidence.js';
 import { PROMPTCI_GITIGNORE_BLOCK, PROMPTCI_GITIGNORE_LINES } from './promptci-gitignore.js';
 import { fileIdPath } from './finding-id.js';
-import { realPathWithinRoot } from './path-containment.js';
+import { treeFor } from './repo-tree.js';
 
 interface SecurityCheck {
   id: string;
@@ -163,13 +162,24 @@ export function detectSecurityPack(context: RepoContext): PromptCiIssue[] {
   const { files, repoRoot } = context;
   if (files.length === 0) return [];
 
+  /**
+   * pcic-e6xa: every existence signal below is a FIXED name, but the tree
+   * around it is the scanned repository's own: a `.env` or `.promptci`
+   * committed as a link out of the tree used to decide whether a finding
+   * fires, and in the hosted product the scan root is a server temp
+   * directory. Asking through the tree keeps all of it inside the root — and
+   * lets a caller's file inventory answer first, so a server scan that holds
+   * only the instruction files still knows what the repository contains
+   * (pcic-csf).
+   */
+  const tree = treeFor(context);
   const issues: PromptCiIssue[] = [];
   const combinedContent = files.map((f) => f.content).join('\n');
   const allFilePaths = files.map((f) => f.path);
 
   // 1. Secret Safeguard Signal
   const envFiles = ['.env', '.env.example', '.env.local', '.env.development', '.env.production'];
-  const hasEnvVars = envFiles.some(f => fs.existsSync(path.join(/*turbopackIgnore: true*/ repoRoot, f))) ||
+  const hasEnvVars = envFiles.some((f) => tree.exists(f)) ||
     context.files.some(f => /env\s+vars|environment\s+variables/i.test(f.content));
 
   if (hasEnvVars) {
@@ -197,7 +207,7 @@ export function detectSecurityPack(context: RepoContext): PromptCiIssue[] {
     ...context.packageJson.devDependencies,
     ...context.packageJson.peerDependencies,
   };
-  const hasSupabase = fs.existsSync(path.join(/*turbopackIgnore: true*/ repoRoot, 'supabase/migrations')) ||
+  const hasSupabase = tree.exists('supabase/migrations') ||
     Object.keys(supabaseDeps).some((dep) => dep === '@supabase/supabase-js' || dep.startsWith('@supabase/'));
 
   if (hasSupabase) {
@@ -252,7 +262,7 @@ export function detectSecurityPack(context: RepoContext): PromptCiIssue[] {
   }
 
   // 4. .promptci/ Signal
-  const hasPromptCiFolder = fs.existsSync(path.join(/*turbopackIgnore: true*/ repoRoot, '.promptci'));
+  const hasPromptCiFolder = tree.exists('.promptci');
   if (hasPromptCiFolder) {
     const check = SECURITY_CHECKS.find(c => c.id === 'no-promptci-report-safeguard')!;
     if (!matchesAny(combinedContent, check.patterns)) {
@@ -308,15 +318,16 @@ export function detectSecurityPack(context: RepoContext): PromptCiIssue[] {
   }
 
   // 6. .gitignore Checks (Cost 9)
-  const gitignorePath = path.join(/*turbopackIgnore: true*/ repoRoot, '.gitignore');
-  let gitignoreContent = '';
-  try {
-    if (fs.existsSync(gitignorePath) && realPathWithinRoot(repoRoot, gitignorePath)) {
-      gitignoreContent = fs.readFileSync(gitignorePath, 'utf8');
-    }
-  } catch {
-    // ignore
-  }
+  // Read through the tree, so this is the same `.gitignore` the dead-reference
+  // and skill checks consult (createGitIgnoreChecker). `unreadable` means the
+  // scan knows the file is there but cannot read it — a caller's inventory
+  // listed it without fetching it (pcic-csf) — so the two findings below say
+  // nothing rather than claiming an entry is absent from text nobody read.
+  const gitignoreRead = tree.readText('.gitignore');
+  const gitignoreUnknown = gitignoreRead.state === 'unreadable'
+    || gitignoreRead.state === 'unfetched'
+    || gitignoreRead.state === 'too-large';
+  const gitignoreContent = gitignoreRead.state === 'found' ? gitignoreRead.content : '';
 
   const gitignoreLines = gitignoreContent
     .split(/\r?\n/)
@@ -325,7 +336,7 @@ export function detectSecurityPack(context: RepoContext): PromptCiIssue[] {
 
   const hasPromptCiGitignore = gitignoreLines.some((line) => gitignoreLineMatchesTarget(line, '.promptci'));
 
-  if (!hasPromptCiGitignore) {
+  if (!hasPromptCiGitignore && !gitignoreUnknown) {
     issues.push({
       id: 'security-pack-no-promptci-gitignore',
       severity: 'info',
@@ -356,20 +367,9 @@ export function detectSecurityPack(context: RepoContext): PromptCiIssue[] {
 
   // 7. Unignored build, output, or coverage directories (Cost 9)
   const commonDirs = ['coverage', 'dist', 'build', '.next', 'bin', 'obj', 'temp', 'tmp', 'logs'];
-  const unignoredDirs = commonDirs.filter((d) => {
-    const fullPath = path.join(/*turbopackIgnore: true*/ repoRoot, d);
-    try {
-      if (fs.existsSync(fullPath)) {
-        const stat = fs.statSync(fullPath);
-        if (stat.isDirectory()) {
-          const isIgnored = gitignoreLines.some((line) => gitignoreLineMatchesTarget(line, d));
-          return !isIgnored;
-        }
-      }
-    } catch {
-      // ignore
-    }
-    return false;
+  const unignoredDirs = gitignoreUnknown ? [] : commonDirs.filter((d) => {
+    if (!tree.isDir(d)) return false;
+    return !gitignoreLines.some((line) => gitignoreLineMatchesTarget(line, d));
   });
 
   if (unignoredDirs.length > 0) {
@@ -397,16 +397,16 @@ export function detectSecurityPack(context: RepoContext): PromptCiIssue[] {
   // 8. Broad include patterns scanning generated directories (Cost 9)
   let hasBroadInclude = false;
   try {
-    const configPath = path.join(/*turbopackIgnore: true*/ repoRoot, '.promptci', 'config.json');
-    if (fs.existsSync(configPath) && realPathWithinRoot(repoRoot, configPath)) {
-      const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    const configRead = tree.readText('.promptci/config.json');
+    if (configRead.state === 'found') {
+      const config = JSON.parse(configRead.content);
       if (Array.isArray(config.include)) {
         const broadPatterns = ['**/*', '**/*.md', '*', '*.*', '**'];
         hasBroadInclude = config.include.some((p: string) => broadPatterns.includes(p.trim()));
       }
     }
   } catch {
-    // ignore
+    // malformed config — the scan's own loader reports it
   }
 
   if (hasBroadInclude) {
