@@ -86,3 +86,6 @@ export {
   PROMPTCI_GITIGNORE_BLOCK,
   renderPromptCiGitignore,
 } from './promptci-gitignore.js';
+
+export { selectScanPaths } from './discovery.js';
+export type { ScanPathEntry, SelectScanPathsOptions, SelectScanPathsResult } from './discovery.js';

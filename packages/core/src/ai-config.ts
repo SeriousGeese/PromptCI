@@ -21,6 +21,16 @@ import { MAX_FILE_SIZE, BINARY_CHECK_BYTES, isBinary } from './scanner.js';
 import { resolveReadableWithinRoot, resolveWithinRoot } from './path-containment.js';
 import { RepoTree } from './repo-tree.js';
 import type { PromptCiIssue, ScanInput } from './types.js';
+import {
+  SKILL_GLOBS,
+  DISCOVERY_IGNORE_DIRS,
+  isSkillContainerDir,
+  BUNDLE_SKIP_DIRS,
+  MAX_BUNDLED_FILES_PER_SKILL,
+  isPriorityBundleFile,
+} from './discovery.js';
+
+export { isSkillContainerDir, isPriorityBundleFile, MAX_BUNDLED_FILES_PER_SKILL } from './discovery.js';
 
 // ── Path helpers ──────────────────────────────────────────────────────────────
 
@@ -74,10 +84,7 @@ export function readTextWithinRoot(repoRoot: string, relativePath: string): stri
  * *discovery* policy — do not reuse it to answer "does glob X match anything in
  * the repo" (see detectCursorRules, which needs `dist/`/`build/` visible).
  */
-const DISCOVERY_IGNORE = [
-  '**/node_modules/**', '**/.git/**', '**/dist/**', '**/build/**',
-  '**/worktrees/**', '**/.worktrees/**',
-];
+const DISCOVERY_IGNORE = DISCOVERY_IGNORE_DIRS.map((d) => `**/${d}/**`);
 
 /**
  * List files under `repoRoot` matching `patterns`, returned as repo-relative
@@ -101,20 +108,6 @@ export function listFiles(repoRoot: string, patterns: string[], ignore: string[]
 }
 
 // ── Config-file discovery ─────────────────────────────────────────────────────
-
-/**
- * Every location an Agent Skill is installed from: the `.claude/` skills, the
- * cross-tool `.agents/skills/` layout, and a Claude Code plugin's (or plugin
- * marketplace's) root-level `skills/<name>/SKILL.md`. The root-level globs are
- * anchored on purpose: a `**\/skills/**` glob would also sweep up vendored
- * copies and test fixtures.
- */
-const SKILL_GLOBS = [
-  '.claude/**/SKILL.md',
-  '.agents/skills/**/SKILL.md',
-  'skills/*/SKILL.md',
-  'plugins/*/skills/*/SKILL.md',
-] as const;
 
 /** Repo-relative globs for each config surface the ai_config detectors audit. */
 const AI_CONFIG_GLOBS = {
@@ -193,55 +186,13 @@ export function emptyAiConfigFiles(): AiConfigFiles {
   };
 }
 
-/**
- * Exact repo-relative directories that hold skills rather than being one. A
- * SKILL.md sitting directly in one of them is not a skill directory of its own
- * — enumerating "its" bundle would sweep in the whole `.claude/` tree — so
- * bundled-file discovery skips it. Compared as exact paths, never basenames: a
- * skill that is itself NAMED `skills` (`.claude/skills/skills/`) is a real skill
- * whose scripts must be scanned.
- */
-const SKILL_CONTAINER_DIRS: ReadonlySet<string> = new Set([
-  '.', '.claude', '.agents', '.claude/skills', '.agents/skills', '.claude/plugins', 'skills', 'plugins',
-]);
-
-export function isSkillContainerDir(dir: string): boolean {
-  return SKILL_CONTAINER_DIRS.has(dir);
-}
-
-/** Upper bound on bundled files read per skill, so one huge skill cannot stall a scan. */
-export const MAX_BUNDLED_FILES_PER_SKILL = 200;
 /** Directory entries visited per skill before the listing stops (and says so). */
 const MAX_BUNDLE_LISTING = 20_000;
 /** Over-cap file names kept for reporting; the rest are counted. */
 const MAX_OVER_CAP_NAMES = 1_000;
-/**
- * Directories inside a skill that are not walked but ARE reported: dependency
- * trees and VCS/worktree copies (a locally installed `node_modules` would
- * otherwise flood the scan with third-party code). Build output (`dist/`,
- * `build/`) IS walked — inside a skill it is shipped, executable content.
- */
-const BUNDLE_SKIP_DIRS: ReadonlySet<string> = new Set(['node_modules', '.git', 'worktrees', '.worktrees']);
 
 /** Dependency package manifests read per skill. */
 const MAX_DEPENDENCY_MANIFESTS = 100;
-
-/**
- * Scripts, executables, manifests, shell-like config and extensionless files:
- * listed (and scanned) before documents. Mirrors the supply-chain detector's
- * priority classes by name, without any file I/O.
- */
-const PRIORITY_BUNDLE_RE = new RegExp(
-  String.raw`(?:^|\/)(?:[^/.]+|package\.json|requirements[^/]{0,40}\.txt|(?:GNU)?makefile|Dockerfile[^/]{0,40}|Containerfile|Justfile)$|` +
-  String.raw`\.(?:sh|bash|zsh|ksh|fish|command|js|mjs|cjs|ts|mts|cts|jsx|tsx|py|pyw|rb|ps1|psm1|pl|php|lua|bat|cmd|mk|` +
-  String.raw`vbs|vba|vbe|hta|applescript|wsf|jse|reg|exe|dll|so|dylib|wasm|jar|war|class|zip|tar|gz|tgz|bz2|xz|7z|rar|` +
-  String.raw`msi|dmg|pkg|deb|rpm|appimage|apk|bin|o|a|lnk|scr|com|pif|scpt|node|env)$`,
-  'i',
-);
-
-export function isPriorityBundleFile(rel: string): boolean {
-  return PRIORITY_BUNDLE_RE.test(rel);
-}
 
 /** `node_modules/<pkg>/package.json` and `node_modules/@scope/<pkg>/package.json`, bounded. */
 function listPackageManifests(repoRoot: string, nodeModules: string): string[] {

@@ -8,64 +8,20 @@ import { isWithinRoot, realPath, realPathWithinRoot } from './path-containment.j
 import { createGitSymlinkOracle } from './git-symlinks.js';
 import { RepoTree } from './repo-tree.js';
 import type { GitSymlinkOracle } from './git-symlinks.js';
-
-const DEFAULT_PATTERNS = [
-  // Core AI instruction files
-  'CLAUDE.md',
-  'AGENTS.md',
-  '.cursorrules',
-  '.windsurfrules',
-  // Gemini CLI. Root only, like CLAUDE.md/AGENTS.md above.
-  'GEMINI.md',
-  // Cline: a single `.clinerules` file OR a `.clinerules/` directory of
-  // markdown rule files (fast-glob's onlyFiles default means the bare pattern
-  // matches only the file form; defaultPatterns() drops the directory globs
-  // when `.clinerules` is a file). `.clinerules/workflows/` holds on-demand
-  // slash-command workflows, not always-loaded rules, so it is left out.
-  '.clinerules',
-  '.clinerules/**/*.md',
-  '!.clinerules/workflows/**',
-  // Agent persona files (SOUL.md, USER.md, TOOLS.md). Repo ROOT only: the
-  // names are generic enough that a nested `docs/USER.md` is far more likely a
-  // user guide than an agent persona. deriveFileType enforces the same rule
-  // when an explicit `include` pattern pulls a nested copy in.
-  'SOUL.md',
-  'USER.md',
-  'TOOLS.md',
-  // Cursor IDE rules
-  '.cursor/rules/**',
-  // GitHub Copilot instructions (legacy + new per-file format)
-  '.github/copilot-instructions.md',
-  '.github/instructions/**/*.md',
-  // Claude memory / settings directory
-  '.claude/**/*.md',
-  // README is often the only context file in small repos
-  'README.md',
-  // BUG-I1: Additional root-level instruction files that agents commonly read.
-  // Explicit names only — keeps the set narrow enough to avoid scanning docs/
-  // but broad enough to catch QA.md, CONTRIBUTING.md, and similar convention files.
-  'QA.md',
-  'CONTRIBUTING.md',
-  'ARCHITECTURE.md',
-  'DEVELOPMENT.md',
-  'CODING_STANDARDS.md',
-  'CONVENTIONS.md',
-  'GUIDELINES.md',
-  // Explicit AI/prompt directories only — not generic docs/
-  'ai/**/*.md',
-  'ai-instructions/**/*.md',
-  'prompts/**/*.md',
-  'system-prompts/**/*.md',
-];
-// NOTE: docs/**/*.md is intentionally excluded — docs directories typically
-// contain project documentation (QA reports, plans, guides) that are not AI
-// instruction files and cause false positive context-bloat and conflict findings.
+import { SCAN_IGNORE_DIRS, defaultInstructionPatterns } from './discovery.js';
 
 // 'worktrees'/'.worktrees' covers git worktree checkouts nested anywhere in the
 // tree (e.g. Claude Code's .claude/worktrees/<name>/, or a top-level worktrees/
 // dir used by other agent tooling) — these are full copies of the repo and
 // would otherwise be scanned as duplicate instruction-file trees.
-const IGNORE_DIRS = ['.git', 'node_modules', 'Library', 'Temp', 'bin', 'obj', 'dist', 'build', 'worktrees', '.worktrees'];
+//
+// NOTE: docs/**/*.md is intentionally excluded from the default patterns —
+// docs directories typically contain project documentation (QA reports,
+// plans, guides) that are not AI instruction files and cause false positive
+// context-bloat and conflict findings. The patterns themselves live in
+// discovery.ts (`DEFAULT_INSTRUCTION_PATTERNS`), the one place scanner.ts and
+// a filesystem-free consumer (`selectScanPaths`) both read them from.
+const IGNORE_DIRS = SCAN_IGNORE_DIRS;
 
 // Exported so ai_config discovery (ai-config.ts) applies the exact same
 // size/binary policy as this scanner — one definition of "scannable file".
@@ -212,26 +168,20 @@ export function isBinary(buffer: Buffer): boolean {
   return false;
 }
 
-const CLINE_DIR_PATTERNS: ReadonlySet<string> = new Set([
-  '.clinerules/**/*.md',
-  '!.clinerules/workflows/**',
-]);
-
 /**
- * DEFAULT_PATTERNS, minus the `.clinerules/` directory globs unless
- * `.clinerules` really is a directory. fast-glob scandirs `.clinerules` to
- * expand them, and a FILE of that name (Cline's single-file form) makes it
- * throw ENOTDIR — which scanFiles' catch turned into an empty scan of the
- * WHOLE repo. `suppressErrors` now contains that too; dropping the globs
- * keeps the default scan from relying on it.
+ * discovery.ts's `DEFAULT_INSTRUCTION_PATTERNS`, minus the `.clinerules/`
+ * directory globs unless `.clinerules` really is a directory. fast-glob
+ * scandirs `.clinerules` to expand them, and a FILE of that name (Cline's
+ * single-file form) makes it throw ENOTDIR — which scanFiles' catch turned
+ * into an empty scan of the WHOLE repo. `suppressErrors` now contains that
+ * too; dropping the globs keeps the default scan from relying on it.
  */
 function defaultPatterns(tree: RepoTree): string[] {
   // pcic-e6xa: `.clinerules` is a fixed name, but whether it is a FILE or a
   // DIRECTORY changes what the scan reads — so it is asked through the tree,
   // which never follows a link out of the root and lets a caller's inventory
   // answer when the repository is not on disk (pcic-csf).
-  const clineIsDir = tree.isDir('.clinerules');
-  return clineIsDir ? DEFAULT_PATTERNS : DEFAULT_PATTERNS.filter((p) => !CLINE_DIR_PATTERNS.has(p));
+  return [...defaultInstructionPatterns(tree.isDir('.clinerules'))];
 }
 
 /**
