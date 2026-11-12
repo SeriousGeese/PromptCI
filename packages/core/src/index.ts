@@ -40,6 +40,15 @@ export { scan } from './scan.js';
 export { ADDRESSABLE_CATEGORIES, estimateTokens, annotateIssueTokens, computeAddressableTokens } from './token-estimates.js';
 export { computeFingerprint, createBaseline, filterNewIssues, assertValidBaseline } from './baseline.js';
 export { applyFixRecipe, resolveSafePath, isRepairable } from './fix-engine.js';
+export {
+  closestUniqueMatch,
+  isMechanicalRename,
+  damerauLevenshtein,
+  CLOSE_MATCH_MAX_DISTANCE,
+  CLOSE_MATCH_MIN_LENGTH,
+  MECHANICAL_TWO_EDIT_MIN_LENGTH,
+  MECHANICAL_SEGMENT_MIN_LENGTH,
+} from './close-match.js';
 export type { FileChange } from './fix-engine.js';
 export { isWithinRoot, resolveWithinRoot, realPathWithinRoot, resolveReadableWithinRoot, writeTargetWithinRoot } from './path-containment.js';
 export { optimizeContext } from './context-optimizer.js';

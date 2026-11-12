@@ -1,8 +1,8 @@
 import * as path from 'node:path';
 import * as fs from 'node:fs/promises';
-import type { PromptCiIssue } from './types.js';
+import type { FixEdit, PromptCiIssue } from './types.js';
 import { renderPromptCiGitignore } from './promptci-gitignore.js';
-import { isWithinRoot } from './path-containment.js';
+import { isWithinRoot, realPathWithinRoot } from './path-containment.js';
 import { gitignoreLineMatchesTarget } from './security-pack.js';
 
 export interface FileChange {
@@ -41,6 +41,73 @@ export function resolveSafePath(repoRoot: string, relativeOrAbsolutePath: string
   return resolvedPath;
 }
 
+/** Occurrences of `needle` (a plain string, never a pattern) in `haystack`. */
+function countOccurrences(haystack: string, needle: string): number {
+  let count = 0;
+  for (let at = haystack.indexOf(needle); at !== -1; at = haystack.indexOf(needle, at + needle.length)) {
+    count++;
+  }
+  return count;
+}
+
+/**
+ * pcic-oonz: applies the line-anchored substitutions a detector computed (see
+ * {@link FixEdit}).
+ *
+ * All-or-nothing on purpose. Every edit must land on an existing line whose
+ * text contains its `find` exactly once; the first one that does not abandons
+ * the whole issue and returns no changes. A finding whose recipe is stale
+ * (someone edited the file between the scan and the fix) is then re-detected
+ * on the next scan against the current text, rather than half-rewritten here.
+ *
+ * Lines are split with their terminators attached and rejoined verbatim, so a
+ * one-token substitution leaves every other byte of the file — including mixed
+ * or CRLF line endings and a missing trailing newline — exactly as it was.
+ */
+async function applyLineEdits(edits: readonly FixEdit[], repoRoot: string): Promise<FileChange[]> {
+  const byFile = new Map<string, FixEdit[]>();
+  for (const edit of edits) {
+    const filePath = resolveSafePath(repoRoot, edit.filePath);
+    const list = byFile.get(filePath) ?? [];
+    list.push(edit);
+    byFile.set(filePath, list);
+  }
+
+  const changes: FileChange[] = [];
+  for (const [filePath, fileEdits] of byFile) {
+    // The lexical check in resolveSafePath cannot see a symlink: an in-root
+    // `AGENTS.md` committed as a link to a file outside the root would be
+    // written THROUGH. Refuse that, the same policy reads already follow.
+    if (!realPathWithinRoot(path.resolve(repoRoot), filePath)) return [];
+
+    let content: string;
+    try {
+      content = await fs.readFile(filePath, 'utf-8');
+    } catch {
+      return []; // a file the recipe needs is gone: apply nothing
+    }
+
+    // Terminators stay attached to their line, so join('') restores the file.
+    const lines = content.split(/(?<=\n)/);
+    for (const { line, find, replace } of fileEdits) {
+      const idx = line - 1;
+      const text = lines[idx];
+      if (text === undefined || !find || find.includes('\n')) return [];
+      if (countOccurrences(text, find) !== 1) return [];
+      // Spliced by index, not via String.replace: a `$&`, `$1` or `$$` in the
+      // replacement is replacement-pattern syntax there, and a path or script
+      // name containing `$` would be silently corrupted.
+      const at = text.indexOf(find);
+      lines[idx] = text.slice(0, at) + replace + text.slice(at + find.length);
+    }
+
+    const newContent = lines.join('');
+    if (newContent === content) continue;
+    changes.push({ filePath, originalContent: content, newContent });
+  }
+  return changes;
+}
+
 /**
  * Computes the proposed file changes to fix a given PromptCiIssue.
  * Returns an array of FileChanges that would be applied.
@@ -50,6 +117,15 @@ export async function applyFixRecipe(
   repoRoot: string
 ): Promise<FileChange[]> {
   const changes: FileChange[] = [];
+
+  // 0. Detector-computed substitutions (pcic-oonz): a mistyped package-manager
+  // script name with exactly one close match in the manifest, and a broken
+  // relative link whose basename exists exactly once in the tree. The detector
+  // knew the parsed command / link target and the candidate set, so it carries
+  // the edit rather than making the fix engine re-derive any of it.
+  if (issue.fixEdits && issue.fixEdits.length > 0) {
+    return applyLineEdits(issue.fixEdits, repoRoot);
+  }
 
   // 1. Missing .promptci/ in .gitignore
   if (issue.id === 'security-pack-no-promptci-gitignore') {

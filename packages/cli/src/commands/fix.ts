@@ -80,7 +80,11 @@ export async function runFix(options: FixOptions): Promise<void> {
     // If an earlier unit in this run rewrote one of the same files, those
     // ranges point at shifted content, so the unit must be skipped and picked
     // up by a re-run instead of editing the wrong lines. Content-based recipes
-    // (.gitignore appends) compose safely and don't need this.
+    // (.gitignore appends) compose safely and don't need this — and neither do
+    // the pcic-oonz `fixEdits` recipes: each edit names the exact text to
+    // replace and is refused unless that text occurs exactly once on its line,
+    // so a shifted file either matches the same text (the same correct
+    // rewrite) or applies nothing at all.
     skipIfModified:
       issue.category === 'duplicate'
         ? issue.locations.map((loc) => path.resolve(resolvedPath, loc.filePath))

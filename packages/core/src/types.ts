@@ -114,6 +114,30 @@ export type InstructionFile = {
   estimatedTokens: number;
 };
 
+/**
+ * pcic-oonz: one line-anchored text substitution a mechanical fix recipe
+ * applies. The emitting detector computes it while it still has the parsed
+ * command or link in hand; `applyFixRecipe` only applies it, so the fix engine
+ * never re-derives detection logic (and never walks the repository again).
+ *
+ * `find` must occur EXACTLY ONCE on line `line` of `filePath`. Both the
+ * detector and the fix engine check that: the detector so a finding is never
+ * advertised as auto-applicable when the edit is ambiguous, the engine so an
+ * edit computed against a file that has since changed is refused rather than
+ * applied to the wrong text. An issue whose edits cannot all be applied
+ * cleanly produces no change at all — never a partial rewrite.
+ */
+export type FixEdit = {
+  /** File to edit, as written in the issue's `locations[].filePath`. */
+  filePath: string;
+  /** 1-based line the substitution applies to. */
+  line: number;
+  /** Exact text to replace; must occur exactly once on that line and contain no newline. */
+  find: string;
+  /** Text that replaces it. */
+  replace: string;
+};
+
 export type PromptCiIssue = {
   id: string;
   severity: IssueSeverity;
@@ -133,6 +157,15 @@ export type PromptCiIssue = {
    * inferred from the presence of `fixRecipe`, which is usually advisory prose.
    */
   autoApplySafe?: boolean;
+  /**
+   * pcic-oonz: the exact substitutions `applyFixRecipe` performs for this
+   * finding, computed by the detector. Present only on the recipes that work
+   * this way (a mistyped package script, a moved link target); the older
+   * recipes (.gitignore stanzas, duplicate consolidation) are recomputed from
+   * the issue inside the fix engine and carry none. Never set without
+   * `autoApplySafe`.
+   */
+  fixEdits?: FixEdit[];
   confidence: number;
   tags?: string[];
   impact?: 'high' | 'medium' | 'low';

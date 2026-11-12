@@ -30,7 +30,7 @@
 import * as path from 'node:path';
 import * as crypto from 'node:crypto';
 import fg from 'fast-glob';
-import type { InstructionFile, PromptCiIssue } from './types.js';
+import type { FixEdit, InstructionFile, PromptCiIssue } from './types.js';
 import { fencedBlocks, scanFencedLines } from './markdown-fences.js';
 import { createGitIgnoreChecker } from './gitignore.js';
 import { isWithinRoot } from './path-containment.js';
@@ -120,7 +120,28 @@ type RefKind = 'file' | 'rootedSource' | 'rootedPath' | 'linkPath';
  * while a link or an @-ref is a location a tool follows from the instruction
  * file, so only a code span may resolve by name elsewhere in the tree.
  */
-type CollectedRef = { ref: string; evidence: string; line: number; kind: RefKind; codeSpan?: boolean };
+type CollectedRef = {
+  ref: string;
+  evidence: string;
+  line: number;
+  kind: RefKind;
+  codeSpan?: boolean;
+  /**
+   * pcic-oonz: the raw target of an INLINE markdown link, exactly as written
+   * between `](` and `)`. Set only there, because only there does the document
+   * contain a `](<target>)` span that a mechanical fix can rewrite without
+   * re-parsing anything. A reference-style definition, an @-ref, a code span
+   * or a layout bullet carries no `linkRaw` and stays advisory.
+   */
+  linkRaw?: string;
+  /**
+   * pcic-oonz: the reference sits inside a fenced code block or an inline code
+   * span. Such a link is sample text — markdown does not even render it — so it
+   * is reported like any other broken reference but never rewritten: editing
+   * documentation's example would change what the example says.
+   */
+  inCodeContext?: boolean;
+};
 
 /**
  * BUG-004: Bullet-list bare file paths in Repository Layout / Project Structure sections.
@@ -586,11 +607,17 @@ function collectRefs(
     const before = content.slice(lineOffsets[line - 1] ?? 0, index);
     return (before.match(/`/g)?.length ?? 0) % 2 === 1;
   };
-  const pushLink = (ref: string, evidence: string, index: number): void => {
+  const pushLink = (ref: string, evidence: string, index: number, linkRaw?: string): void => {
     if (!ref || isExternalRef(ref)) return;
     const line = lineForOffset(lineOffsets, index);
-    if (hasCheckableExtension(ref)) found.push({ ref, evidence, line, kind: 'file' });
-    else if (isExtensionlessPathRef(ref) && !inCode(index)) found.push({ ref, evidence, line, kind: 'linkPath' });
+    // pcic-oonz: a link written inside a fence or a code span is sample text.
+    // It is still CHECKED (a stale example is worth reporting), but the
+    // mechanical fix must leave it alone.
+    const inCodeContext = fenceLines[line - 1]?.inFence === true || inCode(index);
+    if (hasCheckableExtension(ref)) found.push({ ref, evidence, line, kind: 'file', linkRaw, inCodeContext });
+    else if (isExtensionlessPathRef(ref) && !inCode(index)) {
+      found.push({ ref, evidence, line, kind: 'linkPath', linkRaw, inCodeContext });
+    }
   };
 
   // Markdown links: [label](target) or [label](target "Title")
@@ -599,7 +626,7 @@ function collectRefs(
   while ((m = linkRe.exec(content)) !== null) {
     if (m.index >= 2 && content[m.index - 2] === '[' && content[m.index - 1] === '!') continue;
     const raw = m[1] ?? '';
-    pushLink(stripFragment(stripLinkTitle(raw)), `[...](${raw})`, m.index);
+    pushLink(stripFragment(stripLinkTitle(raw)), `[...](${raw})`, m.index, raw);
   }
 
   const nestedLinkRe = new RegExp(NESTED_MD_LINK_RE.source, NESTED_MD_LINK_RE.flags);
@@ -607,7 +634,7 @@ function collectRefs(
     const labelPart = m[0].slice(0, m[0].lastIndexOf(']('));
     if (!labelPart.includes('](')) continue;
     const raw = m[1] ?? '';
-    pushLink(stripFragment(stripLinkTitle(raw)), `[...](${raw})`, m.index);
+    pushLink(stripFragment(stripLinkTitle(raw)), `[...](${raw})`, m.index, raw);
   }
 
   // Reference-style link definitions: [ref]: docs/missing.md "Title"
@@ -942,6 +969,95 @@ function judgeReference(
   return 0.6;
 }
 
+// ── Mechanical fix: a link whose target moved (pcic-oonz) ────────────────────
+
+/**
+ * pcic-oonz: the substitution that re-points a broken inline markdown link at
+ * the file it names, or `undefined` when the move is not unambiguous.
+ *
+ * Every condition below has to hold, and each one is there to keep the rewrite
+ * a fact rather than a guess:
+ *
+ *  - The reference is an INLINE markdown link, outside any fence or code span,
+ *    naming a FILE (a checkable extension, no trailing slash), whose raw target
+ *    is a plain path (no angle brackets, no link title, no surrounding
+ *    whitespace). The other forms are rewritable in principle, but each needs
+ *    its own reassembly rule, and a recipe that is only sometimes right is worse
+ *    than none.
+ *  - The path it would be rewritten TO needs no escaping, and does not point at
+ *    the linking file itself.
+ *  - The repository holds EXACTLY ONE non-ignored file with that basename,
+ *    found in the name index the detector already builds — one walk, inside the
+ *    scan root, dependency and output trees excluded (see
+ *    {@link SUFFIX_SEARCH_IGNORE}). Two candidates, or none, stay advisory:
+ *    only the author knows which `README.md` was meant.
+ *  - That walk was COMPLETE. A tree the scan could not list fully is no
+ *    evidence that a basename is unique in it.
+ *  - The `](target)` span occurs exactly once on the line, so the edit cannot
+ *    land on a second link that happens to share the target text.
+ *
+ * The new target is the path from the linking file's own directory, with
+ * forward slashes and an explicit `./` when it does not already start with a
+ * `.` — the form the repository's own links use. A `#fragment` is carried over
+ * verbatim.
+ */
+function movedLinkEdit(
+  filePath: string,
+  line: number,
+  lineText: string,
+  linkRaw: string,
+  kind: RefKind,
+  ctx: JudgeContext,
+): FixEdit | undefined {
+  // Only a link to a FILE — one with a checkable extension and no trailing
+  // slash. A directory link resolves to a tree, not to a name the file index
+  // can identify, and an extension-less target could match a same-named file
+  // that is not what the link meant.
+  if (kind !== 'file' || linkRaw.endsWith('/')) return undefined;
+  if (linkRaw !== linkRaw.trim() || linkRaw.startsWith('<')) return undefined;
+  if (stripLinkTitle(linkRaw) !== linkRaw) return undefined; // carries a title
+  // Plain path characters only. The nested-link pattern can capture a target
+  // that still carries the shape of the link around it — seen live as
+  // `([detail](docs/agents/ci-and-deploys.md` — and splicing a replacement
+  // into the `](` of a DIFFERENT link would corrupt both. Brackets,
+  // parentheses, whitespace and backticks are rejected outright, and a target
+  // that needs them stays advisory.
+  if (/[()[\]\s`]/.test(linkRaw)) return undefined;
+
+  const hash = linkRaw.indexOf('#');
+  const targetPath = hash === -1 ? linkRaw : linkRaw.slice(0, hash);
+  const fragment = hash === -1 ? '' : linkRaw.slice(hash);
+  const base = path.basename(targetPath.replace(/\\/g, '/').replace(/\/+$/, ''));
+  if (!base) return undefined;
+
+  const index = ctx.nameIndex();
+  if (!index.complete) return undefined;
+  const candidates = (index.paths.get(base) ?? []).filter((rel) => !ctx.isIgnored(rel));
+  if (candidates.length !== 1) return undefined;
+
+  const absCandidate = path.resolve(ctx.tree.root, candidates[0]!);
+  // A file cannot be the fix for a link inside itself.
+  if (absCandidate === path.resolve(filePath)) return undefined;
+  const relative = path.relative(path.dirname(filePath), absCandidate).split(path.sep).join('/');
+  if (!relative) return undefined;
+  // The new target is written into `](…)` as-is, so it must need no escaping.
+  // A repository file whose path holds a space, a bracket, a parenthesis, `#`,
+  // `%`, `<`, `>`, `?` or a backtick would produce a link that renders as
+  // literal text or points somewhere else entirely — `](my docs/notes.md)` is
+  // not a link to `my docs/notes.md`. Percent-encoding it would be a second
+  // guess about the author's markdown flavour, so such a move stays advisory.
+  if (/[()[\]\s`#%<>?]/.test(relative)) return undefined;
+  const newTarget = `${relative.startsWith('.') ? relative : `./${relative}`}${fragment}`;
+  if (newTarget === linkRaw) return undefined;
+
+  const find = `](${linkRaw})`;
+  let occurrences = 0;
+  for (let at = lineText.indexOf(find); at !== -1; at = lineText.indexOf(find, at + find.length)) occurrences++;
+  if (occurrences !== 1) return undefined;
+
+  return { filePath, line, find, replace: `](${newTarget})` };
+}
+
 // ── Detector ─────────────────────────────────────────────────────────────────
 
 /**
@@ -971,6 +1087,16 @@ export function detectDeadReferences(
     fileLines: Map<string, number>;
     evidenceLines: string[];
     minConfidence: number;
+    /** pcic-oonz: the rewrite for each occurrence, when every one of them has one. */
+    edits: FixEdit[];
+    /**
+     * pcic-oonz: false as soon as ONE occurrence of this reference cannot be
+     * rewritten mechanically (a code span, a reference-style definition, an
+     * ambiguous basename). The recipe is all-or-nothing: re-pointing the links
+     * and leaving a prose mention of the old path behind would report the
+     * finding as fixed while half of it is still wrong.
+     */
+    allRewritable: boolean;
   }>();
 
   const tree = new RepoTree(repoRoot);
@@ -985,8 +1111,11 @@ export function detectDeadReferences(
     const refs = collectRefs(file.content, {
       skipSourceBackticks: SKIP_SOURCE_BACKTICK_FILE_TYPES.has(file.fileType),
     });
+    // pcic-oonz: the file's own lines, so a rewrite can be confirmed
+    // unambiguous on the line it would edit.
+    const fileLineTexts = file.content.split(/\r?\n/);
 
-    for (const { ref, evidence, line, kind, codeSpan } of refs) {
+    for (const { ref, evidence, line, kind, codeSpan, linkRaw, inCodeContext } of refs) {
       // BUG-009: Skip obvious placeholder/example filenames (foo.ts, bar.go, etc.)
       if (isPlaceholderRef(ref)) continue;
 
@@ -1027,9 +1156,22 @@ export function detectDeadReferences(
           fileLines: new Map(),
           evidenceLines: [],
           minConfidence: confidence,
+          edits: [],
+          allRewritable: true,
         });
       }
       const entry = byRef.get(normRef)!;
+
+      // pcic-oonz: can THIS occurrence be re-pointed at the file it names?
+      const edit =
+        linkRaw === undefined || inCodeContext === true
+          ? undefined
+          : movedLinkEdit(file.path, line, fileLineTexts[line - 1] ?? '', linkRaw, kind, ctx);
+      if (edit === undefined) entry.allRewritable = false;
+      else if (!entry.edits.some((e) => e.filePath === edit.filePath && e.line === edit.line && e.find === edit.find)) {
+        entry.edits.push(edit);
+      }
+
       entry.filePaths.add(file.path);
       const existingLine = entry.fileLines.get(file.path);
       if (existingLine === undefined || line < existingLine) {
@@ -1045,7 +1187,7 @@ export function detectDeadReferences(
   const issues: PromptCiIssue[] = [];
   const MIN_CONFIDENCE_THRESHOLD = MIN_CONFIDENCE;
 
-  for (const [normRef, { displayRef, kind, filePaths, fileLines, evidenceLines, minConfidence }] of byRef) {
+  for (const [normRef, { displayRef, kind, filePaths, fileLines, evidenceLines, minConfidence, edits, allRewritable }] of byRef) {
     // BUG-002: Skip findings below the minimum confidence threshold.
     // Low-confidence source-code path references are almost certainly architecture docs.
     if (minConfidence < MIN_CONFIDENCE_THRESHOLD) continue;
@@ -1073,6 +1215,16 @@ export function detectDeadReferences(
       recommendation:
         'Verify the path is correct relative to the instruction file location, ' +
         'or remove the reference if the file no longer exists.',
+      ...(allRewritable && edits.length > 0
+        ? {
+            fixRecipe:
+              `Re-point the link${edits.length > 1 ? 's' : ''} at the one file of that name in the ` +
+              `repository: ${[...new Set(edits.map((e) => `\`${e.find}\` -> \`${e.replace}\``))].join(', ')}.`,
+            // `applyFixRecipe` rewrites exactly those `](target)` spans.
+            autoApplySafe: true,
+            fixEdits: edits,
+          }
+        : {}),
       confidence: minConfidence,
     });
   }
