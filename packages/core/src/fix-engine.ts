@@ -2,7 +2,7 @@ import * as path from 'node:path';
 import * as fs from 'node:fs/promises';
 import type { FixEdit, PromptCiIssue } from './types.js';
 import { renderPromptCiGitignore } from './promptci-gitignore.js';
-import { isWithinRoot } from './path-containment.js';
+import { isWithinRoot, realPathWithinRoot } from './path-containment.js';
 import { gitignoreLineMatchesTarget } from './security-pack.js';
 
 export interface FileChange {
@@ -75,6 +75,11 @@ async function applyLineEdits(edits: readonly FixEdit[], repoRoot: string): Prom
 
   const changes: FileChange[] = [];
   for (const [filePath, fileEdits] of byFile) {
+    // The lexical check in resolveSafePath cannot see a symlink: an in-root
+    // `AGENTS.md` committed as a link to a file outside the root would be
+    // written THROUGH. Refuse that, the same policy reads already follow.
+    if (!realPathWithinRoot(path.resolve(repoRoot), filePath)) return [];
+
     let content: string;
     try {
       content = await fs.readFile(filePath, 'utf-8');
@@ -89,7 +94,11 @@ async function applyLineEdits(edits: readonly FixEdit[], repoRoot: string): Prom
       const text = lines[idx];
       if (text === undefined || !find || find.includes('\n')) return [];
       if (countOccurrences(text, find) !== 1) return [];
-      lines[idx] = text.replace(find, replace);
+      // Spliced by index, not via String.replace: a `$&`, `$1` or `$$` in the
+      // replacement is replacement-pattern syntax there, and a path or script
+      // name containing `$` would be silently corrupted.
+      const at = text.indexOf(find);
+      lines[idx] = text.slice(0, at) + replace + text.slice(at + find.length);
     }
 
     const newContent = lines.join('');

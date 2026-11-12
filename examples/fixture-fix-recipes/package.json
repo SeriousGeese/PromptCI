@@ -6,6 +6,7 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "check:dev": "node ./ops/check.mjs --dev",
-    "check:web": "node ./ops/check.mjs --web"
+    "check:web": "node ./ops/check.mjs --web",
+    "migrate:up": "node ./ops/check.mjs --migrate"
   }
 }

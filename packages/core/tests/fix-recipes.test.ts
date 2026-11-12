@@ -17,9 +17,9 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import { scan } from '../src/scan.js';
 import { applyFixRecipe, isRepairable } from '../src/fix-engine.js';
-import { closestUniqueMatch, damerauLevenshtein } from '../src/close-match.js';
+import { closestUniqueMatch, damerauLevenshtein, isMechanicalRename } from '../src/close-match.js';
 import type { PromptCiIssue } from '../src/types.js';
-import { makeTempRepo, writeFile } from './ai-config-helpers.js';
+import { canSymlink, makeTempRepo, trySymlink, writeFile } from './ai-config-helpers.js';
 
 const FIXTURE = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -93,6 +93,45 @@ describe('closestUniqueMatch', () => {
   });
 });
 
+/**
+ * Review finding M1: a unique nearest neighbour is NOT enough to rewrite. Most
+ * one-edit neighbours of a script name are a real sibling script, and silently
+ * running the wrong one is worse than reporting and leaving it. Every pair below
+ * passes `closestUniqueMatch` and must still be refused.
+ */
+describe('isMechanicalRename', () => {
+  it.each([
+    ['bulid', 'build', 'a transposition'],
+    ['typecheeck', 'typecheck', 'a doubled letter in a long name'],
+    ['test:e3e', 'test:e2e', 'a mid-name digit in one segment'],
+    ['type-check', 'typecheck', 'a separator difference'],
+    ['Build', 'build', 'a case difference'],
+  ])('accepts %s -> %s (%s)', (missing, candidate) => {
+    expect(isMechanicalRename(missing, candidate)).toBe(true);
+  });
+
+  it.each([
+    ['test:api', 'test:app', 'another real word in a short segment'],
+    ['db:up', 'db:rm', 'two edits in a short name'],
+    ['test:unit', 'test:init', 'another real word in a short segment'],
+    ['test', 'dist', 'two edits in a short name'],
+    ['test', 'best', 'another real word in a short segment'],
+    ['build:v1', 'build:v2', 'a trailing-digit version suffix'],
+    ['test:py2', 'test:py3', 'a trailing-digit target suffix'],
+    ['build', 'build:web', 'a different number of segments'],
+    ['test:unit', 'lint:unit', 'a difference in the scoping segment, short'],
+  ])('refuses %s -> %s (%s)', (missing, candidate) => {
+    expect(isMechanicalRename(missing, candidate)).toBe(false);
+  });
+
+  it('still names each refused candidate as the closest match', () => {
+    // The pairs above are refused for AUTO-APPLY only; the matcher that decides
+    // whether a candidate is worth mentioning still finds them.
+    expect(closestUniqueMatch('test:api', ['test:app', 'lint'])).toBe('test:app');
+    expect(closestUniqueMatch('build:v1', ['build:v2', 'lint'])).toBe('build:v2');
+  });
+});
+
 // ── Recipe 1: a mistyped package-manager script ──────────────────────────────
 
 describe('command_validity: mistyped script with one close match', () => {
@@ -154,6 +193,50 @@ describe('command_validity: mistyped script with one close match', () => {
     expect(await applyFixRecipe(issues[0]!, repo)).toEqual([]);
   });
 
+  it('keeps test:e3e -> test:e2e auto-applicable', async () => {
+    const repo = repoWith({
+      'package.json': JSON.stringify({ name: 'app', scripts: { 'test:e2e': 'playwright test' } }),
+      'AGENTS.md': '# Agents\n\n```bash\npnpm test:e3e\n```\n',
+    });
+    const issues = commandIssues(await issuesIn(repo));
+    expect(issues[0]!.autoApplySafe).toBe(true);
+    expect(await applyAll(repo, issues, 'AGENTS.md')).toContain('pnpm test:e2e');
+  });
+
+  /**
+   * Review finding M1 end to end: each of these is a unique nearest neighbour,
+   * so the old rule would have rewritten the command to a DIFFERENT, real
+   * script. The finding must stay advisory and name the candidate only in the
+   * recommendation, cautiously.
+   */
+  it.each([
+    ['test:api', 'test:app'],
+    ['db:up', 'db:rm'],
+    ['test:unit', 'test:init'],
+    // `test` itself is a package-manager BUILTIN, so `pnpm run test` is never
+    // reported at all; `lint` exercises the same one- and two-edit short-name
+    // rules end to end (the reviewer's `test`/`best`/`dist` pairs are covered
+    // directly in the isMechanicalRename table above).
+    ['lint', 'link'],
+    ['lint', 'dist'],
+    ['build:v1', 'build:v2'],
+    ['test:py2', 'test:py3'],
+  ])('stays advisory for %s when the manifest only defines the sibling %s', async (missing, defined) => {
+    const repo = repoWith({
+      'package.json': JSON.stringify({ name: 'app', scripts: { [defined]: 'echo hi' } }),
+      'AGENTS.md': `# Agents\n\n\`\`\`bash\npnpm run ${missing}\n\`\`\`\n`,
+    });
+    const issues = commandIssues(await issuesIn(repo));
+    expect(issues).toHaveLength(1);
+    expect(issues[0]!.autoApplySafe).toBeUndefined();
+    expect(issues[0]!.fixEdits).toBeUndefined();
+    expect(await applyFixRecipe(issues[0]!, repo)).toEqual([]);
+    // Named, but only as something to check — never as a verdict.
+    expect(issues[0]!.recommendation).toContain(`The manifest defines "${defined}"`);
+    expect(issues[0]!.recommendation).toContain('check before changing it');
+    expect(issues[0]!.summary).not.toContain(defined);
+  });
+
   it('stays advisory when no script is close', async () => {
     const repo = repoWith({
       'package.json': MANIFEST,
@@ -172,6 +255,43 @@ describe('command_validity: mistyped script with one close match', () => {
     const issues = commandIssues(await issuesIn(repo));
     expect(issues).toHaveLength(1);
     expect(issues[0]!.autoApplySafe).toBeUndefined();
+  });
+
+  /**
+   * Review finding L4: a `--filter` that selects several packages runs the
+   * script in ALL of them, so a candidate only one of them defines would leave
+   * the command broken everywhere else.
+   */
+  describe('with a --filter selecting several workspaces', () => {
+    const workspace = {
+      'package.json': JSON.stringify({ name: 'root', private: true, scripts: { build: 'tsc -b' } }),
+      'pnpm-workspace.yaml': "packages:\n  - 'packages/*'\n",
+    };
+
+    it('stays advisory when only some selected packages define the candidate', async () => {
+      const repo = repoWith({
+        ...workspace,
+        'packages/a/package.json': JSON.stringify({ name: 'a', scripts: { lint: 'eslint .' } }),
+        'packages/b/package.json': JSON.stringify({ name: 'b', scripts: { test: 'vitest run' } }),
+        'AGENTS.md': '# Agents\n\n```bash\npnpm --filter "packages/*" lnit\n```\n',
+      });
+      const issues = commandIssues(await issuesIn(repo));
+      expect(issues).toHaveLength(1);
+      expect(issues[0]!.autoApplySafe).toBeUndefined();
+    });
+
+    it('still applies when every selected package defines the candidate', async () => {
+      const repo = repoWith({
+        ...workspace,
+        'packages/a/package.json': JSON.stringify({ name: 'a', scripts: { lint: 'eslint .' } }),
+        'packages/b/package.json': JSON.stringify({ name: 'b', scripts: { lint: 'eslint .' } }),
+        'AGENTS.md': '# Agents\n\n```bash\npnpm --filter "packages/*" lnit\n```\n',
+      });
+      const issues = commandIssues(await issuesIn(repo));
+      expect(issues).toHaveLength(1);
+      expect(issues[0]!.autoApplySafe).toBe(true);
+      expect(await applyAll(repo, issues, 'AGENTS.md')).toContain('pnpm --filter "packages/*" lint');
+    });
   });
 
   it('stays advisory when the same command appears twice on one line', async () => {
@@ -236,6 +356,87 @@ describe('structure: broken link whose basename is unique in the tree', () => {
     });
     const issues = brokenRefIssues(await issuesIn(repo));
     expect(issues.length).toBeGreaterThan(0);
+    for (const issue of issues) expect(issue.autoApplySafe).toBeUndefined();
+  });
+
+  /** Review finding M3: a link inside a fence or a code span is sample text. */
+  it('leaves a link inside a fenced code block alone', async () => {
+    const original = '# Agents\n\n```markdown\n[the runbook](./docs/runbook.md)\n```\n';
+    const repo = repoWith({
+      'package.json': MANIFEST,
+      'AGENTS.md': original,
+      'ops/runbook.md': '# Runbook\n',
+    });
+    const issues = brokenRefIssues(await issuesIn(repo));
+    // Still reported — a stale example is worth knowing about — but not rewritten.
+    expect(issues).toHaveLength(1);
+    expect(issues[0]!.autoApplySafe).toBeUndefined();
+    expect(await applyAll(repo, issues, 'AGENTS.md')).toBe(original);
+  });
+
+  it('leaves a link inside an inline code span alone', async () => {
+    const original = '# Agents\n\nWrite it as `[the runbook](./docs/runbook.md)` in your own file.\n';
+    const repo = repoWith({
+      'package.json': MANIFEST,
+      'AGENTS.md': original,
+      'ops/runbook.md': '# Runbook\n',
+    });
+    const issues = brokenRefIssues(await issuesIn(repo));
+    expect(issues).toHaveLength(1);
+    expect(issues[0]!.autoApplySafe).toBeUndefined();
+    expect(await applyAll(repo, issues, 'AGENTS.md')).toBe(original);
+  });
+
+  /** Review finding M2: the computed target is written in raw, so it must need no escaping. */
+  it.each([
+    ['my docs', 'a space'],
+    ['notes(old)', 'parentheses'],
+    ['notes[v2]', 'brackets'],
+    ['notes#1', 'a hash'],
+    ['notes%20', 'a percent'],
+    // `?`, `<`, `>` and a backtick are rejected by the same character class;
+    // Windows cannot create a directory named for any of them, so they are not
+    // exercised through the filesystem here.
+  ])('stays advisory when the new path would contain %s (%s)', async (dirName) => {
+    const repo = repoWith({
+      'package.json': MANIFEST,
+      'AGENTS.md': '# Agents\n\nSee [the runbook](./docs/runbook.md).\n',
+      [`${dirName}/runbook.md`]: '# Runbook\n',
+    });
+    const issues = brokenRefIssues(await issuesIn(repo));
+    const link = issues.find((i) => i.title === 'Broken file reference: runbook.md');
+    expect(link).toBeDefined();
+    expect(link!.autoApplySafe).toBeUndefined();
+  });
+
+  /** Review finding L2: a file is never the fix for a link inside itself. */
+  it('stays advisory when the only candidate is the linking file', async () => {
+    const original = '# Agents\n\nSee [the guide](./docs/AGENTS.md).\n';
+    const repo = repoWith({ 'package.json': MANIFEST, 'AGENTS.md': original });
+    const issues = brokenRefIssues(await issuesIn(repo));
+    expect(issues).toHaveLength(1);
+    expect(issues[0]!.autoApplySafe).toBeUndefined();
+  });
+
+  /** Review finding L3: only links to a FILE are re-pointed. */
+  it('stays advisory for a directory link', async () => {
+    const repo = repoWith({
+      'package.json': MANIFEST,
+      'AGENTS.md': '# Agents\n\nThe API lives in [the api dir](./src/api/), see also `src/lib/`.\n',
+      'src/lib/keep.ts': 'export {};\n',
+    });
+    const issues = brokenRefIssues(await issuesIn(repo));
+    expect(issues.length).toBeGreaterThan(0);
+    for (const issue of issues) expect(issue.autoApplySafe).toBeUndefined();
+  });
+
+  it('stays advisory for an extension-less link, even when a file of that name exists', async () => {
+    const repo = repoWith({
+      'package.json': MANIFEST,
+      'AGENTS.md': '# Agents\n\nRun [the hook](./hooks/precommit) first.\n',
+      'hooks/sub/precommit': '#!/bin/sh\n',
+    });
+    const issues = brokenRefIssues(await issuesIn(repo));
     for (const issue of issues) expect(issue.autoApplySafe).toBeUndefined();
   });
 
@@ -342,6 +543,36 @@ describe('applyFixRecipe — line-anchored edits are all-or-nothing', () => {
     expect(await applyFixRecipe(issues[0]!, repo)).toEqual([]);
   });
 
+  /**
+   * Review finding L7: the lexical containment check cannot see a symlink. An
+   * in-root instruction file committed as a link to somewhere outside must not
+   * be written through — the same policy reads already follow.
+   */
+  it.runIf(canSymlink)('refuses to write through a symlink that leaves the root', async () => {
+    const outside = makeTempRepo('promptci-fix-outside-');
+    tempRepos.push(outside);
+    fs.writeFileSync(path.join(outside, 'target.md'), 'alpha beta\n', 'utf-8');
+    const repo = repoWith({ 'package.json': MANIFEST });
+    expect(trySymlink(path.join(outside, 'target.md'), path.join(repo, 'AGENTS.md'))).toBe(true);
+
+    const issue: PromptCiIssue = {
+      id: 'x',
+      severity: 'warning',
+      category: 'command_validity',
+      title: 't',
+      summary: 's',
+      filePaths: [],
+      locations: [],
+      evidence: [],
+      recommendation: 'r',
+      confidence: 0.8,
+      autoApplySafe: true,
+      fixEdits: [{ filePath: 'AGENTS.md', line: 1, find: 'beta', replace: 'gamma' }],
+    };
+    expect(await applyFixRecipe(issue, repo)).toEqual([]);
+    expect(fs.readFileSync(path.join(outside, 'target.md'), 'utf-8')).toBe('alpha beta\n');
+  });
+
   it('refuses an edit whose path escapes the repo root', async () => {
     const repo = repoWith({ 'package.json': MANIFEST, 'AGENTS.md': '# Agents\n' });
     const issue: PromptCiIssue = {
@@ -359,6 +590,45 @@ describe('applyFixRecipe — line-anchored edits are all-or-nothing', () => {
       fixEdits: [{ filePath: '../outside.md', line: 1, find: 'a', replace: 'b' }],
     };
     await expect(applyFixRecipe(issue, repo)).rejects.toThrow(/Path traversal/);
+  });
+
+  /**
+   * Review finding L1: `String.replace(find, replace)` treats `$&`, `$1` and
+   * `$$` in the replacement as replacement-PATTERN syntax, so a `$` in a path
+   * or script name was silently corrupted. The splice is by index.
+   */
+  it('writes a replacement containing $ literally', async () => {
+    const repo = repoWith({
+      'package.json': MANIFEST,
+      'AGENTS.md': '# Agents\n\nSee [the notes]($tmp/notes.md).\n',
+      'cash$dir/notes.md': '# Notes\n',
+    });
+    const issues = brokenRefIssues(await issuesIn(repo));
+    const link = issues.find((i) => i.fixEdits !== undefined);
+    expect(link?.fixEdits?.[0]?.replace).toBe('](./cash$dir/notes.md)');
+    expect(await applyAll(repo, [link!], 'AGENTS.md')).toBe(
+      '# Agents\n\nSee [the notes](./cash$dir/notes.md).\n',
+    );
+  });
+
+  it('applies a replacement containing $& verbatim', async () => {
+    const repo = repoWith({ 'package.json': MANIFEST, 'AGENTS.md': 'alpha beta\n' });
+    const issue: PromptCiIssue = {
+      id: 'x',
+      severity: 'warning',
+      category: 'command_validity',
+      title: 't',
+      summary: 's',
+      filePaths: [],
+      locations: [],
+      evidence: [],
+      recommendation: 'r',
+      confidence: 0.8,
+      autoApplySafe: true,
+      fixEdits: [{ filePath: 'AGENTS.md', line: 1, find: 'beta', replace: '$& $1 $$' }],
+    };
+    const [change] = await applyFixRecipe(issue, repo);
+    expect(change!.newContent).toBe('alpha $& $1 $$\n');
   });
 
   it('preserves CRLF line endings and the rest of the file byte-for-byte', async () => {
@@ -383,15 +653,22 @@ describe('fixture-fix-recipes', () => {
     expect(commands.filter((i) => i.autoApplySafe === true).map((i) => i.fixEdits?.[0]?.replace)).toEqual([
       'npm run build',
     ]);
-    // The ambiguous and the unrecognisable command are both still reported.
-    expect(commands.filter((i) => i.autoApplySafe !== true)).toHaveLength(2);
+    // The tied, the real-sibling and the unrecognisable command are all still reported.
+    expect(commands.filter((i) => i.autoApplySafe !== true)).toHaveLength(3);
+    // The real-sibling case names its candidate, cautiously, in the recommendation only.
+    const sibling = commands.find((i) => i.summary.includes('migrate:db'))!;
+    expect(sibling.autoApplySafe).toBeUndefined();
+    expect(sibling.recommendation).toContain('The manifest defines "migrate:up"');
 
     const refs = brokenRefIssues(issues);
     expect(refs.filter((i) => i.autoApplySafe === true).map((i) => i.fixEdits?.[0]?.replace)).toEqual([
       '](./ops/runbook.md)',
     ]);
-    expect(refs.filter((i) => i.autoApplySafe !== true).map((i) => i.title)).toEqual([
+    expect(refs.filter((i) => i.autoApplySafe !== true).map((i) => i.title).sort()).toEqual([
       'Broken file reference: checklist.md',
+      // Its target moved exactly like the runbook's, but the link is inside a
+      // fence, so it is reported and left alone.
+      'Broken file reference: release-notes.md',
     ]);
   });
 

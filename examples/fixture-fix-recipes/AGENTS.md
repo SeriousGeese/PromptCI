@@ -9,16 +9,18 @@ advisory because the correct replacement is not unambiguous.
 ```bash
 npm run bulid
 npm run check:deb
+npm run migrate:db
 npm run deploy-to-staging-cluster
 npm run build
 npm run typecheck
 ```
 
 The first command misspells the only script it could plausibly mean, so it can
-be rewritten mechanically. The second is equally close to two scripts the
-manifest defines, and the third resembles none of them; both stay advisory —
-only the author knows which was meant, if any. The last two are correct and
-must stay clean.
+be rewritten mechanically. The next three stay advisory, each for its own
+reason: the second is equally close to two scripts the manifest defines; the
+third is close to exactly one (`migrate:up`) but close enough to be a
+different, real script rather than a misspelling of it; the fourth resembles
+none of them. The last two are correct and must stay clean.
 
 ## Documents
 
@@ -31,3 +33,11 @@ name, so this link stays advisory.
 
 A link that already resolves must stay clean: see
 [the ops runbook](./ops/runbook.md).
+
+A link written inside a fence is sample text, not a link this repository
+follows, so it is reported but never rewritten — even though its target moved
+exactly like the runbook's did:
+
+```markdown
+See [the release notes](./docs/release-notes.md) before tagging.
+```

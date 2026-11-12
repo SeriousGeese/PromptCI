@@ -9,7 +9,7 @@ import { anyWorkspaceHasScript, isKnownBinary, selectWorkspaces } from './worksp
 import { makefileDefines, readMakefile } from './makefile.js';
 import type { MakefileFacts } from './makefile.js';
 import { RepoTree, incompleteCheckIssue, isAbsoluteAnywhere } from './repo-tree.js';
-import { closestUniqueMatch } from './close-match.js';
+import { closestUniqueMatch, isMechanicalRename } from './close-match.js';
 import type { Lookup, UncheckedRef } from './repo-tree.js';
 
 /**
@@ -68,7 +68,17 @@ type Verdict = string | null | typeof UNJUDGED;
  * {@link closestUniqueMatch} finds exactly one candidate; zero or several
  * leave the finding advisory.
  */
-type ScriptSuggestion = { missing: string; candidate: string };
+type ScriptSuggestion = {
+  missing: string;
+  candidate: string;
+  /**
+   * True when the difference is a misspelling rather than a plausible
+   * reference to a different script ({@link isMechanicalRename}). Only then may
+   * the finding be auto-applied; otherwise the candidate is merely named in the
+   * recommendation for a human to confirm.
+   */
+  mechanical: boolean;
+};
 
 /**
  * pcic-oonz: the substitution that corrects a mistyped script name, as text to
@@ -77,7 +87,14 @@ type ScriptSuggestion = { missing: string; candidate: string };
  * another word on the same line; the caller still requires it to occur exactly
  * once there before the finding is marked auto-applicable.
  */
-type ScriptRewrite = { find: string; replace: string; missing: string; candidate: string };
+type ScriptRewrite = {
+  find: string;
+  replace: string;
+  missing: string;
+  candidate: string;
+  /** See {@link ScriptSuggestion.mechanical}. */
+  mechanical: boolean;
+};
 
 /** Separators in a documented path: `/` everywhere, `\` too where the platform treats it as one. */
 const PATH_SEPARATORS = path.sep === '\\' ? /[\\/]/ : /\//;
@@ -637,7 +654,9 @@ function findMissingScript(
   const propose = (name: string, pool: Iterable<string>): void => {
     if (!suggest || names.length !== 1) return;
     const candidate = closestUniqueMatch(name, pool);
-    if (candidate !== undefined) suggest({ missing: name, candidate });
+    if (candidate !== undefined) {
+      suggest({ missing: name, candidate, mechanical: isMechanicalRename(name, candidate) });
+    }
   };
   const scopedToWorkspaces = selector !== undefined || allWorkspaces;
 
@@ -668,8 +687,16 @@ function findMissingScript(
       const target = selectedWorkspaces.length === 1
         ? `${selectedWorkspaces[0]!.name ?? selectedWorkspaces[0]!.dir} (${selectedWorkspaces[0]!.dir}/package.json)`
         : `the ${selectedWorkspaces.length} workspaces selected by "${selector}"`;
-      // The selected packages ARE the manifests that would run the script.
-      propose(name, selectedWorkspaces.flatMap((ws) => Object.keys(ws.scripts)));
+      // The selected packages ARE the manifests that would run the script — all
+      // of them, so a candidate only SOME of them define would still leave the
+      // command broken where it is missing. The pool is therefore the
+      // intersection of their script names (which for one selected package is
+      // simply that package's scripts).
+      const pools = selectedWorkspaces.map((ws) => Object.keys(ws.scripts));
+      propose(
+        name,
+        pools.slice(1).reduce((shared, pool) => shared.filter((n) => pool.includes(n)), pools[0] ?? []),
+      );
       return `${tool} script "${name}" does not appear in ${target} scripts`;
     }
 
@@ -768,12 +795,13 @@ function validatePackageManagerScript(
   // (`npm run bulid`, `pnpm --filter web lnit`) rather than a bare word.
   const prefix = parts.slice(0, nameIdx).join(' ');
   const onSuggestion = suggest
-    ? ({ missing, candidate }: ScriptSuggestion): void =>
+    ? ({ missing, candidate, mechanical }: ScriptSuggestion): void =>
         suggest({
           find: prefix ? `${prefix} ${missing}` : missing,
           replace: prefix ? `${prefix} ${candidate}` : candidate,
           missing,
           candidate,
+          mechanical,
         })
     : undefined;
 
@@ -1090,15 +1118,24 @@ function computeCommandAnalysis(context: RepoContext): CommandAnalysis {
       if (reported.has(dedupeKey)) continue;
       reported.add(dedupeKey);
 
-      // pcic-oonz: a mistyped script name with exactly one close match in the
+      // pcic-oonz: a MISSPELLED script name with exactly one close match in the
       // manifest that would have run it is a mechanical rewrite — provided the
-      // text to replace appears exactly once on the line, so the edit cannot
-      // land on another command that shares it. Anything else (no candidate,
-      // several candidates, an ambiguous line) keeps the finding advisory.
+      // difference is a typo rather than a reference to a real sibling script
+      // (`isMechanicalRename`; `test:api` vs `test:app` is not), and the text
+      // to replace appears exactly once on the line, so the edit cannot land on
+      // another command that shares it.
       const fix =
-        rewrite && countOnLine(contentLines[cmd.line - 1] ?? '', rewrite.find) === 1
+        rewrite?.mechanical && countOnLine(contentLines[cmd.line - 1] ?? '', rewrite.find) === 1
           ? rewrite
           : undefined;
+      // A candidate too close to a different script to apply is still worth
+      // naming — cautiously, and in the recommendation rather than the summary,
+      // so nothing reads as a verdict.
+      const hint =
+        rewrite && !fix
+          ? ` The manifest defines "${rewrite.candidate}", which is close to "${rewrite.missing}"; ` +
+            'it may be what was meant, but it is near enough to be a different script, so check before changing it.'
+          : '';
 
       issues.push({
         id: issueId(fileIdPath(file), cmd.text),
@@ -1113,7 +1150,8 @@ function computeCommandAnalysis(context: RepoContext): CommandAnalysis {
         evidence: [`Command: \`${cmd.text}\``, `In file: ${file.path}`],
         recommendation:
           'Verify the command. If the script was renamed, update the instruction file. ' +
-          'If it is an illustrative example, wrap it in a placeholder like <script-name> to suppress this finding.',
+          'If it is an illustrative example, wrap it in a placeholder like <script-name> to suppress this finding.' +
+          hint,
         ...(fix
           ? {
               fixRecipe: `Rename the script in this command: \`${fix.find}\` -> \`${fix.replace}\`.`,

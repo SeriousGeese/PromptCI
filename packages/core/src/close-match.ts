@@ -27,6 +27,11 @@
  * Either rule must produce exactly ONE winner — one normalised-equal
  * candidate, or one candidate alone at the minimum distance. Zero candidates
  * and ties both yield `undefined`.
+ *
+ * {@link closestUniqueMatch} answers "is there one plausible candidate worth
+ * NAMING?" and is deliberately permissive. Whether that candidate may be
+ * applied without a human looking is a separate, much stricter question —
+ * see {@link isMechanicalRename}.
  */
 
 /** Maximum edit distance between a name and the candidate that may replace it. */
@@ -38,6 +43,98 @@ export const CLOSE_MATCH_MIN_LENGTH = 4;
 /** Lowercased with the separators naming conventions disagree about removed. */
 function normalizeName(name: string): string {
   return name.toLowerCase().replace(/[-_:./\s]/g, '');
+}
+
+/** Shortest name a two-edit difference may be judged a typo rather than a different script. */
+export const MECHANICAL_TWO_EDIT_MIN_LENGTH = 8;
+
+/** Shortest differing segment that may be corrected by an arbitrary single edit. */
+export const MECHANICAL_SEGMENT_MIN_LENGTH = 5;
+
+/** True when `a` and `b` are the same characters with one adjacent pair swapped. */
+function isAdjacentTransposition(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  const diff: number[] = [];
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) diff.push(i);
+  return diff.length === 2 && diff[1] === diff[0]! + 1 && a[diff[0]!] === b[diff[1]!] && a[diff[1]!] === b[diff[0]!];
+}
+
+/** True when `a` and `b` differ only by substituting digits for digits, position for position. */
+function isDigitForDigitSubstitution(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let changed = false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] === b[i]) continue;
+    if (!/^\d$/.test(a[i]!) || !/^\d$/.test(b[i]!)) return false;
+    changed = true;
+  }
+  return changed;
+}
+
+/**
+ * pcic-oonz: whether replacing `missing` with `candidate` is a MECHANICAL
+ * rename — a misspelling of one name — rather than a plausible reference to a
+ * genuinely different script. Only a mechanical rename may be auto-applied;
+ * {@link closestUniqueMatch} alone is far too loose for that.
+ *
+ * The problem the extra rules solve: a one-edit neighbour is very often a real
+ * sibling script, and rewriting to it silently runs the wrong command.
+ * `test:api` → `test:app`, `test:unit` → `test:init`, `db:up` → `db:rm`,
+ * `test` → `best`, `build:v1` → `build:v2` are each a unique nearest
+ * neighbour, and each rewrite is wrong. So:
+ *
+ *  1. A pure case / separator difference (`type-check` → `typecheck`) is always
+ *     mechanical: the two names denote the same thing in different styles.
+ *  2. Otherwise both names must have the SAME number of `:`-separated segments,
+ *     with the difference confined to exactly one of them. A command that
+ *     gains, loses or re-scopes a segment is a different command.
+ *  3. That segment pair must be within one edit, or two only when the whole
+ *     name is at least {@link MECHANICAL_TWO_EDIT_MIN_LENGTH} characters —
+ *     two edits on a short name reaches too far (`test` → `dist`).
+ *  4. A trailing-digit variant suffix is never corrected: `v1` → `v2`,
+ *     `py2` → `py3`, `1` → `2` select a version or a target, and the digit is
+ *     the whole point of the name.
+ *  5. In a differing segment shorter than
+ *     {@link MECHANICAL_SEGMENT_MIN_LENGTH} characters, only a transposition
+ *     or a mid-name digit swap counts. A single substituted LETTER in a short
+ *     name usually spells another real token (`api`/`app`, `test`/`best`,
+ *     `unit`/`init`), and no deterministic rule can tell which was meant — but
+ *     `e3e`/`e2e` is not two words, and `bulid`/`build` is a slip of the
+ *     fingers. (A dictionary would separate these more sharply; the repository
+ *     has no dictionary and detectors make no network call, so the test is
+ *     structural.)
+ *
+ * Anything this rejects is still reported — with the candidate named
+ * cautiously in the recommendation — just never rewritten automatically.
+ */
+export function isMechanicalRename(missing: string, candidate: string): boolean {
+  if (!missing || !candidate || missing === candidate) return false;
+  // 1. Same name, different convention.
+  if (normalizeName(missing) === normalizeName(candidate)) return true;
+
+  // 2. One differing `:` segment.
+  const from = missing.split(':');
+  const to = candidate.split(':');
+  if (from.length !== to.length) return false;
+  const differing = from.map((seg, i) => (seg === to[i] ? -1 : i)).filter((i) => i !== -1);
+  if (differing.length !== 1) return false;
+  const a = from[differing[0]!]!;
+  const b = to[differing[0]!]!;
+
+  // 3. Within the edit budget for this name's length.
+  const distance = damerauLevenshtein(a, b);
+  if (distance < 1 || distance > CLOSE_MATCH_MAX_DISTANCE) return false;
+  if (distance === 2 && missing.length < MECHANICAL_TWO_EDIT_MIN_LENGTH) return false;
+
+  // 4. A trailing-digit variant is a choice, not a typo.
+  const stem = (seg: string): string => seg.replace(/\d+$/, '');
+  if (stem(a) === stem(b)) return false;
+
+  // 5. A short segment may only be transposed, or have a mid-name digit swapped.
+  if (Math.max(a.length, b.length) < MECHANICAL_SEGMENT_MIN_LENGTH) {
+    return isAdjacentTransposition(a, b) || isDigitForDigitSubstitution(a, b);
+  }
+  return true;
 }
 
 /**

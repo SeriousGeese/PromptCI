@@ -134,6 +134,13 @@ type CollectedRef = {
    * or a layout bullet carries no `linkRaw` and stays advisory.
    */
   linkRaw?: string;
+  /**
+   * pcic-oonz: the reference sits inside a fenced code block or an inline code
+   * span. Such a link is sample text — markdown does not even render it — so it
+   * is reported like any other broken reference but never rewritten: editing
+   * documentation's example would change what the example says.
+   */
+  inCodeContext?: boolean;
 };
 
 /**
@@ -603,9 +610,13 @@ function collectRefs(
   const pushLink = (ref: string, evidence: string, index: number, linkRaw?: string): void => {
     if (!ref || isExternalRef(ref)) return;
     const line = lineForOffset(lineOffsets, index);
-    if (hasCheckableExtension(ref)) found.push({ ref, evidence, line, kind: 'file', linkRaw });
+    // pcic-oonz: a link written inside a fence or a code span is sample text.
+    // It is still CHECKED (a stale example is worth reporting), but the
+    // mechanical fix must leave it alone.
+    const inCodeContext = fenceLines[line - 1]?.inFence === true || inCode(index);
+    if (hasCheckableExtension(ref)) found.push({ ref, evidence, line, kind: 'file', linkRaw, inCodeContext });
     else if (isExtensionlessPathRef(ref) && !inCode(index)) {
-      found.push({ ref, evidence, line, kind: 'linkPath', linkRaw });
+      found.push({ ref, evidence, line, kind: 'linkPath', linkRaw, inCodeContext });
     }
   };
 
@@ -967,10 +978,14 @@ function judgeReference(
  * Every condition below has to hold, and each one is there to keep the rewrite
  * a fact rather than a guess:
  *
- *  - The reference is an INLINE markdown link whose raw target is a plain path
- *    (no angle brackets, no link title, no surrounding whitespace). Those forms
- *    are rewritable in principle, but each needs its own reassembly rule, and a
- *    recipe that is only sometimes right is worse than none.
+ *  - The reference is an INLINE markdown link, outside any fence or code span,
+ *    naming a FILE (a checkable extension, no trailing slash), whose raw target
+ *    is a plain path (no angle brackets, no link title, no surrounding
+ *    whitespace). The other forms are rewritable in principle, but each needs
+ *    its own reassembly rule, and a recipe that is only sometimes right is worse
+ *    than none.
+ *  - The path it would be rewritten TO needs no escaping, and does not point at
+ *    the linking file itself.
  *  - The repository holds EXACTLY ONE non-ignored file with that basename,
  *    found in the name index the detector already builds — one walk, inside the
  *    scan root, dependency and output trees excluded (see
@@ -991,8 +1006,14 @@ function movedLinkEdit(
   line: number,
   lineText: string,
   linkRaw: string,
+  kind: RefKind,
   ctx: JudgeContext,
 ): FixEdit | undefined {
+  // Only a link to a FILE — one with a checkable extension and no trailing
+  // slash. A directory link resolves to a tree, not to a name the file index
+  // can identify, and an extension-less target could match a same-named file
+  // that is not what the link meant.
+  if (kind !== 'file' || linkRaw.endsWith('/')) return undefined;
   if (linkRaw !== linkRaw.trim() || linkRaw.startsWith('<')) return undefined;
   if (stripLinkTitle(linkRaw) !== linkRaw) return undefined; // carries a title
   // Plain path characters only. The nested-link pattern can capture a target
@@ -1015,8 +1036,17 @@ function movedLinkEdit(
   if (candidates.length !== 1) return undefined;
 
   const absCandidate = path.resolve(ctx.tree.root, candidates[0]!);
+  // A file cannot be the fix for a link inside itself.
+  if (absCandidate === path.resolve(filePath)) return undefined;
   const relative = path.relative(path.dirname(filePath), absCandidate).split(path.sep).join('/');
   if (!relative) return undefined;
+  // The new target is written into `](…)` as-is, so it must need no escaping.
+  // A repository file whose path holds a space, a bracket, a parenthesis, `#`,
+  // `%`, `<`, `>`, `?` or a backtick would produce a link that renders as
+  // literal text or points somewhere else entirely — `](my docs/notes.md)` is
+  // not a link to `my docs/notes.md`. Percent-encoding it would be a second
+  // guess about the author's markdown flavour, so such a move stays advisory.
+  if (/[()[\]\s`#%<>?]/.test(relative)) return undefined;
   const newTarget = `${relative.startsWith('.') ? relative : `./${relative}`}${fragment}`;
   if (newTarget === linkRaw) return undefined;
 
@@ -1085,7 +1115,7 @@ export function detectDeadReferences(
     // unambiguous on the line it would edit.
     const fileLineTexts = file.content.split(/\r?\n/);
 
-    for (const { ref, evidence, line, kind, codeSpan, linkRaw } of refs) {
+    for (const { ref, evidence, line, kind, codeSpan, linkRaw, inCodeContext } of refs) {
       // BUG-009: Skip obvious placeholder/example filenames (foo.ts, bar.go, etc.)
       if (isPlaceholderRef(ref)) continue;
 
@@ -1134,9 +1164,9 @@ export function detectDeadReferences(
 
       // pcic-oonz: can THIS occurrence be re-pointed at the file it names?
       const edit =
-        linkRaw === undefined
+        linkRaw === undefined || inCodeContext === true
           ? undefined
-          : movedLinkEdit(file.path, line, fileLineTexts[line - 1] ?? '', linkRaw, ctx);
+          : movedLinkEdit(file.path, line, fileLineTexts[line - 1] ?? '', linkRaw, kind, ctx);
       if (edit === undefined) entry.allRewritable = false;
       else if (!entry.edits.some((e) => e.filePath === edit.filePath && e.line === edit.line && e.find === edit.find)) {
         entry.edits.push(edit);
