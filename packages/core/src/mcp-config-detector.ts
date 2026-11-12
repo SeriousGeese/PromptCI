@@ -26,6 +26,7 @@ import {
   SCRIPT_EXT_RE,
   aiConfigIssue as base,
 } from './ai-config.js';
+import { treeFor } from './repo-tree.js';
 
 function id(kind: string, key: string): string {
   return `ai-config-mcp-${kind}-${shortHash(key)}`;
@@ -109,6 +110,9 @@ function localPathRefs(command: string | undefined, args: string[]): string[] {
 
 export function detectMcpConfig(context: RepoContext): PromptCiIssue[] {
   const issues: PromptCiIssue[] = [];
+  // pcic-e6xa: one tree for the whole run, so its directory listings are read
+  // once and every reference below is looked up inside the scan root only.
+  const tree = treeFor(context);
 
   for (const filePath of context.aiConfig.mcp) {
     const raw = readTextWithinRoot(context.repoRoot, filePath);
@@ -191,7 +195,7 @@ export function detectMcpConfig(context: RepoContext): PromptCiIssue[] {
 
       // Local command / script paths that do not exist.
       for (const ref of localPathRefs(command, args)) {
-        if (isFileWithinRoot(context.repoRoot, ref)) continue;
+        if (isFileWithinRoot(tree, ref)) continue;
         issues.push(base({
           id: id('missing-command', `${filePath}|${name}|${ref}`),
           title: 'MCP server command path does not exist',

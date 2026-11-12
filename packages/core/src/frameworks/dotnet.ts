@@ -1,21 +1,23 @@
 import type { RepoContext } from '../repo-context.js';
 import type { PromptCiIssue } from '../types.js';
-import * as fs from 'node:fs';
 import { readTextWithinRoot } from '../ai-config.js';
+import { treeFor } from '../repo-tree.js';
 
 export function detectDotnet(context: RepoContext): PromptCiIssue[] {
   const issues: PromptCiIssue[] = [];
   const { repoRoot, files } = context;
 
+  // pcic-e6xa: the root listing comes from the scan's tree — see the note in
+  // frameworks/go.ts.
+  const tree = treeFor(context);
+  const rootEntries = tree.entries(tree.root);
+  const rootFiles = typeof rootEntries === 'string'
+    ? []
+    : [...rootEntries.values()].filter((e) => !e.isDirectory()).map((e) => e.name).sort();
+
   // Detect if dotnet project
-  let hasDotnet = context.projectType === 'dotnet';
-  if (!hasDotnet) {
-    try {
-      hasDotnet = fs.readdirSync(repoRoot).some(f => f.endsWith('.sln') || f.endsWith('.csproj'));
-    } catch {
-      // ignore
-    }
-  }
+  const hasDotnet = context.projectType === 'dotnet' ||
+    rootFiles.some((f) => f.endsWith('.sln') || f.endsWith('.csproj'));
 
   const combinedContent = files.map(f => f.content).join('\n');
   const hasDotnetMentions = /\bdotnet\b|\.sln\b|\.csproj\b|\bxunit\b|\bnunit\b|\bmstest\b/i.test(combinedContent);
@@ -48,7 +50,6 @@ export function detectDotnet(context: RepoContext): PromptCiIssue[] {
   // Let's find any csproj at the root to check target framework
   let targetFramework: string | undefined;
   try {
-    const rootFiles = fs.readdirSync(repoRoot);
     const csprojFile = rootFiles.find(f => f.endsWith('.csproj'));
     if (csprojFile) {
       const csprojContent = readTextWithinRoot(repoRoot, csprojFile) ?? '';

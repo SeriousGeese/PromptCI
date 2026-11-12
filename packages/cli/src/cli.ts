@@ -40,7 +40,14 @@ program
   .description('Scan instruction files and generate a health report')
   .option('--path <dir>', 'target directory to scan (default: current directory)')
   .option('--json', 'print JSON report to stdout (files are still written)')
-  .option('--output <file>', 'write markdown report to this path instead of default')
+  .option(
+    '--format <format>',
+    'output format for stdout and the extra report file: json or sarif (default: human-readable summary; markdown/JSON reports are always written)',
+  )
+  .option(
+    '--output <file>',
+    'write markdown report to this path instead of default (SARIF path instead, when --format sarif is set)',
+  )
   .option(
     '--fail-on <severity>',
     'exit non-zero if any issue meets or exceeds this severity (info|warning|high|critical)',
@@ -61,6 +68,7 @@ program
   .action(async (opts: {
     path?: string;
     json?: boolean;
+    format?: string;
     output?: string;
     failOn?: string;
     baseline?: string;
@@ -74,6 +82,8 @@ program
     await runScan({
       scanPath: opts.path,
       json: opts.json,
+      format: opts.format as 'json' | 'sarif' | undefined,
+      cliVersion: VERSION,
       output: opts.output,
       failOn: opts.failOn as import('@promptci/core').IssueSeverity | undefined,
       baseline: opts.baseline,

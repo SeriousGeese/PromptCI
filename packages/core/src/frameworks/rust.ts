@@ -1,14 +1,14 @@
 import type { RepoContext } from '../repo-context.js';
 import type { PromptCiIssue } from '../types.js';
-import * as path from 'node:path';
-import * as fs from 'node:fs';
 import { readTextWithinRoot } from '../ai-config.js';
+import { treeFor } from '../repo-tree.js';
 
 export function detectRust(context: RepoContext): PromptCiIssue[] {
   const issues: PromptCiIssue[] = [];
   const { repoRoot, files } = context;
 
-  const hasCargoToml = fs.existsSync(path.join(repoRoot, 'Cargo.toml'));
+  // pcic-e6xa: see the note in frameworks/go.ts.
+  const hasCargoToml = treeFor(context).isFile('Cargo.toml');
   const combinedContent = files.map(f => f.content).join('\n');
   const hasRustMentions = /\bcargo\.toml\b|\bcargo\s+(build|test|run|clippy|fmt)\b/i.test(combinedContent);
 

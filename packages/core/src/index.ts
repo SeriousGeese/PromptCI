@@ -12,6 +12,7 @@ export type { SuppressionAnnotation } from './suppression.js';
 export { computeHealthScore, selectTopFixes } from './health-score.js';
 export { generateMarkdownReport, generateJsonReport, writeReport, readHistoryIndex, archiveExistingReport, historyIndexPath, scoreLabel } from './report.js';
 export type { WriteReportOptions, HistoryEntry } from './report.js';
+export { generateSarifReport } from './sarif.js';
 export { detectManifestConsistency } from './manifest-consistency.js';
 export { detectDependencyStaleness } from './dependency-staleness.js';
 export type { ManifestData } from './manifest-consistency.js';
@@ -40,8 +41,26 @@ export { scan } from './scan.js';
 export { ADDRESSABLE_CATEGORIES, estimateTokens, annotateIssueTokens, computeAddressableTokens } from './token-estimates.js';
 export { computeFingerprint, createBaseline, filterNewIssues, assertValidBaseline } from './baseline.js';
 export { applyFixRecipe, resolveSafePath, isRepairable } from './fix-engine.js';
+export {
+  closestUniqueMatch,
+  isMechanicalRename,
+  damerauLevenshtein,
+  CLOSE_MATCH_MAX_DISTANCE,
+  CLOSE_MATCH_MIN_LENGTH,
+  MECHANICAL_TWO_EDIT_MIN_LENGTH,
+  MECHANICAL_SEGMENT_MIN_LENGTH,
+} from './close-match.js';
 export type { FileChange } from './fix-engine.js';
 export { isWithinRoot, resolveWithinRoot, realPathWithinRoot, resolveReadableWithinRoot, writeTargetWithinRoot } from './path-containment.js';
+// pcic-csf: a consumer needs only to BUILD a `knownPaths` list and hand it to
+// `scan()` — `KnownPaths` names its shape and `normalizeKnownPath` is the same
+// normalization the scan applies, so a caller can canonicalize and de-duplicate
+// its own list first. `RepoTree`, `PathInventory` and their types stay internal:
+// they are how the scan answers existence questions, not API anyone outside
+// calls, and exporting them would freeze that shape. Tests import them from
+// `../src/...` directly.
+export { normalizeKnownPath } from './known-paths.js';
+export type { KnownPaths } from './known-paths.js';
 export { optimizeContext } from './context-optimizer.js';
 export type { OptimizeOptions, OptimizeResult } from './context-optimizer.js';
 export {
@@ -68,3 +87,6 @@ export {
   PROMPTCI_GITIGNORE_BLOCK,
   renderPromptCiGitignore,
 } from './promptci-gitignore.js';
+
+export { selectScanPaths } from './discovery.js';
+export type { ScanPathEntry, SelectScanPathsOptions, SelectScanPathsResult } from './discovery.js';

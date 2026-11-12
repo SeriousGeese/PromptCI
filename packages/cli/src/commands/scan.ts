@@ -3,6 +3,7 @@ import * as path from 'node:path';
 import {
   scan,
   generateJsonReport,
+  generateSarifReport,
   writeReport,
   createBaseline,
   assertValidBaseline,
@@ -20,6 +21,14 @@ import { formatSummary, anyIssuesMeetThreshold } from '../summary.js';
 export type ScanOptions = {
   scanPath?: string;
   json?: boolean;
+  /**
+   * pcic-aq2f: selects the stdout format (files are still always written, like
+   * --json already does). 'sarif' also controls where the SARIF file itself is
+   * written: --output then means the SARIF path instead of the markdown path.
+   */
+  format?: 'json' | 'sarif';
+  /** The CLI's own package.json version, for the SARIF tool.driver.version field. */
+  cliVersion?: string;
   output?: string;
   failOn?: IssueSeverity;
   baseline?: string;
@@ -32,9 +41,14 @@ export type ScanOptions = {
 };
 
 const SEVERITY_VALUES: IssueSeverity[] = ['info', 'warning', 'high', 'critical'];
+const FORMAT_VALUES = ['json', 'sarif'] as const;
 
 function isValidSeverity(v: string): v is IssueSeverity {
   return (SEVERITY_VALUES as string[]).includes(v);
+}
+
+function isValidFormat(v: string): v is 'json' | 'sarif' {
+  return (FORMAT_VALUES as readonly string[]).includes(v);
 }
 
 export async function runScan(options: ScanOptions): Promise<void> {
@@ -85,6 +99,13 @@ export async function runScan(options: ScanOptions): Promise<void> {
   if (options.failOnNew !== undefined && !isValidSeverity(options.failOnNew)) {
     console.error(
       `Error: invalid --fail-on-new value "${options.failOnNew}". Must be one of: ${SEVERITY_VALUES.join(', ')}`,
+    );
+    process.exit(1);
+  }
+
+  if (options.format !== undefined && !isValidFormat(options.format)) {
+    console.error(
+      `Error: invalid --format value "${options.format}". Must be one of: ${FORMAT_VALUES.join(', ')}`,
     );
     process.exit(1);
   }
@@ -162,11 +183,31 @@ export async function runScan(options: ScanOptions): Promise<void> {
 
   // Write markdown and JSON files.
   // For the default case pass no path overrides so writeReport archives the
-  // previous run before overwriting. When --output is set, write to the custom
-  // path only and skip archiving.
-  const written = options.output
-    ? await writeReport(report, { mdPath: path.resolve(options.output), archive: false })
+  // previous run before overwriting. When --output is set (and --format is
+  // not sarif, where --output instead names the SARIF path below), write to
+  // the custom path only and skip archiving.
+  const mdOutputOverride = options.output && options.format !== 'sarif' ? path.resolve(options.output) : undefined;
+  const written = mdOutputOverride
+    ? await writeReport(report, { mdPath: mdOutputOverride, archive: false })
     : await writeReport(report);
+
+  // pcic-aq2f: SARIF is an additional file, written alongside the markdown/JSON
+  // report rather than replacing them (review-diff, baseline, trend all read
+  // report.json). --output, when --format sarif is set, overrides this path
+  // the same way it overrides the markdown path for the default format.
+  let sarifContent: string | undefined;
+  if (options.format === 'sarif') {
+    const sarifPath = options.output ? path.resolve(options.output) : path.join(resolvedPath, '.promptci', 'report.sarif');
+    if (!writeTargetWithinRoot(resolvedPath, sarifPath)) {
+      console.error(
+        `Error: SARIF output "${sarifPath}" resolves outside the scan path through a symlink; refusing to write it.`,
+      );
+      process.exit(1);
+    }
+    await fs.mkdir(path.dirname(sarifPath), { recursive: true });
+    sarifContent = generateSarifReport(report, options.cliVersion ?? '0.0.0');
+    await fs.writeFile(sarifPath, sarifContent, 'utf8');
+  }
 
   // Update baseline if requested
   if (options.updateBaseline) {
@@ -185,13 +226,23 @@ export async function runScan(options: ScanOptions): Promise<void> {
     }
     await fs.mkdir(path.dirname(baselinePath), { recursive: true });
     await fs.writeFile(baselinePath, JSON.stringify(newBaseline, null, 2));
-    if (!options.json) {
-      console.log(`\nBaseline updated: ${baselinePath}`);
+    // --format json is just --json's stdout shape (see below); either one, or
+    // --format sarif, means stdout must parse as that format alone — this
+    // notice would otherwise land as a stray non-JSON/non-SARIF line before
+    // (or, on some platforms, interleaved with) the machine-readable output.
+    if (!options.json && options.format === undefined) {
+      process.stdout.write(`\nBaseline updated: ${baselinePath}\n`);
+    } else {
+      process.stderr.write(`Baseline updated: ${baselinePath}\n`);
     }
   }
 
-  // Output
-  if (options.json) {
+  // Output. --format json is equivalent to --json; --format sarif prints
+  // SARIF (and, as `sarifContent`, was already written to a file above).
+  const effectiveJson = options.json || options.format === 'json';
+  if (options.format === 'sarif') {
+    process.stdout.write(`${sarifContent}\n`);
+  } else if (effectiveJson) {
     // Print JSON to stdout; summary was suppressed
     process.stdout.write(generateJsonReport(report) + '\n');
   } else {

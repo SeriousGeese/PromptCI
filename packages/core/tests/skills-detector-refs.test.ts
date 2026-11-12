@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import { detectSkills, extractFileRefs } from '../src/skills-detector.js';
 import { createGitIgnoreChecker } from '../src/gitignore.js';
+import { RepoTree } from '../src/repo-tree.js';
 import { scan } from '../src/scan.js';
 import { ctx, makeTempRepo, writeFile } from './ai-config-helpers.js';
 
@@ -203,7 +204,8 @@ describe('createGitIgnoreChecker', () => {
   function checker(files: Record<string, string>): (p: string) => boolean {
     const dir = repo();
     for (const [rel, content] of Object.entries(files)) writeFile(dir, rel, content);
-    return createGitIgnoreChecker(dir);
+    // pcic-e6xa: the checker reads its `.gitignore` files through the scan's tree.
+    return createGitIgnoreChecker(new RepoTree(dir));
   }
 
   // [.gitignore content, path, what git does]. Escapes, braces and extglobs are

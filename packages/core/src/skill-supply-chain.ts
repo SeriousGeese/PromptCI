@@ -130,6 +130,8 @@ import { realPathWithinRoot } from './path-containment.js';
 import { scanFencedLines } from './markdown-fences.js';
 import { extractFileRefs } from './skills-detector.js';
 import { codepointLabel, visibleText } from './evidence.js';
+import { treeFor } from './repo-tree.js';
+import type { RepoTree } from './repo-tree.js';
 
 /** First entry of every finding's `tags`. */
 export const SKILL_SUPPLY_CHAIN_TAG = 'skill-supply-chain';
@@ -2620,7 +2622,7 @@ function checkManifest(doc: SkillDoc, hit: (line: number, text: string, index: n
  * examples of scripts the *reader* would write, which never exist.
  */
 function checkMissingScripts(
-  repoRoot: string,
+  tree: RepoTree,
   skillDir: string,
   doc: SkillDoc,
   alreadyReported: () => ReadonlySet<string>,
@@ -2663,7 +2665,7 @@ function checkMissingScripts(
     if (cached !== undefined) return cached;
     if (fsChecks >= MAX_FS_CHECKS_PER_DOC) return undefined;
     fsChecks++;
-    const result = isFileWithinRoot(repoRoot, p);
+    const result = isFileWithinRoot(tree, p);
     exists.set(p, result);
     return result;
   };
@@ -2835,7 +2837,7 @@ function loadDocs(
 
 /** Scan one document (dropped by the caller right after). Returns package `bin` targets to scan next. */
 function scanDoc(
-  repoRoot: string,
+  tree: RepoTree,
   skillDir: string,
   doc: SkillDoc,
   isSkillMd: boolean,
@@ -2869,14 +2871,14 @@ function scanDoc(
   const manifestExists: ManifestExists = (name) => {
     const rel = name.replace(/^\.\//, '');
     if (!rel || rel.startsWith('/') || /^[a-z]:/i.test(rel)) return false;
-    return [`${path.posix.dirname(doc.path)}/${rel}`, `${skillDir}/${rel}`, rel].some((p) => isFileWithinRoot(repoRoot, p));
+    return [`${path.posix.dirname(doc.path)}/${rel}`, `${skillDir}/${rel}`, rel].some((p) => isFileWithinRoot(tree, p));
   };
   const consumed = checkExec(doc, logical, commands, add, manifestExists);
   checkUnpinned(doc, commands, consumed, add);
   if (doc.kind === 'instructions') {
     checkProse(doc, add);
     checkHiddenMarkup(doc, add);
-    if (isSkillMd && !doc.tail) checkMissingScripts(repoRoot, skillDir, doc, alreadyReported, add);
+    if (isSkillMd && !doc.tail) checkMissingScripts(tree, skillDir, doc, alreadyReported, add);
   } else {
     checkScript(doc, consumed, add);
   }
@@ -2897,18 +2899,22 @@ const DEPENDENCY_REF_RE: Record<string, RegExp> = {
   '.worktrees': /(?:^|[\s'"`(=:])(?:\.\/)?\.worktrees\//m,
 };
 
-/** Non-sample hook files under a skill's `.git/hooks`. */
-function hasGitHooks(repoRoot: string, gitDir: string): boolean {
-  const abs = resolveWithinRoot(repoRoot, `${gitDir}/hooks`);
-  if (!abs) return false;
-  try {
-    return fs.readdirSync(abs).some((f) => !f.endsWith('.sample'));
-  } catch {
-    return false;
-  }
+/**
+ * Non-sample hook files under a skill's `.git/hooks`.
+ *
+ * pcic-e6xa: listed through the scan's tree. The path is a fixed name under a
+ * discovered skill directory, but a `.git` committed as a link out of the
+ * repository used to decide whether this `warning` fires, and in the hosted
+ * product the scan root is a server temp directory.
+ */
+function hasGitHooks(tree: RepoTree, gitDir: string): boolean {
+  const entries = tree.entries(`${gitDir}/hooks`);
+  if (typeof entries === 'string') return false;
+  for (const name of entries.keys()) if (!name.endsWith('.sample')) return true;
+  return false;
 }
 
-function skipReason(skip: SkillBundleSkip, referenced: ReadonlySet<string>, repoRoot: string): Unscanned {
+function skipReason(skip: SkillBundleSkip, referenced: ReadonlySet<string>, tree: RepoTree): Unscanned {
   switch (skip.kind) {
     case 'dependency-dir': {
       const name = path.posix.basename(skip.path);
@@ -2917,7 +2923,7 @@ function skipReason(skip: SkillBundleSkip, referenced: ReadonlySet<string>, repo
       if (referenced.has(name)) {
         return { path: skip.path, reason: `dependency/VCS directory the skill runs or references by path — not walked${read}`, severity: 'high' };
       }
-      if (name === '.git' && hasGitHooks(repoRoot, skip.path)) {
+      if (name === '.git' && hasGitHooks(tree, skip.path)) {
         return { path: skip.path, reason: 'git directory with hooks — hooks run on git operations and were not scanned', severity: 'warning' };
       }
       return { path: skip.path, reason: `dependency/VCS directory — not walked${read}`, severity: 'info' };
@@ -2947,6 +2953,10 @@ type SkillState = {
 export type SkillScanLimits = Partial<{ bytes: number; files: number; lines: number }>;
 
 export function detectSkillSupplyChain(context: RepoContext, limits: SkillScanLimits = {}): PromptCiIssue[] {
+  // pcic-e6xa: every existence check this scan makes goes through the scan's
+  // tree, so a skill cannot point it outside the repository through a committed
+  // link; pcic-csf: a caller's file inventory answers first.
+  const tree = treeFor(context);
   // `allSkills`/`skillFiles` are optional for hand-built contexts from older releases.
   const ai: Partial<RepoContext['aiConfig']> = context.aiConfig ?? {};
   const allSkills = ai.allSkills ?? ai.skills ?? [];
@@ -3014,7 +3024,7 @@ export function detectSkillSupplyChain(context: RepoContext, limits: SkillScanLi
     if (isSkillMd) state.headContent = loaded.docs[0]?.content;
     for (const doc of loaded.docs) {
       noteReferences(state, doc);
-      extra.push(...scanDoc(context.repoRoot, state.dir, doc, isSkillMd, state.alreadyReported, state.collector, state.unscanned));
+      extra.push(...scanDoc(tree, state.dir, doc, isSkillMd, state.alreadyReported, state.collector, state.unscanned));
     }
     // A dependency package's `bin` targets are what `npx`/install runs: scan them as scripts.
     for (const target of extra) if (owner(target) >= 0) scanFile(state, target, false, true);
@@ -3037,7 +3047,7 @@ export function detectSkillSupplyChain(context: RepoContext, limits: SkillScanLi
   for (const state of states) {
     if (!state.loaded) continue; // unreadable SKILL.md
     for (const skip of ai.skillBundleSkips ?? []) {
-      if (owner(skip.path) === states.indexOf(state)) state.unscanned.push(skipReason(skip, state.referenced, context.repoRoot));
+      if (owner(skip.path) === states.indexOf(state)) state.unscanned.push(skipReason(skip, state.referenced, tree));
     }
     // Name what could not be scanned — never drop it silently.
     for (const u of state.unscanned) {

@@ -1,4 +1,3 @@
-import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as crypto from 'node:crypto';
 import type { RepoContext } from './repo-context.js';
@@ -8,7 +7,8 @@ import { fileIdPath } from './finding-id.js';
 import { anyWorkspaceHasScript, isKnownBinary, selectWorkspaces } from './workspace-manifests.js';
 import { makefileDefines, readMakefile } from './makefile.js';
 import type { MakefileFacts } from './makefile.js';
-import { RepoTree, incompleteCheckIssue, isAbsoluteAnywhere } from './repo-tree.js';
+import { RepoTree, incompleteCheckIssue, isAbsoluteAnywhere, treeFor } from './repo-tree.js';
+import { closestUniqueMatch, isMechanicalRename } from './close-match.js';
 import type { Lookup, UncheckedRef } from './repo-tree.js';
 
 /**
@@ -35,6 +35,14 @@ import type { Lookup, UncheckedRef } from './repo-tree.js';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+/** Occurrences of a plain substring in one line of text (pcic-oonz). */
+function countOnLine(line: string, needle: string): number {
+  if (!needle) return 0;
+  let count = 0;
+  for (let at = line.indexOf(needle); at !== -1; at = line.indexOf(needle, at + needle.length)) count++;
+  return count;
+}
+
 /** Stable per-finding ID based on file + command text. */
 function issueId(filePath: string, cmdText: string): string {
   const hash = crypto
@@ -52,6 +60,40 @@ function issueId(filePath: string, cmdText: string): string {
  */
 const UNJUDGED: unique symbol = Symbol('unjudged');
 type Verdict = string | null | typeof UNJUDGED;
+
+/**
+ * pcic-oonz: a missing script name together with the single close match the
+ * manifest that would have run it offers. Produced only when
+ * {@link closestUniqueMatch} finds exactly one candidate; zero or several
+ * leave the finding advisory.
+ */
+type ScriptSuggestion = {
+  missing: string;
+  candidate: string;
+  /**
+   * True when the difference is a misspelling rather than a plausible
+   * reference to a different script ({@link isMechanicalRename}). Only then may
+   * the finding be auto-applied; otherwise the candidate is merely named in the
+   * recommendation for a human to confirm.
+   */
+  mechanical: boolean;
+};
+
+/**
+ * pcic-oonz: the substitution that corrects a mistyped script name, as text to
+ * look for on the command's line. The command prefix is kept in `find`
+ * (`pnpm --filter web lnit`, not the bare `lnit`) so the edit cannot land on
+ * another word on the same line; the caller still requires it to occur exactly
+ * once there before the finding is marked auto-applicable.
+ */
+type ScriptRewrite = {
+  find: string;
+  replace: string;
+  missing: string;
+  candidate: string;
+  /** See {@link ScriptSuggestion.mechanical}. */
+  mechanical: boolean;
+};
 
 /** Separators in a documented path: `/` everywhere, `\` too where the platform treats it as one. */
 const PATH_SEPARATORS = path.sep === '\\' ? /[\\/]/ : /\//;
@@ -112,20 +154,31 @@ function missingUnless(found: Lookup, message: string): Verdict {
 /**
  * The name and scripts of a package.json; `null` when there is none to read
  * (or it does not parse); `unreadable` when a directory on the way could not
- * be listed, so whether it exists is unknown.
+ * be listed, so whether it exists is unknown; `unfetched` when a caller's
+ * inventory says the manifest is there but its bytes were never fetched
+ * (pcic-csf) — nothing failed, so callers stay silent rather than warn.
  */
 function readPackageScripts(
   tree: RepoTree,
   packageJsonPath: string,
-): { name?: string; scripts: Record<string, string> } | null | 'unreadable' {
+): { name?: string; scripts: Record<string, string> } | null | 'unreadable' | 'unfetched' {
   // pcic-x1vl: looked up through the tree, so a manifest path that leaves the
   // root (`cd` through a link out of the tree) is never touched, and a
   // manifest committed as a link out of the tree is not read.
   const found = tree.lookup(packageJsonPath);
   if (found.state === 'unreadable') return 'unreadable';
   if (found.state !== 'found' || found.isDir) return null;
+  // pcic-csf: a caller's inventory can say the manifest is there without its
+  // bytes being on disk. Its scripts are then unknown, not absent — reporting
+  // them missing is the false positive the inventory exists to remove. The two
+  // "cannot read" answers stay apart: `unreadable` is a real failure the scan
+  // should name, `unfetched` is nothing to name (see RepoTree.readText).
+  const read = tree.readText(packageJsonPath);
+  if (read.state === 'unreadable' || read.state === 'too-large') return 'unreadable';
+  if (read.state === 'unfetched') return 'unfetched';
+  if (read.state !== 'found') return null;
   try {
-    const raw = fs.readFileSync(found.path, 'utf8');
+    const raw = read.content;
     const parsed = JSON.parse(raw) as Record<string, unknown>;
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return null;
     const scripts = typeof parsed.scripts === 'object' && parsed.scripts !== null && !Array.isArray(parsed.scripts)
@@ -193,15 +246,19 @@ function workspacePackageJsonCandidates(tree: RepoTree, selector: string): { can
 }
 
 /**
- * True when the workspace(s) a selector names define the script; `unknown`
- * when none found does but a manifest or workspace directory could not be read.
+ * True when the workspace(s) a selector names define the script; `unknown` when
+ * none found does but a manifest or workspace directory could not be read;
+ * `silent` when the only thing in the way was a manifest a caller's inventory
+ * listed without fetching (pcic-csf), which is not a failure to report.
  */
+type ScopeVerdict = boolean | 'unknown' | 'silent';
+
 function workspaceHasScript(
   context: RepoContext,
   tree: RepoTree,
   selector: string | undefined,
   scriptName: string,
-): boolean | 'unknown' {
+): ScopeVerdict {
   const normalizedSelector = normalizePnpmFilter(selector);
   if (!normalizedSelector) return false;
 
@@ -214,10 +271,12 @@ function workspaceHasScript(
 
   const { candidates, complete } = workspacePackageJsonCandidates(tree, normalizedSelector);
   let unknown = !complete;
+  let silent = false;
   for (const candidate of candidates) {
     const pkg = readPackageScripts(tree, candidate);
     if (pkg === 'unreadable') unknown = true;
-    if (!pkg || pkg === 'unreadable') continue;
+    if (pkg === 'unfetched') silent = true;
+    if (!pkg || pkg === 'unreadable' || pkg === 'unfetched') continue;
     const packageDir = path.dirname(candidate).replace(/\\/g, '/');
     const relDir = path.relative(context.repoRoot, packageDir).replace(/\\/g, '/');
     const selectorMatches =
@@ -227,7 +286,9 @@ function workspaceHasScript(
     if (selectorMatches && !!pkg.scripts[scriptName]) return true;
   }
 
-  return unknown ? 'unknown' : false;
+  if (unknown) return 'unknown';
+  // A manifest that exists but was never fetched could define the script.
+  return silent ? 'silent' : false;
 }
 
 /** Returns true when a path string looks like a file reference (not a flag). */
@@ -565,6 +626,7 @@ function findMissingScript(
   tool: string,
   lookup: ScriptLookup,
   onScript?: (name: string) => void,
+  suggest?: (suggestion: ScriptSuggestion) => void,
 ): Verdict {
   const names = scriptName.includes('/')
     ? scriptName.split('/').map((s) => s.trim()).filter(Boolean)
@@ -585,7 +647,7 @@ function findMissingScript(
 
   const selector = lookup.workspaceName ?? workspaceSelector(tool, parts);
   const allWorkspaces = runsInAllWorkspaces(tool, parts);
-  const inWorkspaceScope = (name: string): boolean | 'unknown' =>
+  const inWorkspaceScope = (name: string): ScopeVerdict =>
     allWorkspaces ? anyWorkspaceHasScript(context, name) : workspaceHasScript(context, tree, selector, name);
 
   // With discovered workspaces, an explicit selector means ONLY the selected
@@ -596,10 +658,34 @@ function findMissingScript(
       ? selectWorkspaces(context, selector.replace(/^['"]|['"]$/g, '').replace(/^\.\.\./, '').replace(/\.\.\.$/, '').trim())
       : undefined;
 
+  /**
+   * pcic-oonz: offers the one close match for a name that is about to be
+   * reported missing, from the manifest(s) that would actually have run it.
+   *
+   * Deliberately silent for the slash shorthand (`pnpm lint/typecheck`): the
+   * rewrite would have to edit one component of a token that documents several
+   * scripts, which is not the mechanical single-token substitution the fix
+   * engine applies. Silent too whenever a workspace selector is in play
+   * without discovered workspaces to resolve it against — the candidate pool
+   * would then be the root manifest, which is not where the script would run.
+   */
+  const propose = (name: string, pool: Iterable<string>): void => {
+    if (!suggest || names.length !== 1) return;
+    const candidate = closestUniqueMatch(name, pool);
+    if (candidate !== undefined) {
+      suggest({ missing: name, candidate, mechanical: isMechanicalRename(name, candidate) });
+    }
+  };
+  const scopedToWorkspaces = selector !== undefined || allWorkspaces;
+
   const inSubdir = cwd !== '.' && cwd !== '';
   const dirPkg = inSubdir
     ? readPackageScripts(tree, path.join(tree.root, cwd, 'package.json'))
     : null;
+  // pcic-csf: the manifest is there but was never fetched. Nothing failed and
+  // there is no location to name, so say nothing at all — a "check incomplete"
+  // warning here would name zero locations and tell the reader nothing.
+  if (dirPkg === 'unfetched') return null;
   // pcic-x1vl: a directory on the way could not be listed — say so, don't guess.
   if (dirPkg === 'unreadable') return UNJUDGED;
   // cd'd into a directory whose package.json we can't read — don't guess.
@@ -623,6 +709,16 @@ function findMissingScript(
       const target = selectedWorkspaces.length === 1
         ? `${selectedWorkspaces[0]!.name ?? selectedWorkspaces[0]!.dir} (${selectedWorkspaces[0]!.dir}/package.json)`
         : `the ${selectedWorkspaces.length} workspaces selected by "${selector}"`;
+      // The selected packages ARE the manifests that would run the script — all
+      // of them, so a candidate only SOME of them define would still leave the
+      // command broken where it is missing. The pool is therefore the
+      // intersection of their script names (which for one selected package is
+      // simply that package's scripts).
+      const pools = selectedWorkspaces.map((ws) => Object.keys(ws.scripts));
+      propose(
+        name,
+        pools.slice(1).reduce((shared, pool) => shared.filter((n) => pool.includes(n)), pools[0] ?? []),
+      );
       return `${tool} script "${name}" does not appear in ${target} scripts`;
     }
 
@@ -634,17 +730,19 @@ function findMissingScript(
       // script.
       if (dirPkg.scripts[name]) continue;
       const inWorkspace = inWorkspaceScope(name);
-      if (inWorkspace === true) continue;
+      if (inWorkspace === true || inWorkspace === 'silent') continue;
       if (inWorkspace === 'unknown') return UNJUDGED;
+      if (!scopedToWorkspaces) propose(name, Object.keys(dirPkg.scripts));
       return `${tool} script "${name}" does not appear in ${cwd}/package.json scripts`;
     }
 
     // Repo-root context: the workspace target(s) or the root manifest.
     const inWorkspace = inWorkspaceScope(name);
-    if (inWorkspace === true) continue;
+    if (inWorkspace === true || inWorkspace === 'silent') continue;
     if (context.packageJson.scripts[name]) continue;
     // pcic-x1vl: a selected workspace may define it in a directory that could not be read.
     if (inWorkspace === 'unknown') return UNJUDGED;
+    if (!scopedToWorkspaces) propose(name, Object.keys(context.packageJson.scripts));
     return `${tool} script "${name}" does not appear in package.json scripts`;
   }
   return null;
@@ -674,6 +772,7 @@ function validatePackageManagerScript(
   cwd: string | null,
   baseDir: string | null,
   onScript?: (name: string) => void,
+  suggest?: (rewrite: ScriptRewrite) => void,
 ): Verdict {
   const subIdx = firstNonFlagArgIndex(parts);
   const sub = parts[subIdx];
@@ -713,6 +812,21 @@ function validatePackageManagerScript(
     }
   }
 
+  // pcic-oonz: the rewrite keeps everything up to and including the script
+  // name, so the text looked for on the line is the command as documented
+  // (`npm run bulid`, `pnpm --filter web lnit`) rather than a bare word.
+  const prefix = parts.slice(0, nameIdx).join(' ');
+  const onSuggestion = suggest
+    ? ({ missing, candidate, mechanical }: ScriptSuggestion): void =>
+        suggest({
+          find: prefix ? `${prefix} ${missing}` : missing,
+          replace: prefix ? `${prefix} ${candidate}` : candidate,
+          missing,
+          candidate,
+          mechanical,
+        })
+    : undefined;
+
   return findMissingScript(
     context,
     tree,
@@ -724,6 +838,7 @@ function validatePackageManagerScript(
     // npm/pnpm `run` only run scripts; every other form can fall through to a binary.
     { allowBinary: !(explicitRun && (tool === 'npm' || tool === 'pnpm')), workspaceName },
     onScript,
+    onSuggestion,
   );
 }
 
@@ -825,6 +940,12 @@ function validateSegment(
     fileDir?: string;
     /** The scan's view of the repository; one per analysis, so listings are shared. */
     tree?: RepoTree;
+    /**
+     * pcic-oonz: called at most once, with the mechanical rewrite that would
+     * correct a mistyped package-manager script name. The caller decides
+     * whether to attach it to the finding.
+     */
+    suggestScript?: (rewrite: ScriptRewrite) => void;
   } = {},
 ): Verdict {
   if (PLACEHOLDER_RE.test(seg)) return null;
@@ -832,7 +953,7 @@ function validateSegment(
   const parts = seg.trim().split(/\s+/);
   if (parts.length === 0) return null;
   const tool = parts[0]!;
-  const tree = opts.tree ?? new RepoTree(context.repoRoot);
+  const tree = opts.tree ?? treeFor(context);
 
   // Base directory for file-existence checks — respects a `cd`-established cwd.
   const baseDir = cwd === null
@@ -843,7 +964,7 @@ function validateSegment(
 
   // ── Package manager scripts ────────────────────────────────────────────────
   if (tool === 'pnpm' || tool === 'npm' || tool === 'yarn' || tool === 'bun') {
-    return validatePackageManagerScript(tool, parts, context, tree, cwd, baseDir, onScript);
+    return validatePackageManagerScript(tool, parts, context, tree, cwd, baseDir, onScript, opts.suggestScript);
   }
 
   // ── File-executing commands ────────────────────────────────────────────────
@@ -967,7 +1088,7 @@ function computeCommandAnalysis(context: RepoContext): CommandAnalysis {
   const issues: PromptCiIssue[] = [];
   const evaluatedScripts = new Map<string, Set<string>>();
   const reported = new Set<string>();
-  const tree = new RepoTree(context.repoRoot);
+  const tree = treeFor(context);
   // pcic-x1vl: commands left unchecked because part of the tree could not be listed.
   const unchecked = new Map<string, UncheckedRef>();
   // Makefiles by repo-relative directory: the root one comes from the context,
@@ -981,6 +1102,9 @@ function computeCommandAnalysis(context: RepoContext): CommandAnalysis {
 
   for (const file of context.files) {
     const commands = extractCommands(file.content);
+    // pcic-oonz: the file's own lines, to confirm a rewrite's `find` text is
+    // unambiguous there before the finding claims to be auto-applicable.
+    const contentLines = file.content.split(/\r?\n/);
     const evaluated = new Set<string>();
     const fileDir = path.relative(context.repoRoot, path.dirname(file.path)).replace(/\\/g, '/') || '.';
     evaluatedScripts.set(file.path, evaluated);
@@ -992,11 +1116,13 @@ function computeCommandAnalysis(context: RepoContext): CommandAnalysis {
       // (prose, which never carries a `cd`) runs from the root; null stays
       // unverifiable.
       const cwd = cmd.cwd === undefined ? '.' : cmd.cwd;
+      let rewrite: ScriptRewrite | undefined;
       const error = validateSegment(cmd.text, context, cwd, (name) => evaluated.add(`${cmd.line}:${name}`), {
         fenced: cmd.fenced === true,
         makefileFor,
         fileDir: fileDir.startsWith('..') ? '.' : fileDir,
         tree,
+        suggestScript: (r) => { rewrite = r; },
       });
       if (!error) continue;
       if (error === UNJUDGED) {
@@ -1014,18 +1140,48 @@ function computeCommandAnalysis(context: RepoContext): CommandAnalysis {
       if (reported.has(dedupeKey)) continue;
       reported.add(dedupeKey);
 
+      // pcic-oonz: a MISSPELLED script name with exactly one close match in the
+      // manifest that would have run it is a mechanical rewrite — provided the
+      // difference is a typo rather than a reference to a real sibling script
+      // (`isMechanicalRename`; `test:api` vs `test:app` is not), and the text
+      // to replace appears exactly once on the line, so the edit cannot land on
+      // another command that shares it.
+      const fix =
+        rewrite?.mechanical && countOnLine(contentLines[cmd.line - 1] ?? '', rewrite.find) === 1
+          ? rewrite
+          : undefined;
+      // A candidate too close to a different script to apply is still worth
+      // naming — cautiously, and in the recommendation rather than the summary,
+      // so nothing reads as a verdict.
+      const hint =
+        rewrite && !fix
+          ? ` The manifest defines "${rewrite.candidate}", which is close to "${rewrite.missing}"; ` +
+            'it may be what was meant, but it is near enough to be a different script, so check before changing it.'
+          : '';
+
       issues.push({
         id: issueId(fileIdPath(file), cmd.text),
         severity: 'warning',
         category: 'command_validity',
         title: `Possible reference to missing command or file: \`${cmd.text.split(/\s+/).slice(0, 3).join(' ')}\``,
-        summary: error,
+        summary: fix
+          ? `${error}. The closest script name the manifest defines is "${fix.candidate}".`
+          : error,
         filePaths: [file.path],
         locations: [{ filePath: file.path, startLine: cmd.line, endLine: cmd.line }],
         evidence: [`Command: \`${cmd.text}\``, `In file: ${file.path}`],
         recommendation:
           'Verify the command. If the script was renamed, update the instruction file. ' +
-          'If it is an illustrative example, wrap it in a placeholder like <script-name> to suppress this finding.',
+          'If it is an illustrative example, wrap it in a placeholder like <script-name> to suppress this finding.' +
+          hint,
+        ...(fix
+          ? {
+              fixRecipe: `Rename the script in this command: \`${fix.find}\` -> \`${fix.replace}\`.`,
+              // `applyFixRecipe` replaces that one occurrence on that one line.
+              autoApplySafe: true,
+              fixEdits: [{ filePath: file.path, line: cmd.line, find: fix.find, replace: fix.replace }],
+            }
+          : {}),
         confidence: 0.8,
       });
     }

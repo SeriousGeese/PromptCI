@@ -114,6 +114,30 @@ export type InstructionFile = {
   estimatedTokens: number;
 };
 
+/**
+ * pcic-oonz: one line-anchored text substitution a mechanical fix recipe
+ * applies. The emitting detector computes it while it still has the parsed
+ * command or link in hand; `applyFixRecipe` only applies it, so the fix engine
+ * never re-derives detection logic (and never walks the repository again).
+ *
+ * `find` must occur EXACTLY ONCE on line `line` of `filePath`. Both the
+ * detector and the fix engine check that: the detector so a finding is never
+ * advertised as auto-applicable when the edit is ambiguous, the engine so an
+ * edit computed against a file that has since changed is refused rather than
+ * applied to the wrong text. An issue whose edits cannot all be applied
+ * cleanly produces no change at all — never a partial rewrite.
+ */
+export type FixEdit = {
+  /** File to edit, as written in the issue's `locations[].filePath`. */
+  filePath: string;
+  /** 1-based line the substitution applies to. */
+  line: number;
+  /** Exact text to replace; must occur exactly once on that line and contain no newline. */
+  find: string;
+  /** Text that replaces it. */
+  replace: string;
+};
+
 export type PromptCiIssue = {
   id: string;
   severity: IssueSeverity;
@@ -133,6 +157,15 @@ export type PromptCiIssue = {
    * inferred from the presence of `fixRecipe`, which is usually advisory prose.
    */
   autoApplySafe?: boolean;
+  /**
+   * pcic-oonz: the exact substitutions `applyFixRecipe` performs for this
+   * finding, computed by the detector. Present only on the recipes that work
+   * this way (a mistyped package script, a moved link target); the older
+   * recipes (.gitignore stanzas, duplicate consolidation) are recomputed from
+   * the issue inside the fix engine and carry none. Never set without
+   * `autoApplySafe`.
+   */
+  fixEdits?: FixEdit[];
   confidence: number;
   tags?: string[];
   impact?: 'high' | 'medium' | 'low';
@@ -289,4 +322,40 @@ export type ScanInput = {
    * `vagueGuidanceSeverity` config key.
    */
   vagueGuidanceSeverity?: 'info' | 'warning';
+  /**
+   * pcic-csf: the repo-relative POSIX paths the repository holds, as a file
+   * inventory the scan consults BEFORE the filesystem for every existence
+   * check (a documented command's script, a dead reference, a skill's bundled
+   * file, `.env`, `supabase/migrations`, a build directory, `.gitignore`).
+   *
+   * For a caller that does not have the repository on disk: a hosted scan
+   * fetches the instruction files into a temp directory and leaves everything
+   * else unfetched, so without this every other path reads as missing and the
+   * scan reports references and commands as broken that are merely absent from
+   * the temp dir. Listing files is enough — every directory on the way to a
+   * listed file is implied.
+   *
+   * Paths are normalized (backslashes read as separators, `./` dropped); an
+   * absolute path, or one climbing out of the repository with `..`, is ignored.
+   * An entry with a trailing slash names a directory that holds no files of its
+   * own. Leave unset for an ordinary scan of a checkout.
+   *
+   * One caveat worth knowing: a file LISTED here but not fetched is "known to
+   * exist, contents unavailable", and the checks that need its contents go
+   * quiet rather than guess. For `.gitignore` that is every reference the
+   * repository's ignore rules could have covered — so fetch `.gitignore`
+   * alongside the instruction files rather than only listing it, or the
+   * dead-reference findings go with it. The same holds for `package.json` and
+   * `Makefile`: listed-and-fetched gives full checking, listed-only gives
+   * silence, and omitted-from-a-complete-list means "absent".
+   */
+  knownPaths?: ReadonlySet<string> | readonly string[];
+  /**
+   * True when `knownPaths` is the WHOLE repository: a path it does not list is
+   * then genuinely absent and the filesystem is never consulted for one.
+   * False/unset treats the list as a partial view — a listed path is known to
+   * exist, and an unlisted one is still looked for on disk. Ignored without
+   * `knownPaths`.
+   */
+  knownPathsComplete?: boolean;
 };

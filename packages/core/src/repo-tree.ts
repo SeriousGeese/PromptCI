@@ -12,9 +12,10 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import type fg from 'fast-glob';
 import type { IssueCategory, PromptCiIssue } from './types.js';
-import { isWithinRoot, realPath } from './path-containment.js';
+import { isWithinRoot, realPath, realPathWithinRoot } from './path-containment.js';
+import { PathInventory, buildInventory } from './known-paths.js';
+import type { KnownPaths } from './known-paths.js';
 
 /**
  * True for a path that is absolute on ANY platform: POSIX (`/x`), Windows drive
@@ -37,7 +38,63 @@ export type Lookup =
   /** A directory on the way could not be listed: neither present nor absent. */
   | { state: 'unreadable' };
 
-type Listing = Map<string, fs.Dirent> | 'missing' | 'unreadable';
+/**
+ * One directory entry, as much of `fs.Dirent` as a detector needs. A real
+ * `fs.Dirent` satisfies it; so does an entry synthesized from a
+ * {@link PathInventory} (pcic-csf), which never stands for a symlink.
+ */
+export type TreeEntry = {
+  name: string;
+  isFile(): boolean;
+  isDirectory(): boolean;
+  isSymbolicLink(): boolean;
+};
+
+type Listing = Map<string, TreeEntry> | 'missing' | 'unreadable';
+
+/**
+ * What {@link RepoTree.readText} found. See its doc comment for why
+ * `unreadable` and `unfetched` are different answers.
+ */
+export type ReadResult =
+  | { state: 'found'; content: string }
+  | { state: 'missing' | 'outside' | 'unreadable' | 'unfetched' | 'too-large' };
+
+/** A {@link TreeEntry} for an inventory entry: a plain file or directory, never a link. */
+function inventoryEntry(name: string, kind: 'file' | 'dir'): TreeEntry {
+  return {
+    name,
+    isFile: () => kind === 'file',
+    isDirectory: () => kind === 'dir',
+    isSymbolicLink: () => false,
+  };
+}
+
+/**
+ * The slice of fast-glob's `FileSystemAdapter` {@link RepoTree.walkFs} supplies.
+ * Declared structurally on purpose: fast-glob is an implementation detail of
+ * this package, and naming its type here would put it in the published
+ * declarations of everything that touches a tree.
+ */
+export type WalkFsAdapter = {
+  readdirSync: (dir: string, options?: { withFileTypes: true }) => never;
+};
+
+/** How a {@link RepoTree} answers existence questions. */
+export type RepoTreeOptions = {
+  /**
+   * pcic-csf: the repo-relative POSIX paths the repository holds. Consulted
+   * before the filesystem by every existence check a scan makes.
+   */
+  knownPaths?: KnownPaths;
+  /**
+   * True when `knownPaths` is the WHOLE repository, so a path it does not list
+   * is genuinely absent and the filesystem is never consulted. False (the
+   * default) treats it as a partial view: an unlisted path is still looked for
+   * on disk.
+   */
+  knownPathsComplete?: boolean;
+};
 
 /** The `code` of a filesystem error (`EACCES`, `ENOENT`, …), when it has one. */
 export function errorCode(err: unknown): string | undefined {
@@ -74,18 +131,30 @@ export class RepoTree {
   /** The root's real path, when it differs (a root under a symlink, like macOS `/var`). */
   private readonly realRoot: string | undefined;
   private readonly listings = new Map<string, Listing>();
+  /**
+   * pcic-csf: the caller's inventory of the repository, when one was given.
+   * Consulted before the filesystem; see {@link PathInventory}.
+   */
+  readonly inventory: PathInventory | undefined;
   /** What could not be read, as shown in the report (`dir/` or a link's path) → why. */
   readonly unreadable = new Map<string, string>();
 
-  constructor(repoRoot: string) {
+  constructor(repoRoot: string, options: RepoTreeOptions = {}) {
     this.root = path.resolve(repoRoot);
     const real = realPath(this.root);
     this.realRoot = real !== null && real !== this.root ? real : undefined;
+    this.inventory = buildInventory(options.knownPaths, options.knownPathsComplete);
   }
 
   /** Forward-slash path relative to the root (`.` for the root itself); never absolute. */
   relative(abs: string): string {
     return path.relative(this.root, abs).split(path.sep).join('/') || '.';
+  }
+
+  /** {@link relative} in the inventory's own spelling: `''` for the root, never `.`. */
+  private relativePosix(abs: string): string {
+    const rel = this.relative(abs);
+    return rel === '.' ? '' : rel;
   }
 
   /** Record what could not be read: a directory (shown as `dir/`) or a link (shown as its path). */
@@ -98,23 +167,53 @@ export class RepoTree {
     if (!this.unreadable.has(shown)) this.unreadable.set(shown, reason);
   }
 
-  /** The entries of an in-root directory, by exact name. */
+  /** The entries of an in-root directory on the filesystem, by exact name. */
+  private listFs(dir: string, note: boolean): Listing {
+    try {
+      return new Map<string, TreeEntry>(fs.readdirSync(dir, { withFileTypes: true }).map((d) => [d.name, d]));
+    } catch (err) {
+      const code = errorCode(err);
+      if (code === 'ENOENT' || code === 'ENOTDIR') return 'missing';
+      if (note) this.noteUnreadable(dir, code ?? 'error');
+      return 'unreadable';
+    }
+  }
+
+  /**
+   * The entries of an in-root directory, by exact name.
+   *
+   * pcic-csf: with an inventory, its listing is authoritative when it is
+   * complete; otherwise the two are merged, so a path the caller named is
+   * found even though the scan root holds only the instruction files. A
+   * directory the inventory describes is never reported as unreadable, since
+   * nothing had to be read to answer.
+   *
+   * On a name they both carry the inventory wins — EXCEPT when what is on disk
+   * is a symlink. An inventory entry is a plain file or directory, so letting
+   * one shadow a real link would hide it from {@link lookup}'s containment
+   * check and the subsequent read would follow it wherever it points. The link
+   * wins, and `lookup` judges it as it judges any other.
+   */
   private list(dir: string): Listing {
     let listing = this.listings.get(dir);
-    if (listing === undefined) {
-      try {
-        listing = new Map(fs.readdirSync(dir, { withFileTypes: true }).map((d) => [d.name, d]));
-      } catch (err) {
-        const code = errorCode(err);
-        if (code === 'ENOENT' || code === 'ENOTDIR') {
-          listing = 'missing';
-        } else {
-          listing = 'unreadable';
-          this.noteUnreadable(dir, code ?? 'error');
-        }
+    if (listing !== undefined) return listing;
+    const inventoryChildren = this.inventory?.children(this.relativePosix(dir));
+    const fromInventory = inventoryChildren === undefined
+      ? undefined
+      : new Map<string, TreeEntry>([...inventoryChildren].map(([name, kind]) => [name, inventoryEntry(name, kind)]));
+    if (this.inventory !== undefined && this.inventory.complete) {
+      listing = fromInventory ?? 'missing';
+    } else {
+      const onDisk = this.listFs(dir, fromInventory === undefined);
+      if (fromInventory === undefined) listing = onDisk;
+      else if (typeof onDisk === 'string') listing = fromInventory;
+      else {
+        const merged = new Map<string, TreeEntry>([...onDisk, ...fromInventory]);
+        for (const [name, entry] of onDisk) if (entry.isSymbolicLink()) merged.set(name, entry);
+        listing = merged;
       }
-      this.listings.set(dir, listing);
     }
+    this.listings.set(dir, listing);
     return listing;
   }
 
@@ -122,6 +221,45 @@ export class RepoTree {
   private fromRealRoot(p: string): string {
     if (this.realRoot === undefined || isWithinRoot(this.root, p) || !isWithinRoot(this.realRoot, p)) return p;
     return path.join(this.root, path.relative(this.realRoot, p));
+  }
+
+  /**
+   * Where a link's target lands inside the root, or `null` when following it
+   * would leave the root.
+   *
+   * pcic-e6xa: a RELATIVE target is resolved segment by segment against the
+   * link's own directory and refused the moment it climbs above the root —
+   * even when a later segment names the root's own directory again
+   * (`x -> ../<root dir name>/y`). Resolving such a link lexically lands back
+   * inside the root, so the old containment check passed it and the verdict
+   * came to depend on the name of the directory the scan runs in: whoever
+   * wrote the scanned repository could learn it, and a hosted scan's temp
+   * directory name is not theirs to learn. An ABSOLUTE target cannot climb, so
+   * it keeps the plain containment check (plus the root's real path, for a root
+   * that itself sits under a link, like macOS `/var`) — a Windows junction's
+   * target, which is always absolute, resolves this way.
+   *
+   * A Windows drive or UNC target (`C:\x`, `\\host\share\x`) read on POSIX, and
+   * a drive-RELATIVE one (`C:x`) anywhere, are outside full stop: neither is
+   * absolute to `path` there, so `path.resolve` would join it to the process's
+   * working directory and the verdict would depend on where the scan was
+   * started from — which could be the root itself.
+   */
+  private linkTargetWithinRoot(linkDir: string, link: string): string | null {
+    const windowsRooted = /^[A-Za-z]:/.test(link) || link.startsWith('\\\\');
+    if (windowsRooted && !path.isAbsolute(link)) return null;
+    if (path.isAbsolute(link)) {
+      const absolute = this.fromRealRoot(path.resolve(link));
+      return isWithinRoot(this.root, absolute) ? absolute : null;
+    }
+    const parts = path.relative(this.root, linkDir).split(path.sep).filter(Boolean);
+    if (parts.includes('..') || path.isAbsolute(parts.join(path.sep))) return null;
+    for (const segment of link.split(/[\\/]/)) {
+      if (segment === '' || segment === '.') continue;
+      if (segment !== '..') parts.push(segment);
+      else if (parts.pop() === undefined) return null; // climbed above the root
+    }
+    return path.join(this.root, ...parts);
   }
 
   lookup(candidate: string): Lookup {
@@ -152,10 +290,12 @@ export class RepoTree {
             return { state: 'unreadable' };
           }
           lastLink = entryPath;
-          // Resolved lexically against the link's own directory, then re-walked
-          // from the root: the containment check above runs before anything
-          // under the target is touched.
-          next = path.join(this.fromRealRoot(path.resolve(dir, link)), ...parts.slice(i + 1));
+          // Resolved against the link's own directory and refused if it leaves
+          // the root (pcic-e6xa), then re-walked from the root: the containment
+          // check above runs again before anything under the target is touched.
+          const landing = this.linkTargetWithinRoot(dir, link);
+          if (landing === null) return { state: 'outside' };
+          next = path.join(landing, ...parts.slice(i + 1));
           break;
         }
         isDir = entry.isDirectory();
@@ -172,6 +312,80 @@ export class RepoTree {
   isDir(candidate: string): boolean {
     const found = this.lookup(candidate);
     return found.state === 'found' && found.isDir;
+  }
+
+  /**
+   * pcic-e6xa: the one way a detector asks whether a FIXED name exists
+   * (`.env`, `supabase/migrations`, `Cargo.toml`, `requirements.txt`,
+   * `.clinerules`). The name is not user input, but the tree around it is: a
+   * committed link out of the repository made the answer depend on a path
+   * outside the scan root, and a hosted scan's root is a server temp
+   * directory. Going through {@link lookup} keeps every such check inside the
+   * root — and lets a caller's inventory answer it (pcic-csf).
+   *
+   * `candidate` may be repo-relative or absolute inside the root. Anything
+   * outside, or under a directory that could not be listed, reads as absent:
+   * these checks are signals ("does this repo use Supabase?"), and the honest
+   * answer when the scan cannot look is the one that adds no finding.
+   */
+  exists(candidate: string): boolean {
+    return this.lookup(candidate).state === 'found';
+  }
+
+  /** {@link exists}, restricted to a regular file (or a link to one inside the root). */
+  isFile(candidate: string): boolean {
+    const found = this.lookup(candidate);
+    return found.state === 'found' && !found.isDir;
+  }
+
+  /**
+   * The text of an in-root file, or why there is none to read. The only way a
+   * detector reads a file it located through this tree.
+   *
+   * `missing` and `outside` come from {@link lookup}, so a path the walk judged
+   * out of the root is never opened. The read is ALSO containment-checked
+   * against the file actually on disk, which `lookup` alone cannot guarantee:
+   * an inventory entry is a plain file (pcic-csf), so with a complete inventory
+   * no directory is listed and a real symlink sitting at that path is never
+   * seen — opening it by name would follow it wherever it points. The same
+   * check that governs every other read in the scan
+   * ({@link realPathWithinRoot}) runs here, so an in-repo link stays readable
+   * and one leaving the repository reads as `outside`.
+   *
+   * The two "cannot read" states are kept apart on purpose:
+   *  - `unreadable` — the file is on disk and the scan failed to read it
+   *    (permissions, a cycle, an unlistable parent). Recorded in
+   *    {@link unreadable} so the scan can name it, and callers may raise a
+   *    "check incomplete" warning.
+   *  - `unfetched` — a caller's inventory says the repository has it but its
+   *    bytes were never fetched. Nothing failed and there is nothing to name,
+   *    so callers stay SILENT: no finding, and no warning either.
+   *
+   * Neither may be read as "absent": that is what keeps a hosted scan from
+   * reporting a file it never downloaded as missing.
+   */
+  readText(candidate: string, options: { maxBytes?: number } = {}): ReadResult {
+    const found = this.lookup(candidate);
+    if (found.state !== 'found') return { state: found.state };
+    if (found.isDir) return { state: 'missing' };
+    // The path `lookup` settled on may still BE a link on disk (see above).
+    if (!realPathWithinRoot(this.root, found.path)) return { state: 'outside' };
+    try {
+      if (options.maxBytes !== undefined) {
+        const stat = fs.statSync(found.path);
+        if (!stat.isFile()) return { state: 'missing' };
+        if (stat.size > options.maxBytes) return { state: 'too-large' };
+      }
+      return { state: 'found', content: fs.readFileSync(found.path, 'utf8') };
+    } catch (err) {
+      const code = errorCode(err);
+      if (code === 'ENOENT' || code === 'ENOTDIR') {
+        // Listed by the inventory but not on disk: known to exist, never fetched.
+        return { state: this.inventory !== undefined ? 'unfetched' : 'missing' };
+      }
+      this.noteUnreadable(found.path, code ?? 'error', 'link');
+      return { state: 'unreadable' };
+    }
   }
 
   /**
@@ -192,7 +406,7 @@ export class RepoTree {
    * pcic-x1vl: the entries of the in-root directory at `candidate`, by exact
    * name, or why there are none to give (a file counts as `missing`).
    */
-  entries(candidate: string): ReadonlyMap<string, fs.Dirent> | 'missing' | 'outside' | 'unreadable' {
+  entries(candidate: string): ReadonlyMap<string, TreeEntry> | 'missing' | 'outside' | 'unreadable' {
     const dir = this.lookup(candidate);
     if (dir.state !== 'found') return dir.state;
     if (!dir.isDir) return 'missing';
@@ -200,26 +414,40 @@ export class RepoTree {
   }
 
   /**
-   * fast-glob's directory reads, routed through node:fs here so a directory the
-   * walk cannot list is recorded instead of silently dropping out of the result.
-   * The walk itself (`cwd` = root, links not followed) never leaves the root.
+   * fast-glob's directory reads, routed through this tree so a directory the
+   * walk cannot list is recorded instead of silently dropping out of the
+   * result — and so a caller's inventory is what the walk sees (pcic-csf),
+   * which is the whole repository rather than the handful of files a hosted
+   * scan fetched. The walk itself (`cwd` = root, links not followed) never
+   * leaves the root.
    */
-  walkFs(onError: () => void): Partial<fg.FileSystemAdapter> {
+  walkFs(onError: () => void): WalkFsAdapter {
     const readdirSync = (dir: string, options?: { withFileTypes: true }): unknown => {
-      try {
-        return options ? fs.readdirSync(dir, options) : fs.readdirSync(dir);
-      } catch (err) {
-        const code = errorCode(err);
-        // A directory deleted mid-walk has nothing left to miss.
-        if (code !== 'ENOENT') {
-          this.noteUnreadable(dir, code ?? 'error');
-          onError();
-        }
-        throw err;
+      const listing = this.list(dir);
+      if (listing === 'missing') {
+        throw Object.assign(new Error(`ENOENT: no such file or directory, scandir '${dir}'`), { code: 'ENOENT' });
       }
+      if (listing === 'unreadable') {
+        onError();
+        throw Object.assign(new Error(`EACCES: permission denied, scandir '${dir}'`), { code: 'EACCES' });
+      }
+      const entries = [...listing.values()];
+      return options ? entries : entries.map((entry) => entry.name);
     };
-    return { readdirSync: readdirSync as fg.FileSystemAdapter['readdirSync'] };
+    return { readdirSync: readdirSync as WalkFsAdapter['readdirSync'] };
   }
+}
+
+/**
+ * The scan's {@link RepoTree}: the one built while the context was assembled,
+ * so every detector shares its directory cache and its inventory (pcic-csf).
+ *
+ * Hand-built contexts (tests, older callers) carry no tree, and get a plain
+ * filesystem-backed one over the same root — the behavior before pcic-e6xa
+ * routed these checks through the tree, minus the out-of-root access.
+ */
+export function treeFor(context: { repoRoot: string; tree?: RepoTree }): RepoTree {
+  return context.tree ?? new RepoTree(context.repoRoot);
 }
 
 /** A reference left unchecked because part of the tree could not be read, aggregated per evidence line. */

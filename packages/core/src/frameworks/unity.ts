@@ -1,14 +1,15 @@
 import type { RepoContext } from '../repo-context.js';
 import type { PromptCiIssue } from '../types.js';
-import * as path from 'node:path';
-import * as fs from 'node:fs';
+import { treeFor } from '../repo-tree.js';
 
 export function detectUnity(context: RepoContext): PromptCiIssue[] {
   const issues: PromptCiIssue[] = [];
-  const { repoRoot, files } = context;
+  const { files } = context;
 
-  const hasAssets = fs.existsSync(path.join(repoRoot, 'Assets'));
-  const hasProjectVersion = fs.existsSync(path.join(repoRoot, 'ProjectSettings', 'ProjectVersion.txt'));
+  // pcic-e6xa: see the note in frameworks/go.ts.
+  const tree = treeFor(context);
+  const hasAssets = tree.isDir('Assets');
+  const hasProjectVersion = tree.isFile('ProjectSettings/ProjectVersion.txt');
   
   const combinedContent = files.map(f => f.content).join('\n');
   const hasUnityMentions = /\bunity\b.*\b(lts|editor|hub|engine)\b|\bmonobehaviour\b|\bunityengine\b|\bgameobject\b|\bprefab\b|\bscriptableobject\b/i.test(combinedContent);

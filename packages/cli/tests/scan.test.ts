@@ -81,6 +81,82 @@ describe('runScan (integration)', () => {
     expect(parsed.schemaVersion).toBe('0.1');
   });
 
+  it('prints SARIF to stdout and writes .promptci/report.sarif when --format sarif is set', async () => {
+    const { runScan } = await import('../src/commands/scan.js');
+    await runScan({ scanPath: tmpDir, format: 'sarif', cliVersion: '1.2.3' });
+
+    const parsed = JSON.parse(stdoutOutput) as { version: string; runs: Array<{ tool: { driver: { version: string } } }> };
+    expect(parsed.version).toBe('2.1.0');
+    expect(parsed.runs[0]!.tool.driver.version).toBe('1.2.3');
+
+    const written = await fs.readFile(path.join(tmpDir, '.promptci', 'report.sarif'), 'utf-8');
+    expect(JSON.parse(written)).toEqual(parsed);
+
+    // The markdown/JSON reports are still written alongside it, same as --json.
+    const mdExists = await fs.access(path.join(tmpDir, '.promptci', 'latest.md')).then(() => true).catch(() => false);
+    expect(mdExists).toBe(true);
+  });
+
+  it('writes SARIF to --output path when --format sarif is set', async () => {
+    const outFile = path.join(tmpDir, 'custom-report.sarif');
+    const { runScan } = await import('../src/commands/scan.js');
+    await runScan({ scanPath: tmpDir, format: 'sarif', output: outFile });
+
+    const content = JSON.parse(await fs.readFile(outFile, 'utf-8')) as { version: string };
+    expect(content.version).toBe('2.1.0');
+    // --output names the SARIF path here, not the markdown path — the
+    // default markdown report is still written to its own default location.
+    const mdExists = await fs.access(path.join(tmpDir, '.promptci', 'latest.md')).then(() => true).catch(() => false);
+    expect(mdExists).toBe(true);
+  });
+
+  it('keeps stdout valid SARIF JSON when --format sarif is combined with --update-baseline', async () => {
+    const { runScan } = await import('../src/commands/scan.js');
+    await runScan({ scanPath: tmpDir, format: 'sarif', updateBaseline: true });
+
+    // The "Baseline updated" notice must not land on stdout ahead of (or
+    // interleaved with) the SARIF — only this format's own output may.
+    expect(() => JSON.parse(stdoutOutput)).not.toThrow();
+    const parsed = JSON.parse(stdoutOutput) as { version: string };
+    expect(parsed.version).toBe('2.1.0');
+    expect(stderrOutput).toContain('Baseline updated');
+  });
+
+  it('keeps stdout valid report JSON when --json is combined with --update-baseline', async () => {
+    const { runScan } = await import('../src/commands/scan.js');
+    await runScan({ scanPath: tmpDir, json: true, updateBaseline: true });
+
+    expect(() => JSON.parse(stdoutOutput)).not.toThrow();
+    const parsed = JSON.parse(stdoutOutput) as { schemaVersion: string };
+    expect(parsed.schemaVersion).toBe('0.1');
+    expect(stderrOutput).toContain('Baseline updated');
+  });
+
+  it('still prints the baseline notice to stdout for the human-readable (non-machine) format', async () => {
+    const { runScan } = await import('../src/commands/scan.js');
+    await runScan({ scanPath: tmpDir, updateBaseline: true });
+    expect(stdoutOutput).toContain('Baseline updated');
+  });
+
+  it('treats --format json as equivalent to --json', async () => {
+    const { runScan } = await import('../src/commands/scan.js');
+    await runScan({ scanPath: tmpDir, format: 'json' });
+    const parsed = JSON.parse(stdoutOutput) as { schemaVersion: string };
+    expect(parsed.schemaVersion).toBe('0.1');
+  });
+
+  it('exits non-zero on an invalid --format value', async () => {
+    const { runScan } = await import('../src/commands/scan.js');
+    let threw = false;
+    try {
+      await runScan({ scanPath: tmpDir, format: 'yaml' as never });
+    } catch {
+      threw = true;
+    }
+    expect(threw).toBe(true);
+    expect(exitCode).toBe(1);
+  });
+
   it('writes markdown to --output path', async () => {
     const outFile = path.join(tmpDir, 'custom-report.md');
     const { runScan } = await import('../src/commands/scan.js');
