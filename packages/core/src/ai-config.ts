@@ -27,7 +27,9 @@ import {
   isSkillContainerDir,
   BUNDLE_SKIP_DIRS,
   MAX_BUNDLED_FILES_PER_SKILL,
+  MAX_DEPENDENCY_MANIFESTS,
   isPriorityBundleFile,
+  dependencyManifestCandidates,
 } from './discovery.js';
 
 export { isSkillContainerDir, isPriorityBundleFile, MAX_BUNDLED_FILES_PER_SKILL } from './discovery.js';
@@ -191,33 +193,23 @@ const MAX_BUNDLE_LISTING = 20_000;
 /** Over-cap file names kept for reporting; the rest are counted. */
 const MAX_OVER_CAP_NAMES = 1_000;
 
-/** Dependency package manifests read per skill. */
-const MAX_DEPENDENCY_MANIFESTS = 100;
-
-/** `node_modules/<pkg>/package.json` and `node_modules/@scope/<pkg>/package.json`, bounded. */
+/**
+ * `node_modules/<pkg>/package.json` and `node_modules/@scope/<pkg>/package.json`,
+ * bounded. The ORDER and cap this applies (`dependencyManifestCandidates`) is
+ * shared with discovery.ts's path-only equivalent, so a filesystem scan and
+ * the pure `selectScanPaths` cannot drift on which manifests get read first
+ * when a skill's `node_modules` holds more than the cap.
+ */
 function listPackageManifests(repoRoot: string, nodeModules: string): string[] {
-  const out: string[] = [];
   const read = (rel: string): fs.Dirent[] => {
     const abs = resolveReadableWithinRoot(repoRoot, rel);
     if (!abs) return [];
     try { return fs.readdirSync(abs, { withFileTypes: true }); } catch { return []; }
   };
-  const tryPkg = (pkgDir: string) => {
-    const manifest = `${pkgDir}/package.json`;
-    if (out.length < MAX_DEPENDENCY_MANIFESTS && isFileWithinRoot(repoRoot, manifest)) out.push(manifest);
-  };
-  for (const entry of read(nodeModules).sort((a, b) => (a.name < b.name ? -1 : 1))) {
-    if (out.length >= MAX_DEPENDENCY_MANIFESTS) break;
-    if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
-    if (entry.name.startsWith('@')) {
-      for (const scoped of read(`${nodeModules}/${entry.name}`).sort((a, b) => (a.name < b.name ? -1 : 1))) {
-        if (scoped.isDirectory()) tryPkg(`${nodeModules}/${entry.name}/${scoped.name}`);
-      }
-    } else {
-      tryPkg(`${nodeModules}/${entry.name}`);
-    }
-  }
-  return out;
+  const topLevelNames = read(nodeModules).filter((e) => e.isDirectory()).map((e) => e.name);
+  const scopedNamesOf = (scope: string): string[] =>
+    read(`${nodeModules}/${scope}`).filter((e) => e.isDirectory()).map((e) => e.name);
+  return dependencyManifestCandidates(topLevelNames, scopedNamesOf, (rel) => isFileWithinRoot(repoRoot, rel), nodeModules);
 }
 
 /** True when `rel` or any ancestor directory matches an `exclude` pattern (glob-ignore semantics). */

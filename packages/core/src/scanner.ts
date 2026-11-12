@@ -8,7 +8,7 @@ import { isWithinRoot, realPath, realPathWithinRoot } from './path-containment.j
 import { createGitSymlinkOracle } from './git-symlinks.js';
 import { RepoTree } from './repo-tree.js';
 import type { GitSymlinkOracle } from './git-symlinks.js';
-import { SCAN_IGNORE_DIRS, defaultInstructionPatterns } from './discovery.js';
+import { SCAN_IGNORE_DIRS, defaultInstructionPatterns, MAX_FILE_SIZE, BINARY_CHECK_BYTES } from './discovery.js';
 
 // 'worktrees'/'.worktrees' covers git worktree checkouts nested anywhere in the
 // tree (e.g. Claude Code's .claude/worktrees/<name>/, or a top-level worktrees/
@@ -23,10 +23,12 @@ import { SCAN_IGNORE_DIRS, defaultInstructionPatterns } from './discovery.js';
 // a filesystem-free consumer (`selectScanPaths`) both read them from.
 const IGNORE_DIRS = SCAN_IGNORE_DIRS;
 
-// Exported so ai_config discovery (ai-config.ts) applies the exact same
-// size/binary policy as this scanner — one definition of "scannable file".
-export const MAX_FILE_SIZE = 500 * 1024;
-export const BINARY_CHECK_BYTES = 512;
+// Re-exported so ai_config discovery (ai-config.ts) and the many other
+// importers of `MAX_FILE_SIZE`/`BINARY_CHECK_BYTES` from this module keep
+// their import path; the values themselves live in discovery.ts, the one
+// place scanner.ts and the filesystem-free `selectScanPaths` both read them
+// from — one definition of "scannable file".
+export { MAX_FILE_SIZE, BINARY_CHECK_BYTES };
 
 const PERSONA_ROOT_PATHS: ReadonlySet<string> = new Set(['/SOUL.md', '/USER.md', '/TOOLS.md']);
 
