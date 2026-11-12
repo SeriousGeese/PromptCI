@@ -137,6 +137,10 @@ Or run the CLI directly:
 npx @promptci/cli review-diff --base origin/main --fail-on-regression --fail-on high
 ```
 
+### SARIF / GitHub Security tab
+
+See [Docs/cli-reference.md](Docs/cli-reference.md#sarif) for `--format sarif` and upload-sarif setup.
+
 ## Health badge
 
 Show your instruction-health score in your README, like the badge at the top of this page.

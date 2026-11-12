@@ -14,7 +14,10 @@ promptci score --path <dir>                 # score a specific directory
 promptci scan                               # scan current directory
 promptci scan --path <dir>                  # scan a specific directory
 promptci scan --json                        # print JSON report to stdout (files are still written)
+promptci scan --format sarif                # print SARIF 2.1.0 to stdout and write .promptci/report.sarif
+promptci scan --format json                 # same as --json
 promptci scan --output <file>               # write markdown report to this path instead of default
+                                             # (SARIF path instead, when --format sarif is set)
 promptci scan --fail-on <severity>          # exit 1 if any issues meet/exceed severity (info|warning|high|critical)
 promptci scan --baseline <path>             # load baseline file to ignore existing issues
 promptci scan --update-baseline             # run scan and save findings as the new baseline
@@ -301,3 +304,69 @@ promptci scan --update-baseline    # accept today's findings as the starting poi
 git add .promptci/baseline.json && git commit -m "chore: add promptci baseline"
 promptci scan --fail-on-new warning   # in CI: fail only on findings added since
 ```
+
+## SARIF
+
+`promptci scan --format sarif` writes `.promptci/report.sarif` (override the path with
+`--output`, which then names the SARIF path instead of the markdown one) and prints the same
+SARIF 2.1.0 log to stdout. `--format json` is equivalent to `--json`.
+
+Upload it with [`github/codeql-action/upload-sarif`](https://github.com/github/codeql-action)
+to see findings in the repository's Security tab:
+
+```yaml
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+
+jobs:
+  promptci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Pins @promptci/cli@0.2.2 — `--format sarif` is NOT in 0.2.2; it ships in
+      # the next release. Bump this pin (and remove this comment) once that
+      # release is published, or the step below has nothing to upload.
+      - run: npx --yes @promptci/cli@0.2.2 scan --format sarif
+      - uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        if: always()
+        with:
+          sarif_file: .promptci/report.sarif
+```
+
+The upload step runs `if: always()` so a scan that exits non-zero (e.g. `--fail-on high`) still
+uploads the findings that caused the failure, instead of the Security tab silently going stale
+on every red run.
+
+`critical`/`high` findings map to SARIF `error`, `warning` stays `warning`, and `info` maps to
+`note`. Findings silenced by an inline `promptci-ignore` annotation are still included, each
+marked with a SARIF `suppressions` entry rather than dropped — GitHub's SARIF documentation does
+not promise any particular handling of `suppressions`-bearing results, so treat this as "marked
+suppressed in the SARIF," not a guarantee about how a given consumer displays it.
+
+`ruleId` is the issue's `category` (`duplicate`, `conflict`, `context_bloat`, …) — the only
+detector/category identifier present on every finding today. This is coarser than one rule per
+detector: renaming or splitting a *category* later would change every result's `ruleId` and, in
+a consumer that keys dismissals off it, could reopen alerts a user had already dismissed under
+the old id. A finer, per-check rule id would need `PromptCiIssue` to carry an explicit, detector-
+assigned rule id distinct from `category` — noted here as a possible follow-up, not done in this
+change.
+
+Each finding's `partialFingerprints["promptci/v1"]` is PromptCI's own stable identity key (the
+same category+title+filePaths+evidence fingerprint `--baseline` already uses) — it is a hint for
+GitHub's own cross-run matching, not the `primaryLocationLineHash` GitHub computes and uses
+itself. Within a single run, multiple findings can legitimately share the same `promptci/v1`
+value (the fingerprint excludes line numbers, so e.g. two instances of the same duplicate check
+on different lines fingerprint identically); each gets a trailing `:N` occurrence suffix so
+results that share a fingerprint still have distinct `partialFingerprints` within that run.
+
+Locations are written relative to whatever directory `--path` scans — `uri: "AGENTS.md"` means
+"AGENTS.md at the root of the scanned directory," not necessarily the repository root. Scanning
+a subdirectory of a monorepo (`--path packages/foo`) therefore produces URIs relative to
+`packages/foo`, which will not line up with the checked-out repository root in GitHub's Security
+tab. Either run the scan from the repository root, or have the SARIF consumer account for the
+offset (`upload-sarif` accepts a `checkout_uri`/`checkout_path` for this).
+
+The GitHub Action ([action.yml](action.yml)) does not yet expose a `format` input for this —
+run the CLI step above directly until it does.
