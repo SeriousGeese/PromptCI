@@ -334,20 +334,74 @@ describe('generateSarifReport', () => {
   });
 
   // ── path handling ─────────────────────────────────────────────────────────
+  //
+  // pcic-aq2f: `ScanReport.repoPath`/finding paths carry whatever SHAPE the
+  // machine that ran the scan produced (POSIX or Windows), independent of
+  // the shape of the machine running THIS code (e.g. a repo scanned on
+  // Windows, SARIF-generated — or tested — on Linux CI). Every case below
+  // runs for both shapes explicitly so a regression in the win32/posix
+  // selection (toRelativeUri's isWindowsShapedPath) fails on every platform,
+  // not only the one it happens to match.
 
-  it('produces repo-relative, forward-slash URIs even for a Windows repo root', () => {
-    const report = makeReport({
-      repoPath: 'C:\\git\\repo',
-      issues: [
-        makeIssue({
-          filePaths: ['C:\\git\\repo\\sub\\CLAUDE.md'],
-          locations: [{ filePath: 'C:\\git\\repo\\sub\\CLAUDE.md', startLine: 3 }],
-        }),
-      ],
+  const PATH_SHAPES = [
+    {
+      label: 'POSIX',
+      repoRoot: '/repo',
+      join: (...segments: string[]) => `/repo/${segments.join('/')}`,
+      outside: '/outside/CLAUDE.md',
+    },
+    {
+      label: 'Windows',
+      repoRoot: 'C:\\git\\repo',
+      join: (...segments: string[]) => `C:\\git\\repo\\${segments.join('\\')}`,
+      outside: 'C:\\git\\CLAUDE.md',
+    },
+  ];
+
+  describe.each(PATH_SHAPES)('path shape: $label', ({ repoRoot, join, outside }) => {
+    it('produces a repo-relative, forward-slash URI for a normal nested path', () => {
+      const filePath = join('sub', 'CLAUDE.md');
+      const report = makeReport({
+        repoPath: repoRoot,
+        issues: [makeIssue({ filePaths: [filePath], locations: [{ filePath, startLine: 3 }] })],
+      });
+      const sarif = parseSarif(report);
+      expect(sarif.runs[0].results[0].locations[0].physicalLocation.artifactLocation.uri).toBe('sub/CLAUDE.md');
     });
-    const sarif = parseSarif(report);
-    const uri = sarif.runs[0].results[0].locations[0].physicalLocation.artifactLocation.uri;
-    expect(uri).toBe('sub/CLAUDE.md');
+
+    it('does not treat a directory literally named "..hidden" as outside the repo', () => {
+      const filePath = join('..hidden', 'x.md');
+      const report = makeReport({
+        repoPath: repoRoot,
+        issues: [makeIssue({ filePaths: [filePath], locations: [{ filePath, startLine: 1 }] })],
+      });
+      const sarif = parseSarif(report);
+      expect(sarif.runs[0].results[0].locations[0].physicalLocation.artifactLocation.uri).toBe('..hidden/x.md');
+    });
+
+    it('drops a location that resolves outside the repo root', () => {
+      const report = makeReport({
+        repoPath: repoRoot,
+        issues: [makeIssue({ filePaths: [outside], locations: [{ filePath: outside, startLine: 1 }] })],
+      });
+      const sarif = parseSarif(report);
+      // No filesScanned to fall back to -> empty, not a location pointing outside the repo.
+      expect(sarif.runs[0].results[0].locations).toEqual([]);
+      expect(validate(sarif)).toBe(true);
+    });
+
+    it('extracts the right basename for the no-location fallback (primaryInstructionFile)', () => {
+      const agentsPath = join('AGENTS.md');
+      const report = makeReport({
+        repoPath: repoRoot,
+        filesScanned: [makeFile({ path: agentsPath, fileType: 'agents' })],
+        issues: [makeIssue({ locations: [], filePaths: [] })],
+      });
+      const sarif = parseSarif(report);
+      const result = sarif.runs[0].results[0];
+      expect(result.locations[0].physicalLocation.artifactLocation.uri).toBe('AGENTS.md');
+      expect(result.message.text).toContain('AGENTS.md');
+    });
   });
 
   it('percent-encodes path segments containing spaces, #, %, and non-ASCII characters', () => {
@@ -359,29 +413,6 @@ describe('generateSarifReport', () => {
     const uri = sarif.runs[0].results[0].locations[0].physicalLocation.artifactLocation.uri;
     expect(uri).toBe('docs%20dir/a%23b%2520c/caf%C3%A9/AGENTS.md');
     expect(validate(sarif)).toBe(true);
-  });
-
-  it('drops a location that resolves outside the repo root', () => {
-    const report = makeReport({
-      issues: [
-        makeIssue({
-          filePaths: ['/outside/CLAUDE.md'],
-          locations: [{ filePath: '/outside/CLAUDE.md', startLine: 1 }],
-        }),
-      ],
-    });
-    const sarif = parseSarif(report);
-    // No filesScanned to fall back to -> empty, not a location pointing outside the repo.
-    expect(sarif.runs[0].results[0].locations).toEqual([]);
-  });
-
-  it('does not treat a directory literally named "..hidden" as outside the repo', () => {
-    const oddPath = '/repo/..hidden/x.md';
-    const report = makeReport({
-      issues: [makeIssue({ filePaths: [oddPath], locations: [{ filePath: oddPath, startLine: 1 }] })],
-    });
-    const sarif = parseSarif(report);
-    expect(sarif.runs[0].results[0].locations[0].physicalLocation.artifactLocation.uri).toBe('..hidden/x.md');
   });
 
   // ── determinism ───────────────────────────────────────────────────────────

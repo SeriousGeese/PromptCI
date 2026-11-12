@@ -165,22 +165,49 @@ const SUPPRESSED_JUSTIFICATION =
   "Suppressed via an inline `promptci-ignore` annotation in the scanned repository.";
 
 /**
+ * A `ScanReport.repoPath`/finding path is produced by whatever machine ran
+ * the scan — a Windows checkout (`C:\git\repo`) or a POSIX one
+ * (`/home/runner/work/repo`) — and this module must handle either SHAPE
+ * regardless of which platform IT is running on (a repo scanned on Windows
+ * can still have its SARIF generated, or tested, on Linux CI and vice versa).
+ * `node:path`'s plain `path.relative`/`path.isAbsolute` bind to the CURRENT
+ * process's platform, so on Linux they treat a Windows-shaped path like
+ * `C:\git\repo\sub\CLAUDE.md` as just an opaque string with no recognized
+ * separators — `path.relative` between two such strings does not compute a
+ * real relative path, and the "is this outside the repo" check in
+ * `toRelativeUri` below then misfires. Detect the SHAPE of the input paths
+ * instead and pick `path.win32` or `path.posix` explicitly, independent of
+ * `process.platform`.
+ */
+function isWindowsShapedPath(p: string): boolean {
+  return /^[a-zA-Z]:[\\/]/.test(p) || p.includes('\\');
+}
+
+/** Platform-independent basename (see isWindowsShapedPath) for a single path. */
+function basenameOf(p: string): string {
+  return (isWindowsShapedPath(p) ? nodePath.win32 : nodePath.posix).basename(p);
+}
+
+/**
  * Forward-slash, percent-encoded, repo-relative URI for a SARIF
  * artifactLocation.uri — or null when `absPath` does not resolve inside
  * `repoPath` at all (such a location is dropped rather than pointing outside
- * the scanned tree). `nodePath.relative` can return a path that climbs out
- * with a leading `..`, or (given an unrelated absolute path, e.g. on Windows)
- * something that is not relative at all; only those two cases mean "outside"
- * — a real directory or file NAMED `..something` (e.g. `..hidden/x`) does not
- * start with `..` followed by a separator (or equal `..` outright), so it is
- * left alone.
+ * the scanned tree). `relative()` can return a path that climbs out with a
+ * leading `..`, or (given an unrelated absolute path) something that is not
+ * relative at all; only those two cases mean "outside" — a real directory or
+ * file NAMED `..something` (e.g. `..hidden/x`) does not start with `..`
+ * followed by a separator (or equal `..` outright), so it is left alone.
  */
 function toRelativeUri(absPath: string, repoPath: string): string | null {
-  const rel = nodePath.relative(repoPath, absPath);
-  if (rel === '..' || rel.startsWith(`..${nodePath.sep}`) || rel.startsWith('../') || nodePath.isAbsolute(rel)) {
+  // Platform-independent (see isWindowsShapedPath): either input looking
+  // Windows-shaped is enough to pick path.win32 for BOTH, since relative()
+  // needs a consistent separator convention across the two arguments.
+  const pathImpl = isWindowsShapedPath(repoPath) || isWindowsShapedPath(absPath) ? nodePath.win32 : nodePath.posix;
+  const rel = pathImpl.relative(repoPath, absPath);
+  if (rel === '..' || rel.startsWith(`..${pathImpl.sep}`) || pathImpl.isAbsolute(rel)) {
     return null;
   }
-  const posix = rel.replace(/\\/g, '/');
+  const posix = rel.split(pathImpl.sep).join('/');
   // RFC 3986: each path SEGMENT is percent-encoded independently, so a
   // literal '/' produced by encoding one segment can never be mistaken for a
   // path separator, and characters like '#', '%', ' ', or non-ASCII bytes in
@@ -315,7 +342,7 @@ function buildResult(
   const { locations, usedFallback } = buildLocations(issue, rel, fallbackAbsPath);
   const fallbackNote =
     usedFallback && fallbackAbsPath
-      ? `(No specific location was recorded for this finding; pointing at ${nodePath.basename(
+      ? `(No specific location was recorded for this finding; pointing at ${basenameOf(
           fallbackAbsPath,
         )} as the repository's primary instruction file.)`
       : undefined;
@@ -356,7 +383,7 @@ function primaryInstructionFile(report: ScanReport): string | undefined {
     (f) => f.aliasOf === undefined && INSTRUCTION_FILE_TYPES.has(f.fileType),
   );
   const primary = scanned.find((f) => {
-    const base = nodePath.basename(f.path).toLowerCase();
+    const base = basenameOf(f.path).toLowerCase();
     return base === 'agents.md' || base === 'claude.md';
   });
   return (primary ?? scanned[0])?.path;
