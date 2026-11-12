@@ -1,5 +1,6 @@
 import * as path from 'node:path';
 import { existsSync } from 'node:fs';
+import { RepoTree } from './repo-tree.js';
 import { parseSections } from './scanner.js';
 import type { InstructionFile, InstructionSection } from './types.js';
 import { INSTRUCTION_FILE_TYPES } from './types.js';
@@ -105,9 +106,15 @@ export async function optimizeContext(
   // Resolve targetDocsDir dynamically
   let targetDocsDir = options.docsDir;
   if (!targetDocsDir) {
-    if (existsSync(path.join(repoRoot, 'Docs'))) {
+    // pcic-e6xa: which directory the optimizer writes into is decided through
+    // the tree, so a `Docs` committed as a link out of the repository cannot
+    // choose it (the write itself is separately guarded by
+    // writeTargetWithinRoot). Both names are exact already, so the exact-case
+    // lookup changes nothing about which one is picked.
+    const tree = new RepoTree(repoRoot);
+    if (tree.isDir('Docs')) {
       targetDocsDir = 'Docs';
-    } else if (existsSync(path.join(repoRoot, 'docs'))) {
+    } else if (tree.isDir('docs')) {
       targetDocsDir = 'docs/ai';
     } else {
       targetDocsDir = 'Docs'; // Default fallback

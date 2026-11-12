@@ -337,7 +337,17 @@ export type ScanInput = {
    *
    * Paths are normalized (backslashes read as separators, `./` dropped); an
    * absolute path, or one climbing out of the repository with `..`, is ignored.
-   * Leave unset for an ordinary scan of a checkout.
+   * An entry with a trailing slash names a directory that holds no files of its
+   * own. Leave unset for an ordinary scan of a checkout.
+   *
+   * One caveat worth knowing: a file LISTED here but not fetched is "known to
+   * exist, contents unavailable", and the checks that need its contents go
+   * quiet rather than guess. For `.gitignore` that is every reference the
+   * repository's ignore rules could have covered — so fetch `.gitignore`
+   * alongside the instruction files rather than only listing it, or the
+   * dead-reference findings go with it. The same holds for `package.json` and
+   * `Makefile`: listed-and-fetched gives full checking, listed-only gives
+   * silence, and omitted-from-a-complete-list means "absent".
    */
   knownPaths?: ReadonlySet<string> | readonly string[];
   /**

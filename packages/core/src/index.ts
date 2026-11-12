@@ -51,10 +51,15 @@ export {
 } from './close-match.js';
 export type { FileChange } from './fix-engine.js';
 export { isWithinRoot, resolveWithinRoot, realPathWithinRoot, resolveReadableWithinRoot, writeTargetWithinRoot } from './path-containment.js';
-export { RepoTree, treeFor, isAbsoluteAnywhere } from './repo-tree.js';
-export type { Lookup, RepoTreeOptions, TreeEntry } from './repo-tree.js';
-export { PathInventory, buildInventory, normalizeKnownPath } from './known-paths.js';
-export type { KnownPaths, PathKind } from './known-paths.js';
+// pcic-csf: a consumer needs only to BUILD a `knownPaths` list and hand it to
+// `scan()` — `KnownPaths` names its shape and `normalizeKnownPath` is the same
+// normalization the scan applies, so a caller can canonicalize and de-duplicate
+// its own list first. `RepoTree`, `PathInventory` and their types stay internal:
+// they are how the scan answers existence questions, not API anyone outside
+// calls, and exporting them would freeze that shape. Tests import them from
+// `../src/...` directly.
+export { normalizeKnownPath } from './known-paths.js';
+export type { KnownPaths } from './known-paths.js';
 export { optimizeContext } from './context-optimizer.js';
 export type { OptimizeOptions, OptimizeResult } from './context-optimizer.js';
 export {

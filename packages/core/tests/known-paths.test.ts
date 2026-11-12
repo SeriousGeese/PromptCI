@@ -89,13 +89,14 @@ describe('RepoTree backed by an inventory', () => {
     expect(tree.lookup('scripts/gone.sh').state).toBe('missing');
   });
 
-  it('says a listed-but-unfetched file is unreadable, never missing', () => {
+  it('says a listed-but-unfetched file is unfetched, never missing', () => {
     const root = makeTempRepo('promptci-knownpaths-');
     const tree = new RepoTree(root, { knownPaths: ['Makefile'], knownPathsComplete: true });
-    // The difference that matters: "I know it is there, I cannot read it" must
+    // The difference that matters: "I know it is there, I have not got it" must
     // not collapse into "it is absent", or a hosted scan reports a file it
-    // never downloaded as missing.
-    expect(tree.readText('Makefile').state).toBe('unreadable');
+    // never downloaded as missing. It is also not `unreadable`: nothing failed,
+    // so there is nothing for the scan to name in a warning.
+    expect(tree.readText('Makefile').state).toBe('unfetched');
     expect(tree.readText('nope.txt').state).toBe('missing');
   });
 
@@ -115,7 +116,19 @@ describe('RepoTree backed by an inventory', () => {
       knownPathsComplete: true,
     });
     expect(tree.exists('../outside.md')).toBe(false);
-    expect(tree.listKnownFiles()).toEqual([]);
+  });
+
+  it('reads a trailing-slash entry as a directory with no files of its own', () => {
+    const tree = new RepoTree(makeTempRepo('promptci-knownpaths-'), {
+      knownPaths: ['coverage/', 'nested/empty/'],
+      knownPathsComplete: true,
+    });
+    expect(tree.isDir('coverage')).toBe(true);
+    expect(tree.isFile('coverage')).toBe(false);
+    // The directories on the way to an explicitly named one are implied too.
+    expect(tree.isDir('nested')).toBe(true);
+    expect(tree.isDir('nested/empty')).toBe(true);
+    expect(tree.exists('coverage/anything')).toBe(false);
   });
 
   it('reads .gitignore rules from the inventory source, not the filesystem', () => {

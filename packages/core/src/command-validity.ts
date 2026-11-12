@@ -154,12 +154,14 @@ function missingUnless(found: Lookup, message: string): Verdict {
 /**
  * The name and scripts of a package.json; `null` when there is none to read
  * (or it does not parse); `unreadable` when a directory on the way could not
- * be listed, so whether it exists is unknown.
+ * be listed, so whether it exists is unknown; `unfetched` when a caller's
+ * inventory says the manifest is there but its bytes were never fetched
+ * (pcic-csf) — nothing failed, so callers stay silent rather than warn.
  */
 function readPackageScripts(
   tree: RepoTree,
   packageJsonPath: string,
-): { name?: string; scripts: Record<string, string> } | null | 'unreadable' {
+): { name?: string; scripts: Record<string, string> } | null | 'unreadable' | 'unfetched' {
   // pcic-x1vl: looked up through the tree, so a manifest path that leaves the
   // root (`cd` through a link out of the tree) is never touched, and a
   // manifest committed as a link out of the tree is not read.
@@ -168,9 +170,12 @@ function readPackageScripts(
   if (found.state !== 'found' || found.isDir) return null;
   // pcic-csf: a caller's inventory can say the manifest is there without its
   // bytes being on disk. Its scripts are then unknown, not absent — reporting
-  // them missing is the false positive the inventory exists to remove.
+  // them missing is the false positive the inventory exists to remove. The two
+  // "cannot read" answers stay apart: `unreadable` is a real failure the scan
+  // should name, `unfetched` is nothing to name (see RepoTree.readText).
   const read = tree.readText(packageJsonPath);
-  if (read.state === 'unreadable') return 'unreadable';
+  if (read.state === 'unreadable' || read.state === 'too-large') return 'unreadable';
+  if (read.state === 'unfetched') return 'unfetched';
   if (read.state !== 'found') return null;
   try {
     const raw = read.content;
@@ -241,15 +246,19 @@ function workspacePackageJsonCandidates(tree: RepoTree, selector: string): { can
 }
 
 /**
- * True when the workspace(s) a selector names define the script; `unknown`
- * when none found does but a manifest or workspace directory could not be read.
+ * True when the workspace(s) a selector names define the script; `unknown` when
+ * none found does but a manifest or workspace directory could not be read;
+ * `silent` when the only thing in the way was a manifest a caller's inventory
+ * listed without fetching (pcic-csf), which is not a failure to report.
  */
+type ScopeVerdict = boolean | 'unknown' | 'silent';
+
 function workspaceHasScript(
   context: RepoContext,
   tree: RepoTree,
   selector: string | undefined,
   scriptName: string,
-): boolean | 'unknown' {
+): ScopeVerdict {
   const normalizedSelector = normalizePnpmFilter(selector);
   if (!normalizedSelector) return false;
 
@@ -262,10 +271,12 @@ function workspaceHasScript(
 
   const { candidates, complete } = workspacePackageJsonCandidates(tree, normalizedSelector);
   let unknown = !complete;
+  let silent = false;
   for (const candidate of candidates) {
     const pkg = readPackageScripts(tree, candidate);
     if (pkg === 'unreadable') unknown = true;
-    if (!pkg || pkg === 'unreadable') continue;
+    if (pkg === 'unfetched') silent = true;
+    if (!pkg || pkg === 'unreadable' || pkg === 'unfetched') continue;
     const packageDir = path.dirname(candidate).replace(/\\/g, '/');
     const relDir = path.relative(context.repoRoot, packageDir).replace(/\\/g, '/');
     const selectorMatches =
@@ -275,7 +286,9 @@ function workspaceHasScript(
     if (selectorMatches && !!pkg.scripts[scriptName]) return true;
   }
 
-  return unknown ? 'unknown' : false;
+  if (unknown) return 'unknown';
+  // A manifest that exists but was never fetched could define the script.
+  return silent ? 'silent' : false;
 }
 
 /** Returns true when a path string looks like a file reference (not a flag). */
@@ -634,7 +647,7 @@ function findMissingScript(
 
   const selector = lookup.workspaceName ?? workspaceSelector(tool, parts);
   const allWorkspaces = runsInAllWorkspaces(tool, parts);
-  const inWorkspaceScope = (name: string): boolean | 'unknown' =>
+  const inWorkspaceScope = (name: string): ScopeVerdict =>
     allWorkspaces ? anyWorkspaceHasScript(context, name) : workspaceHasScript(context, tree, selector, name);
 
   // With discovered workspaces, an explicit selector means ONLY the selected
@@ -669,6 +682,10 @@ function findMissingScript(
   const dirPkg = inSubdir
     ? readPackageScripts(tree, path.join(tree.root, cwd, 'package.json'))
     : null;
+  // pcic-csf: the manifest is there but was never fetched. Nothing failed and
+  // there is no location to name, so say nothing at all — a "check incomplete"
+  // warning here would name zero locations and tell the reader nothing.
+  if (dirPkg === 'unfetched') return null;
   // pcic-x1vl: a directory on the way could not be listed — say so, don't guess.
   if (dirPkg === 'unreadable') return UNJUDGED;
   // cd'd into a directory whose package.json we can't read — don't guess.
@@ -713,7 +730,7 @@ function findMissingScript(
       // script.
       if (dirPkg.scripts[name]) continue;
       const inWorkspace = inWorkspaceScope(name);
-      if (inWorkspace === true) continue;
+      if (inWorkspace === true || inWorkspace === 'silent') continue;
       if (inWorkspace === 'unknown') return UNJUDGED;
       if (!scopedToWorkspaces) propose(name, Object.keys(dirPkg.scripts));
       return `${tool} script "${name}" does not appear in ${cwd}/package.json scripts`;
@@ -721,7 +738,7 @@ function findMissingScript(
 
     // Repo-root context: the workspace target(s) or the root manifest.
     const inWorkspace = inWorkspaceScope(name);
-    if (inWorkspace === true) continue;
+    if (inWorkspace === true || inWorkspace === 'silent') continue;
     if (context.packageJson.scripts[name]) continue;
     // pcic-x1vl: a selected workspace may define it in a directory that could not be read.
     if (inWorkspace === 'unknown') return UNJUDGED;

@@ -34,9 +34,28 @@ Common causes:
 - Duplicate detector fires on shared sections — sections under headings like "Overview", "Summary", "Project Description", "Introduction", and "License" are filtered from duplicate detection (both near-duplicate and exact-match). If a non-boilerplate section is flagged unexpectedly, suppress it inline with a `promptci-ignore` comment.
 - Dead-reference detector fires on source-code file paths (e.g. `lib/upload.ts`) — a referenced path is flagged only when the scanner cannot find it on disk. When you scan a real repository the file usually exists, so the finding does not appear; it shows up mainly when instruction files are scanned in isolation from the code they reference. A compiled-source file or a directory written in a code span (`src/payments/`) is only reported when its first path segment exists in the repository, and never when it is gitignored, under a build-output directory, or found deeper in the tree (an abbreviated path). Paths are matched with exact case on every platform, so `Docs/guide.md` is reported when the file is `docs/guide.md`, as it would be on Linux and GitHub. References that lead outside the scanned directory (`../other/AGENTS.md`, absolute paths, or through a committed symlink out of the tree) are not checked at all. When part of the repository cannot be listed (for example, a directory without read permission), the references that depend on it are left unchecked and a single warning, "Dead-reference check incomplete", names what could not be read.
 - Command-validity detector fires on a documented command (`node scripts/x.js`, `./scripts/x.sh`, `docker compose -f`, `make <target>`, a package script): a command is flagged only when the script, file, or target it names cannot be found in the scanned repository. Paths are matched with exact case on every platform, as on Linux and in CI. Paths that lead outside the scanned directory (`../other/x.sh`, absolute paths, `~` or `$VAR` paths, or through a committed symlink out of the tree) are not checked at all. When part of the repository cannot be listed, the commands that depend on it are left unchecked and a single warning, "Command check incomplete", names what could not be read.
+- Security and framework findings fire (or stop firing) based on whether a marker path exists — `.env`, `supabase/migrations`, `.promptci/`, a build directory like `coverage/`, `go.mod`, `Cargo.toml`, `Assets/`, `Pipfile`, `requirements.txt`. These are matched with exact case on every platform and are never followed through a committed symlink out of the scanned directory; see "A build-directory or framework finding changed after upgrading" below.
 - Conflict detector fires on unrelated directives — if you see spurious conflicts, check if the matched subject words are actually the same concept.
 
 `severityThreshold` does **not** hide findings — every finding is always listed in the report. It only sets the default `--fail-on` gate (the lowest severity that makes `scan` exit non-zero), so *raising* it toward `critical` makes CI *more* lenient, not quieter. To genuinely reduce noise, use `exclude` patterns or inline `promptci-ignore` comments (see [cli-reference.md](cli-reference.md#severitythreshold-config-key)).
+
+### A build-directory or framework finding changed after upgrading
+
+The checks that look for a fixed marker path now match a directory entry of **exactly**
+that name on every platform, and never follow a committed symlink out of the scanned
+directory. Two consequences:
+
+- On Windows and macOS, a repository whose directory is `Logs/` is no longer reported as
+  having an unignored `logs` directory. `fs.existsSync` matched that case-insensitively, so
+  those scans produced a finding a Linux scan of the same checkout did not. Every platform
+  now agrees with Linux and with GitHub. If you *want* the finding, name the directory in
+  the case the check looks for (the lowercase form), or add it to `.gitignore` either way.
+- A marker that only exists as a symlink pointing outside the repository (`go.mod ->
+  ../elsewhere/go.mod`) no longer counts as present, so the framework pack it would have
+  enabled stays off. In-repository symlinks are still followed.
+
+The same exact-case rule has applied to dead references and documented commands since
+earlier releases.
 
 ### `init && scan` exits 1 on my very first run
 

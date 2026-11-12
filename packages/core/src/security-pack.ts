@@ -324,7 +324,9 @@ export function detectSecurityPack(context: RepoContext): PromptCiIssue[] {
   // listed it without fetching it (pcic-csf) — so the two findings below say
   // nothing rather than claiming an entry is absent from text nobody read.
   const gitignoreRead = tree.readText('.gitignore');
-  const gitignoreUnknown = gitignoreRead.state === 'unreadable';
+  const gitignoreUnknown = gitignoreRead.state === 'unreadable'
+    || gitignoreRead.state === 'unfetched'
+    || gitignoreRead.state === 'too-large';
   const gitignoreContent = gitignoreRead.state === 'found' ? gitignoreRead.content : '';
 
   const gitignoreLines = gitignoreContent

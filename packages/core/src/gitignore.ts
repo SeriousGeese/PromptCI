@@ -124,6 +124,24 @@ function ruleMatches(rule: Rule, pathBelowIgnoreFile: string, isDir: boolean): b
 }
 
 /**
+ * What the repository's ignore rules say about a path.
+ *
+ * `true`/`false` are answers. The other two say the answer is not available,
+ * because an ignore file that applies to the path exists and its text was not
+ * read — callers must not take either for "not ignored". They are kept apart
+ * for the same reason {@link RepoTree.readText} keeps them apart:
+ *  - `'unreadable'` — the scan tried and failed. It is recorded, so a caller
+ *    can raise the "check incomplete" warning that names what it could not read.
+ *  - `'unfetched'` — a caller's inventory listed the file without fetching it
+ *    (pcic-csf). Nothing failed and there is nothing to name, so callers stay
+ *    silent.
+ */
+export type IgnoreVerdict = boolean | 'unreadable' | 'unfetched';
+
+/** The rules of one `.gitignore`, or why its text was not available. */
+type RulesOrUnknown = Rule[] | 'unreadable' | 'unfetched';
+
+/**
  * Build a checker over one repository; ignore files are read lazily and once
  * each.
  *
@@ -131,33 +149,50 @@ function ruleMatches(rule: Rule, pathBelowIgnoreFile: string, isDir: boolean): b
  * {@link RepoTree}, so a `.gitignore` committed as a link out of the
  * repository is not read and a caller's file inventory is consulted first
  * (pcic-csf) — the same source every other existence check in the scan uses.
+ *
+ * pcic-csf: a `.gitignore` the scan knows is there but has not got the bytes
+ * of (a hosted scan fetches only the instruction files) yields `'unknown'`, not
+ * an empty rule set. Treating it as "no rules" is what made such a scan report
+ * every reference to a gitignored generated file — `.beads/issues.jsonl`,
+ * `data/app.db` — as a broken reference.
  */
-export function createGitIgnoreChecker(tree: RepoTree): (repoRelativePath: string) => boolean {
-  const cache = new Map<string, Rule[]>();
-  const rulesFor = (dir: string): Rule[] => {
+export function createGitIgnoreChecker(tree: RepoTree): (repoRelativePath: string) => IgnoreVerdict {
+  const cache = new Map<string, RulesOrUnknown>();
+  const rulesFor = (dir: string): RulesOrUnknown => {
     let rules = cache.get(dir);
-    if (!rules) {
+    if (rules === undefined) {
       const read = tree.readText(dir === '' ? '.gitignore' : `${dir}/.gitignore`);
-      rules = read.state === 'found' ? parseRules(read.content) : [];
+      rules = read.state === 'found' ? parseRules(read.content)
+        : read.state === 'unfetched' ? 'unfetched'
+        : read.state === 'unreadable' || read.state === 'too-large' ? 'unreadable'
+        : [];
       cache.set(dir, rules);
     }
     return rules;
   };
 
-  return (repoRelativePath: string): boolean => {
+  return (repoRelativePath: string): IgnoreVerdict => {
     const segments = repoRelativePath.replace(/\\/g, '/').replace(/^\.\//, '').split('/').filter(Boolean);
+    let unavailable: 'unreadable' | 'unfetched' | undefined;
     for (let end = 1; end <= segments.length; end++) {
       const isDir = end < segments.length; // every prefix but the last is a directory
       let ignored: boolean | undefined;
       for (let start = 0; start < end; start++) {
         const below = segments.slice(start, end).join('/');
-        for (const rule of rulesFor(segments.slice(0, start).join('/'))) {
+        const rules = rulesFor(segments.slice(0, start).join('/'));
+        if (typeof rules === 'string') {
+          // A real read failure is the one worth naming, so it wins.
+          if (rules === 'unreadable' || unavailable === undefined) unavailable = rules;
+          continue;
+        }
+        for (const rule of rules) {
           if (ruleMatches(rule, below, isDir)) ignored = !rule.negate;
         }
       }
       // An ignored directory cannot be re-included, so everything below it is ignored too.
       if (ignored === true) return true;
     }
-    return false;
+    // Nothing matched, but an ignore file that could have matched went unread.
+    return unavailable ?? false;
   };
 }

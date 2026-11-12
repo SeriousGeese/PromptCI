@@ -12,7 +12,6 @@
  * Deterministic and offline: it only reads the Makefile text.
  */
 
-import * as fs from 'node:fs';
 import { RepoTree } from './repo-tree.js';
 import { MAX_FILE_SIZE } from './scanner.js';
 
@@ -160,20 +159,24 @@ export function readMakefile(
 ): MakefileFacts | undefined {
   for (const name of MAKEFILE_NAMES) {
     const rel = dir === '.' || dir === '' ? name : `${dir}/${name}`;
-    const found = tree.lookup(rel);
-    if (found.state !== 'found' || found.isDir) continue;
-    try {
-      const stat = fs.statSync(found.path);
-      if (!stat.isFile()) continue;
-      if (stat.size > MAX_FILE_SIZE) return { file: rel, targets: [], patterns: [], unverifiable: true };
-      return parseMakefileTargets(fs.readFileSync(found.path, 'utf8'), rel);
-    } catch {
-      // pcic-csf: a caller's inventory can say a Makefile is there without the
-      // bytes being on disk. The file exists, so its targets are unknown rather
-      // than absent — reporting them missing would be the false positive the
-      // inventory exists to remove.
-      if (tree.inventory !== undefined) return { file: rel, targets: [], patterns: [], unverifiable: true };
-      continue;
+    // pcic-e6xa: read through the tree, which containment-checks the file it
+    // actually opens — `lookup` alone cannot, since with a complete inventory
+    // (pcic-csf) no directory is listed and a real link at that path is never
+    // seen. A Makefile committed as a link out of the repository is not read.
+    const read = tree.readText(rel, { maxBytes: MAX_FILE_SIZE });
+    switch (read.state) {
+      case 'found':
+        return parseMakefileTargets(read.content, rel);
+      // The file is there and its targets cannot be known: oversized, not
+      // readable, or listed by a caller's inventory without being fetched.
+      // Reporting its targets as missing would be a false positive, so the
+      // facts say "unverifiable" and callers report nothing against it.
+      case 'too-large':
+      case 'unreadable':
+      case 'unfetched':
+        return { file: rel, targets: [], patterns: [], unverifiable: true };
+      default:
+        continue; // absent, or out of the root: try the next name
     }
   }
   return undefined;

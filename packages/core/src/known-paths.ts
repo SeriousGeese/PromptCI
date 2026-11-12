@@ -24,7 +24,9 @@
  *
  * Only FILES need listing: every directory on the way to a listed file is
  * implied, so `[".github/workflows/ci.yml"]` also says `.github` and
- * `.github/workflows` are directories.
+ * `.github/workflows` are directories. An entry with a TRAILING SLASH names a
+ * directory instead — the way to list one that holds no files of its own
+ * (`"coverage/"`).
  */
 export type KnownPaths = ReadonlySet<string> | readonly string[];
 
@@ -92,13 +94,18 @@ export class PathInventory {
   constructor(knownPaths: KnownPaths, complete = false) {
     this.complete = complete;
     const listed = new Set<string>();
+    const explicitDirs = new Set<string>();
     for (const raw of knownPaths) {
       const rel = normalizeKnownPath(raw);
       if (rel === null || rel === '') continue;
-      listed.add(rel);
+      // A trailing slash is how a caller names an EMPTY directory — one with no
+      // listed file under it to imply it. Normalization has already dropped the
+      // slash, so the raw spelling is what says which it was.
+      if (/[/\\]\s*$/.test(raw)) explicitDirs.add(rel);
+      else listed.add(rel);
     }
-    const dirs = new Set<string>(['']);
-    for (const rel of listed) for (const dir of ancestorsOf(rel)) dirs.add(dir);
+    const dirs = new Set<string>(['', ...explicitDirs]);
+    for (const rel of [...listed, ...explicitDirs]) for (const dir of ancestorsOf(rel)) dirs.add(dir);
     for (const rel of listed) if (!dirs.has(rel)) this.files.add(rel);
     // One pass over files and directories, each filed under its parent.
     const place = (rel: string, kind: 'file' | 'dir'): void => {

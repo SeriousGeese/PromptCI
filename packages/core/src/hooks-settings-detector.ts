@@ -154,6 +154,9 @@ function hasUnquotedProjectDir(command: string): boolean {
 
 export function detectHooksSettings(context: RepoContext): PromptCiIssue[] {
   const issues: PromptCiIssue[] = [];
+  // pcic-e6xa: one tree for the whole run, so its directory listings are read
+  // once and every reference below is looked up inside the scan root only.
+  const tree = treeFor(context);
 
   for (const filePath of context.aiConfig.settings) {
     const raw = readTextWithinRoot(context.repoRoot, filePath);
@@ -221,7 +224,7 @@ export function detectHooksSettings(context: RepoContext): PromptCiIssue[] {
 
       // Missing local script references.
       for (const ref of extractScriptRefs(command)) {
-        if (isFileWithinRoot(treeFor(context), ref)) continue;
+        if (isFileWithinRoot(tree, ref)) continue;
         const key = `${filePath}|${ref}`;
         if (reportedMissing.has(key)) continue;
         reportedMissing.add(key);
