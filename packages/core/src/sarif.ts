@@ -13,6 +13,7 @@
 
 import * as nodePath from 'node:path';
 import type { IssueCategory, IssueSeverity, PromptCiIssue, ScanReport } from './types.js';
+import { INSTRUCTION_FILE_TYPES } from './types.js';
 import { computeFingerprint } from './baseline.js';
 
 const PROMPTCI_REPO_URL = 'https://github.com/SeriousGeese/PromptCI';
@@ -153,82 +154,179 @@ type SarifLog = {
  * Suppressed findings are included rather than omitted (pcic-aq2f judgment
  * call): dropping them would make a repo's suppressions invisible in the
  * Security tab, where a reviewer might reasonably want to see what was
- * silenced and why. SARIF's `suppressions` field marks them without counting
- * them as open — GitHub excludes `suppressions`-bearing results from the
- * default alert count. The justification is generic because the inline
- * `promptci-ignore` reason text is not threaded onto `PromptCiIssue` today.
+ * silenced and why. SARIF's `suppressions` field marks a result as
+ * suppressed — GitHub's SARIF documentation does not promise any particular
+ * handling of a `suppressions`-bearing result, so this is "marked suppressed
+ * in the SARIF," not a guarantee about how a given consumer displays it. The
+ * justification is generic because the inline `promptci-ignore` reason text
+ * is not threaded onto `PromptCiIssue` today.
  */
 const SUPPRESSED_JUSTIFICATION =
   "Suppressed via an inline `promptci-ignore` annotation in the scanned repository.";
 
-/** Forward-slash, repo-relative path for a SARIF artifactLocation.uri. */
-function toRelativeUri(absPath: string, repoPath: string): string {
+/**
+ * Forward-slash, percent-encoded, repo-relative URI for a SARIF
+ * artifactLocation.uri — or null when `absPath` does not resolve inside
+ * `repoPath` at all (such a location is dropped rather than pointing outside
+ * the scanned tree). `nodePath.relative` can return a path that climbs out
+ * with a leading `..`, or (given an unrelated absolute path, e.g. on Windows)
+ * something that is not relative at all; only those two cases mean "outside"
+ * — a real directory or file NAMED `..something` (e.g. `..hidden/x`) does not
+ * start with `..` followed by a separator (or equal `..` outright), so it is
+ * left alone.
+ */
+function toRelativeUri(absPath: string, repoPath: string): string | null {
   const rel = nodePath.relative(repoPath, absPath);
-  const safe = !rel || rel.startsWith('..') ? absPath : rel;
-  return safe.replace(/\\/g, '/');
-}
-
-function buildLocations(issue: PromptCiIssue, rel: (p: string) => string): SarifLocation[] {
-  if (issue.locations.length > 0) {
-    return issue.locations.map((loc) => ({
-      physicalLocation: {
-        artifactLocation: { uri: rel(loc.filePath), uriBaseId: '%SRCROOT%' },
-        ...(loc.startLine !== undefined
-          ? {
-              region: {
-                startLine: loc.startLine,
-                ...(loc.endLine !== undefined ? { endLine: loc.endLine } : {}),
-              },
-            }
-          : {}),
-      },
-    }));
+  if (rel === '..' || rel.startsWith(`..${nodePath.sep}`) || rel.startsWith('../') || nodePath.isAbsolute(rel)) {
+    return null;
   }
-  // Whole-file findings (e.g. total context-bloat) carry no locations, only
-  // filePaths: one location per file, with no region.
-  return issue.filePaths.map((fp) => ({
-    physicalLocation: {
-      artifactLocation: { uri: rel(fp), uriBaseId: '%SRCROOT%' },
-    },
-  }));
+  const posix = rel.replace(/\\/g, '/');
+  // RFC 3986: each path SEGMENT is percent-encoded independently, so a
+  // literal '/' produced by encoding one segment can never be mistaken for a
+  // path separator, and characters like '#', '%', ' ', or non-ASCII bytes in
+  // a real filename round-trip into a valid uri-reference.
+  return posix
+    .split('/')
+    .map((segment) => encodeURIComponent(segment))
+    .join('/');
 }
 
-/** Title + recommendation, worded as cautiously as the issue itself already is. */
-function buildMessageText(issue: PromptCiIssue): string {
-  const summary = issue.summary.trim();
+/** One SARIF location for `absPath`, or null if it falls outside the repo (see toRelativeUri). */
+function buildOneLocation(
+  absPath: string,
+  rel: (p: string) => string | null,
+  startLine: number | undefined,
+  endLine: number | undefined,
+): SarifLocation | null {
+  const uri = rel(absPath);
+  if (uri === null) return null;
+  // A detector-supplied line number is always >= 1 in practice, but never
+  // invent a line (or trust a stray 0/negative one) for a result that has
+  // none — SARIF regions are 1-based, and a fabricated "line 1" would point a
+  // reviewer at the wrong text for what is really a file-level finding.
+  const region = startLine !== undefined && startLine >= 1
+    ? { startLine, ...(endLine !== undefined && endLine >= startLine ? { endLine } : {}) }
+    : undefined;
+  return {
+    physicalLocation: {
+      artifactLocation: { uri, uriBaseId: '%SRCROOT%' },
+      ...(region ? { region } : {}),
+    },
+  };
+}
+
+/**
+ * SARIF locations for one finding, plus whether a fallback location had to
+ * be substituted (pcic-aq2f #3/#12): a finding with no usable location — no
+ * `locations` entries (or none that resolve inside the repo), and no
+ * `filePaths` either (or none that resolve inside the repo) — would
+ * otherwise serialize to `locations: []`, which GitHub's code-scanning
+ * ingestion silently drops. Falling back to the repo's primary instruction
+ * file (whichever of AGENTS.md/CLAUDE.md the scan found first, else the
+ * first scanned instruction file) keeps the finding visible, with no region
+ * attached since the fallback file is not where the finding specifically is.
+ * When nothing was scanned at all, there is nothing to fall back to and the
+ * result legitimately carries no locations.
+ */
+function buildLocations(
+  issue: PromptCiIssue,
+  rel: (p: string) => string | null,
+  fallbackAbsPath: string | undefined,
+): { locations: SarifLocation[]; usedFallback: boolean } {
+  const fromLocations = issue.locations
+    .map((loc) => buildOneLocation(loc.filePath, rel, loc.startLine, loc.endLine))
+    .filter((l): l is SarifLocation => l !== null);
+  if (fromLocations.length > 0) return { locations: fromLocations, usedFallback: false };
+
+  const fromFilePaths = issue.filePaths
+    .map((fp) => buildOneLocation(fp, rel, undefined, undefined))
+    .filter((l): l is SarifLocation => l !== null);
+  if (fromFilePaths.length > 0) return { locations: fromFilePaths, usedFallback: false };
+
+  if (fallbackAbsPath) {
+    const fallback = buildOneLocation(fallbackAbsPath, rel, undefined, undefined);
+    if (fallback) return { locations: [fallback], usedFallback: true };
+  }
+  return { locations: [], usedFallback: false };
+}
+
+/**
+ * Title + recommendation, worded as cautiously as the issue itself already
+ * is. Falls back to the title when `summary` is somehow empty, so a result
+ * never serializes with blank message text. `fallbackNote`, when set,
+ * documents that `locations` points at the repo's primary instruction file
+ * rather than the finding's actual location (see buildLocations).
+ */
+function buildMessageText(issue: PromptCiIssue, fallbackNote: string | undefined): string {
+  const summary = issue.summary.trim() || issue.title.trim();
   const recommendation = issue.recommendation.trim();
-  return recommendation ? `${summary} Recommendation: ${recommendation}` : summary;
+  const base = recommendation ? `${summary} Recommendation: ${recommendation}` : summary;
+  return fallbackNote ? `${base} ${fallbackNote}` : base;
 }
 
 /**
  * Sort key used to order results deterministically: primary file, then
  * primary line, then category, then the issue's own id — independent of
- * detector run order.
+ * detector run order. Out-of-repo locations/filePaths are excluded the same
+ * way buildLocations excludes them, so the key never diverges from where a
+ * result's own locations actually point.
  */
-function sortKey(issue: PromptCiIssue, rel: (p: string) => string): string {
-  const loc = issue.locations.find((l) => l.startLine !== undefined) ?? issue.locations[0];
-  const file = loc ? rel(loc.filePath) : issue.filePaths[0] ? rel(issue.filePaths[0]) : '';
+function sortKey(issue: PromptCiIssue, rel: (p: string) => string | null): string {
+  const loc =
+    issue.locations.find((l) => l.startLine !== undefined && rel(l.filePath) !== null) ??
+    issue.locations.find((l) => rel(l.filePath) !== null);
+  const file = loc ? rel(loc.filePath)! : issue.filePaths.map(rel).find((p): p is string => p !== null) ?? '';
   const line = loc?.startLine ?? 0;
-  return [file, String(line).padStart(10, '0'), issue.category, issue.id].join(' ');
+  return [file, String(line).padStart(10, '0'), issue.category, issue.id].join('\u0000');
 }
 
+/**
+ * Ordinal (UTF-16 code-unit) string comparison, not `localeCompare`:
+ * `localeCompare`'s collation depends on the running engine's ICU data and
+ * the active locale, which is not guaranteed identical between the machine
+ * that runs this and CI's — the same input could sort differently and break
+ * the "identical reports produce byte-identical SARIF" guarantee. Plain
+ * `<`/`>` on strings compares UTF-16 code units and is the same everywhere
+ * Node runs.
+ */
+function ordinalCompare(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+/**
+ * `promptci/v1` is PromptCI's OWN stable-identity key (the same
+ * category+title+filePaths+evidence fingerprint `--baseline` already uses),
+ * not GitHub's `primaryLocationLineHash` — GitHub computes and uses that one
+ * itself. The fingerprint deliberately excludes line numbers, so two distinct
+ * findings of the same category/title/evidence (e.g. the same duplicate
+ * check firing on two different line ranges) can share a raw value; the
+ * caller's trailing `:N` (rawFingerprintWithSuffix) keeps their
+ * partialFingerprints distinct WITHIN this run without touching what makes
+ * two findings "the same" ACROSS runs.
+ */
 function buildResult(
   issue: PromptCiIssue,
-  rel: (p: string) => string,
-  repoPath: string,
+  rel: (p: string) => string | null,
+  rawFingerprintWithSuffix: string,
   ruleIndex: number,
   suppressed: boolean,
+  fallbackAbsPath: string | undefined,
 ): SarifResult {
+  const { locations, usedFallback } = buildLocations(issue, rel, fallbackAbsPath);
+  const fallbackNote =
+    usedFallback && fallbackAbsPath
+      ? `(No specific location was recorded for this finding; pointing at ${nodePath.basename(
+          fallbackAbsPath,
+        )} as the repository's primary instruction file.)`
+      : undefined;
+
   const result: SarifResult = {
     ruleId: issue.category,
     ruleIndex,
     level: SEVERITY_TO_SARIF_LEVEL[issue.severity],
-    message: { text: buildMessageText(issue) },
-    locations: buildLocations(issue, rel),
-    // GitHub dedupes alerts across runs on partialFingerprints; computeFingerprint
-    // is the same category+title+filePaths+evidence key the baseline/ratchet
-    // feature already uses to answer "is this the same finding?".
-    partialFingerprints: { 'promptci/v1': computeFingerprint(issue, repoPath) },
+    message: { text: buildMessageText(issue, fallbackNote) },
+    locations,
+    partialFingerprints: { 'promptci/v1': rawFingerprintWithSuffix },
   };
   if (suppressed) {
     result.suppressions = [{ kind: 'external', justification: SUPPRESSED_JUSTIFICATION }];
@@ -248,6 +346,23 @@ function buildRule(category: IssueCategory): SarifRule {
 }
 
 /**
+ * Absolute path of the repo's "primary" instruction file, for buildLocations'
+ * fallback: whichever of AGENTS.md/CLAUDE.md was scanned first (scan order,
+ * not alphabetical), else the first scanned instruction-type file, else
+ * undefined when nothing was scanned at all.
+ */
+function primaryInstructionFile(report: ScanReport): string | undefined {
+  const scanned = report.filesScanned.filter(
+    (f) => f.aliasOf === undefined && INSTRUCTION_FILE_TYPES.has(f.fileType),
+  );
+  const primary = scanned.find((f) => {
+    const base = nodePath.basename(f.path).toLowerCase();
+    return base === 'agents.md' || base === 'claude.md';
+  });
+  return (primary ?? scanned[0])?.path;
+}
+
+/**
  * Serialize a ScanReport to a SARIF 2.1.0 log.
  *
  * `toolVersion` is threaded in by the caller (the CLI's own `--version`
@@ -261,20 +376,36 @@ function buildRule(category: IssueCategory): SarifRule {
  */
 export function generateSarifReport(report: ScanReport, toolVersion: string, pretty = true): string {
   const rel = (absPath: string) => toRelativeUri(absPath, report.repoPath);
+  const fallbackAbsPath = primaryInstructionFile(report);
 
   const entries: Array<{ issue: PromptCiIssue; suppressed: boolean }> = [
     ...report.issues.map((issue) => ({ issue, suppressed: false })),
     ...(report.suppressedIssues ?? []).map((issue) => ({ issue, suppressed: true })),
   ];
-  entries.sort((a, b) => sortKey(a.issue, rel).localeCompare(sortKey(b.issue, rel)));
+  entries.sort((a, b) => ordinalCompare(sortKey(a.issue, rel), sortKey(b.issue, rel)));
 
-  const categoriesUsed = [...new Set(entries.map(({ issue }) => issue.category))].sort();
+  const categoriesUsed = [...new Set(entries.map(({ issue }) => issue.category))].sort(ordinalCompare);
   const rules = categoriesUsed.map((category) => buildRule(category));
   const ruleIndexOf = new Map(categoriesUsed.map((category, i) => [category, i]));
 
-  const results = entries.map(({ issue, suppressed }) =>
-    buildResult(issue, rel, report.repoPath, ruleIndexOf.get(issue.category)!, suppressed),
-  );
+  // Raw (pre-suffix) fingerprints can collide within a single run — the
+  // fingerprint excludes line numbers — so track how many of each have been
+  // seen, in the already-established sort order, and give each occurrence a
+  // 0-based `:N` suffix (see buildResult).
+  const fingerprintOccurrence = new Map<string, number>();
+  const results = entries.map(({ issue, suppressed }) => {
+    const rawFingerprint = computeFingerprint(issue, report.repoPath);
+    const suffix = fingerprintOccurrence.get(rawFingerprint) ?? 0;
+    fingerprintOccurrence.set(rawFingerprint, suffix + 1);
+    return buildResult(
+      issue,
+      rel,
+      `${rawFingerprint}:${suffix}`,
+      ruleIndexOf.get(issue.category)!,
+      suppressed,
+      fallbackAbsPath,
+    );
+  });
 
   const log: SarifLog = {
     $schema: SARIF_SCHEMA_URI,

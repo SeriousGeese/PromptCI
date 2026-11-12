@@ -226,16 +226,23 @@ export async function runScan(options: ScanOptions): Promise<void> {
     }
     await fs.mkdir(path.dirname(baselinePath), { recursive: true });
     await fs.writeFile(baselinePath, JSON.stringify(newBaseline, null, 2));
-    if (!options.json) {
-      console.log(`\nBaseline updated: ${baselinePath}`);
+    // --format json is just --json's stdout shape (see below); either one, or
+    // --format sarif, means stdout must parse as that format alone — this
+    // notice would otherwise land as a stray non-JSON/non-SARIF line before
+    // (or, on some platforms, interleaved with) the machine-readable output.
+    if (!options.json && options.format === undefined) {
+      process.stdout.write(`\nBaseline updated: ${baselinePath}\n`);
+    } else {
+      process.stderr.write(`Baseline updated: ${baselinePath}\n`);
     }
   }
 
-  // Output
+  // Output. --format json is equivalent to --json; --format sarif prints
+  // SARIF (and, as `sarifContent`, was already written to a file above).
+  const effectiveJson = options.json || options.format === 'json';
   if (options.format === 'sarif') {
-    // Print SARIF to stdout; the file was already written above.
     process.stdout.write(`${sarifContent}\n`);
-  } else if (options.json) {
+  } else if (effectiveJson) {
     // Print JSON to stdout; summary was suppressed
     process.stdout.write(generateJsonReport(report) + '\n');
   } else {

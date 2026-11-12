@@ -1,12 +1,1 @@
-[
-  {
-    "id": "context-bloat-file-5350685f7672",
-    "category": "context_bloat",
-    "title": "README dominates scanned instruction context",
-    "filePaths": [
-      "README.md"
-    ],
-    "severity": "info",
-    "fingerprint": "4c5cb30d97368a3534ad444c12183611b5e4f5ab9a7e22b1e345b5851661a650"
-  }
-]
+[]

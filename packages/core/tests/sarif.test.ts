@@ -5,18 +5,39 @@
  *  - A fixture with several findings validates against the vendored 2.1.0 schema
  *  - Severity -> SARIF level mapping for every IssueSeverity
  *  - A finding with no line (whole-file, locations-less)
+ *  - A finding with no location AT ALL falls back to the primary instruction file
  *  - A suppressed finding carries a `suppressions` entry
  *  - A multi-location finding produces multiple SARIF locations
- *  - partialFingerprints are stable across two independent runs
- *  - Paths are repo-relative POSIX even when the repo root is a Windows path
+ *  - partialFingerprints are stable across two independent runs, and get a
+ *    distinct `:N` suffix when two findings in the same run would otherwise
+ *    collide
+ *  - Paths are repo-relative, percent-encoded POSIX URIs even for a Windows
+ *    repo root, odd characters, or a path that climbs outside the repo
+ *  - startLine < 1 never produces a region
+ *  - Empty message text falls back to the issue's title
+ *  - Sorting is locale-independent (ordinal)
  */
 
 import * as path from 'node:path';
 import { describe, it, expect, beforeAll } from 'vitest';
 import Ajv from 'ajv-draft-04';
+import addFormats from 'ajv-formats';
 import type { ValidateFunction } from 'ajv-draft-04';
 import { generateSarifReport } from '../src/sarif.js';
-import type { IssueSeverity, PromptCiIssue, ScanReport } from '../src/types.js';
+import type { InstructionFile, IssueSeverity, PromptCiIssue, ScanReport } from '../src/types.js';
+
+function makeFile(overrides: Partial<InstructionFile> = {}): InstructionFile {
+  return {
+    path: '/repo/CLAUDE.md',
+    fileType: 'claude',
+    content: '',
+    sections: [],
+    lineCount: 1,
+    charCount: 0,
+    estimatedTokens: 0,
+    ...overrides,
+  };
+}
 
 const SCHEMA_PATH = path.join(__dirname, 'fixtures', 'sarif-schema', 'sarif-schema-2.1.0.json');
 
@@ -83,11 +104,15 @@ let validate: ValidateFunction;
 beforeAll(() => {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const schema = require(SCHEMA_PATH);
-  // strict:false — the schema itself declares formats ("uri", "date-time")
-  // ajv-draft-04 doesn't ship a format plugin for; we only need structural
-  // validation, not format checking, and `logger: false` keeps the
-  // "unknown format ... ignored" warnings out of test output.
+  // strict:false — the schema declares keywords ajv-draft-04 doesn't need
+  // strict mode for; `logger: false` keeps noise out of test output.
+  // ajv-formats registers "uri"/"uri-reference"/"date-time" etc. so the
+  // schema's format keyword is actually CHECKED, not merely accepted as an
+  // unknown-and-ignored string (pcic-aq2f #4) — an artifactLocation.uri with
+  // an unescaped space or '#' would otherwise pass schema validation despite
+  // being an invalid uri-reference.
   const ajv = new Ajv({ strict: false, allowUnionTypes: true, logger: false });
+  addFormats(ajv);
   validate = ajv.compile(schema);
 });
 
@@ -141,6 +166,59 @@ describe('generateSarifReport', () => {
     expect(loc.physicalLocation.artifactLocation.uri).toBe('CLAUDE.md');
     expect(loc.physicalLocation.region).toBeUndefined();
     expect(validate(sarif)).toBe(true);
+  });
+
+  it('drops a region with startLine < 1 rather than inventing line 1', () => {
+    const report = makeReport({
+      issues: [makeIssue({ locations: [{ filePath: '/repo/CLAUDE.md', startLine: 0 }] })],
+    });
+    const sarif = parseSarif(report);
+    expect(sarif.runs[0].results[0].locations[0].physicalLocation.region).toBeUndefined();
+  });
+
+  it('falls back to the primary instruction file when a finding has no location and no filePaths', () => {
+    const report = makeReport({
+      filesScanned: [makeFile({ path: '/repo/README.md', fileType: 'readme' }), makeFile({ path: '/repo/AGENTS.md', fileType: 'agents' })],
+      issues: [makeIssue({ locations: [], filePaths: [] })],
+    });
+    const sarif = parseSarif(report);
+    const result = sarif.runs[0].results[0];
+    expect(result.locations).toHaveLength(1);
+    expect(result.locations[0].physicalLocation.artifactLocation.uri).toBe('AGENTS.md');
+    expect(result.locations[0].physicalLocation.region).toBeUndefined();
+    expect(result.message.text).toContain('AGENTS.md');
+    expect(validate(sarif)).toBe(true);
+  });
+
+  it('prefers whichever of AGENTS.md/CLAUDE.md was scanned first over other instruction files', () => {
+    const report = makeReport({
+      filesScanned: [
+        makeFile({ path: '/repo/README.md', fileType: 'readme' }),
+        makeFile({ path: '/repo/CLAUDE.md', fileType: 'claude' }),
+        makeFile({ path: '/repo/AGENTS.md', fileType: 'agents' }),
+      ],
+      issues: [makeIssue({ locations: [], filePaths: [] })],
+    });
+    const sarif = parseSarif(report);
+    expect(sarif.runs[0].results[0].locations[0].physicalLocation.artifactLocation.uri).toBe('CLAUDE.md');
+  });
+
+  it('falls back to the first scanned instruction file when neither AGENTS.md nor CLAUDE.md was scanned', () => {
+    const report = makeReport({
+      filesScanned: [makeFile({ path: '/repo/README.md', fileType: 'readme' }), makeFile({ path: '/repo/.cursorrules', fileType: 'cursor' })],
+      issues: [makeIssue({ locations: [], filePaths: [] })],
+    });
+    const sarif = parseSarif(report);
+    expect(sarif.runs[0].results[0].locations[0].physicalLocation.artifactLocation.uri).toBe('.cursorrules');
+  });
+
+  it('keeps an empty locations array, documented, when nothing at all was scanned', () => {
+    const report = makeReport({
+      filesScanned: [],
+      issues: [makeIssue({ locations: [], filePaths: [] })],
+    });
+    const sarif = parseSarif(report);
+    expect(sarif.runs[0].results[0].locations).toEqual([]);
   });
 
   it('produces one SARIF location per finding location for a multi-location finding', () => {
@@ -228,6 +306,33 @@ describe('generateSarifReport', () => {
     expect(first.partialFingerprints['promptci/v1']).not.toBe(second.partialFingerprints['promptci/v1']);
   });
 
+  it('suffixes identical within-run fingerprints with a distinct occurrence number', () => {
+    // Same category/title/filePaths/evidence (the fingerprint's own inputs),
+    // different line numbers only — the raw fingerprint collides.
+    const sarif = parseSarif(
+      makeReport({
+        issues: [
+          makeIssue({ id: 'first', locations: [{ filePath: '/repo/CLAUDE.md', startLine: 1 }] }),
+          makeIssue({ id: 'second', locations: [{ filePath: '/repo/CLAUDE.md', startLine: 50 }] }),
+        ],
+      }),
+    );
+    const [a, b] = sarif.runs[0].results;
+    const fpA = a.partialFingerprints['promptci/v1'];
+    const fpB = b.partialFingerprints['promptci/v1'];
+    expect(fpA).not.toBe(fpB);
+    expect(fpA.replace(/:\d+$/, '')).toBe(fpB.replace(/:\d+$/, ''));
+    expect(fpA.endsWith(':0')).toBe(true);
+    expect(fpB.endsWith(':1')).toBe(true);
+  });
+
+  // ── message text ──────────────────────────────────────────────────────────
+
+  it('falls back to the title when summary is empty', () => {
+    const sarif = parseSarif(makeReport({ issues: [makeIssue({ summary: '  ', recommendation: '', title: 'Fallback title' })] }));
+    expect(sarif.runs[0].results[0].message.text).toBe('Fallback title');
+  });
+
   // ── path handling ─────────────────────────────────────────────────────────
 
   it('produces repo-relative, forward-slash URIs even for a Windows repo root', () => {
@@ -245,6 +350,42 @@ describe('generateSarifReport', () => {
     expect(uri).toBe('sub/CLAUDE.md');
   });
 
+  it('percent-encodes path segments containing spaces, #, %, and non-ASCII characters', () => {
+    const oddPath = '/repo/docs dir/a#b%20c/café/AGENTS.md';
+    const report = makeReport({
+      issues: [makeIssue({ filePaths: [oddPath], locations: [{ filePath: oddPath, startLine: 1 }] })],
+    });
+    const sarif = parseSarif(report);
+    const uri = sarif.runs[0].results[0].locations[0].physicalLocation.artifactLocation.uri;
+    expect(uri).toBe('docs%20dir/a%23b%2520c/caf%C3%A9/AGENTS.md');
+    expect(validate(sarif)).toBe(true);
+  });
+
+  it('drops a location that resolves outside the repo root', () => {
+    const report = makeReport({
+      issues: [
+        makeIssue({
+          filePaths: ['/outside/CLAUDE.md'],
+          locations: [{ filePath: '/outside/CLAUDE.md', startLine: 1 }],
+        }),
+      ],
+    });
+    const sarif = parseSarif(report);
+    // No filesScanned to fall back to -> empty, not a location pointing outside the repo.
+    expect(sarif.runs[0].results[0].locations).toEqual([]);
+  });
+
+  it('does not treat a directory literally named "..hidden" as outside the repo', () => {
+    const oddPath = '/repo/..hidden/x.md';
+    const report = makeReport({
+      issues: [makeIssue({ filePaths: [oddPath], locations: [{ filePath: oddPath, startLine: 1 }] })],
+    });
+    const sarif = parseSarif(report);
+    expect(sarif.runs[0].results[0].locations[0].physicalLocation.artifactLocation.uri).toBe('..hidden/x.md');
+  });
+
+  // ── determinism ───────────────────────────────────────────────────────────
+
   it('is deterministic: identical reports produce byte-identical SARIF', () => {
     const report = makeReport({
       issues: [
@@ -253,5 +394,19 @@ describe('generateSarifReport', () => {
       ],
     });
     expect(generateSarifReport(report, '1.0.0')).toBe(generateSarifReport(report, '1.0.0'));
+  });
+
+  it('sorts rules and results ordinally regardless of category name case/characters', () => {
+    // 'ai_config' vs 'custom' vs 'security': ordinal (code-unit) order is
+    // stable and locale-independent, unlike String.prototype.localeCompare.
+    const report = makeReport({
+      issues: [
+        makeIssue({ id: 'r1', category: 'security' }),
+        makeIssue({ id: 'r2', category: 'ai_config' }),
+        makeIssue({ id: 'r3', category: 'custom' }),
+      ],
+    });
+    const sarif = parseSarif(report);
+    expect(sarif.runs[0].tool.driver.rules.map((r) => r.id)).toEqual(['ai_config', 'custom', 'security']);
   });
 });

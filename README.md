@@ -139,28 +139,7 @@ npx @promptci/cli review-diff --base origin/main --fail-on-regression --fail-on 
 
 ### SARIF / GitHub Security tab
 
-`promptci scan --format sarif` writes `.promptci/report.sarif` (override the path with
-`--output`) and prints the same SARIF 2.1.0 log to stdout. Upload it with
-[`github/codeql-action/upload-sarif`](https://github.com/github/codeql-action) to see findings
-in the repository's Security tab, deduplicated across runs:
-
-```yaml
-- uses: actions/checkout@v5
-- run: npx @promptci/cli scan --format sarif
-- uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
-  with:
-    sarif_file: .promptci/report.sarif
-permissions:
-  security-events: write
-```
-
-`critical`/`high` findings map to SARIF `error`, `warning` stays `warning`, and `info` maps to
-`note`. Findings silenced by an inline `promptci-ignore` annotation are still included, marked
-with a SARIF `suppressions` entry rather than dropped, so a suppressed finding stays visible
-(but not counted as an open alert) in the Security tab.
-
-The GitHub Action ([action.yml](action.yml)) does not yet expose a `format` input for this —
-run the CLI step above directly until it does.
+See [Docs/cli-reference.md](Docs/cli-reference.md#sarif) for `--format sarif` and upload-sarif setup.
 
 ## Health badge
 
