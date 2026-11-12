@@ -1,0 +1,11 @@
+{
+  "name": "fixture-fix-recipes",
+  "private": true,
+  "scripts": {
+    "build": "tsc",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "check:dev": "node ./ops/check.mjs --dev",
+    "check:web": "node ./ops/check.mjs --web"
+  }
+}
