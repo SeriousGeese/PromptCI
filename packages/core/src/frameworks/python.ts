@@ -1,7 +1,7 @@
 import type { RepoContext } from '../repo-context.js';
 import type { PromptCiIssue } from '../types.js';
 import * as path from 'node:path';
-import * as fs from 'node:fs';
+import { treeFor } from '../repo-tree.js';
 
 export function detectPython(context: RepoContext): PromptCiIssue[] {
   const issues: PromptCiIssue[] = [];
@@ -12,8 +12,10 @@ export function detectPython(context: RepoContext): PromptCiIssue[] {
   // RepoContext is built — the detector must not do synchronous disk I/O inside
   // the scan pipeline. Presence is derived from that captured content.
   const hasRequirements = manifests.requirements !== undefined;
-  const hasPipfile = fs.existsSync(path.join(repoRoot, 'Pipfile'));
-  const hasCondaYaml = fs.existsSync(path.join(repoRoot, 'environment.yml'));
+  // pcic-e6xa: see the note in frameworks/go.ts.
+  const tree = treeFor(context);
+  const hasPipfile = tree.isFile('Pipfile');
+  const hasCondaYaml = tree.isFile('environment.yml');
 
   if (!hasPyProject && !hasRequirements && !hasPipfile && !hasCondaYaml) {
     return [];

@@ -1,13 +1,17 @@
 import type { RepoContext } from '../repo-context.js';
 import type { PromptCiIssue } from '../types.js';
-import * as path from 'node:path';
-import * as fs from 'node:fs';
+import { treeFor } from '../repo-tree.js';
 
+// pcic-e6xa: the framework probes read fixed root names, so they go through
+// the scan's tree: a marker file committed as a link out of the repository can
+// no longer decide which framework pack runs, names match with exact case on
+// every platform, and a caller's file inventory answers when the repository is
+// not on disk (pcic-csf).
 export function detectGo(context: RepoContext): PromptCiIssue[] {
   const issues: PromptCiIssue[] = [];
-  const { repoRoot, files } = context;
+  const { files } = context;
 
-  const hasGoMod = fs.existsSync(path.join(repoRoot, 'go.mod'));
+  const hasGoMod = treeFor(context).isFile('go.mod');
   const combinedContent = files.map(f => f.content).join('\n');
   // FW1: "go" is an ordinary English verb ("let's go build something"), so a
   // bare `\bgo\s+(build|test|run|get|mod)\b` match enabled the whole Go pack

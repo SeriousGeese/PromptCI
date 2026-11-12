@@ -107,7 +107,7 @@ export const DETECTORS: DetectorDefinition[] = [
   },
   {
     id: 'dead-references',
-    run: (context) => detectDeadReferences(context.files, context.repoRoot),
+    run: (context) => detectDeadReferences(context.files, context.repoRoot, context.tree),
   },
   {
     id: 'agent-practices',

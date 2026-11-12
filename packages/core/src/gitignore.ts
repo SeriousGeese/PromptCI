@@ -18,7 +18,7 @@
  * they do to git, which treats them literally.
  */
 
-import { readTextWithinRoot } from './ai-config.js';
+import type { RepoTree } from './repo-tree.js';
 
 type Rule = {
   negate: boolean;
@@ -123,14 +123,22 @@ function ruleMatches(rule: Rule, pathBelowIgnoreFile: string, isDir: boolean): b
   return rule.regex.test(target);
 }
 
-/** Build a checker over one repository; ignore files are read lazily and once each. */
-export function createGitIgnoreChecker(repoRoot: string): (repoRelativePath: string) => boolean {
+/**
+ * Build a checker over one repository; ignore files are read lazily and once
+ * each.
+ *
+ * pcic-e6xa: the `.gitignore` files are read through the scan's
+ * {@link RepoTree}, so a `.gitignore` committed as a link out of the
+ * repository is not read and a caller's file inventory is consulted first
+ * (pcic-csf) — the same source every other existence check in the scan uses.
+ */
+export function createGitIgnoreChecker(tree: RepoTree): (repoRelativePath: string) => boolean {
   const cache = new Map<string, Rule[]>();
   const rulesFor = (dir: string): Rule[] => {
     let rules = cache.get(dir);
     if (!rules) {
-      const content = readTextWithinRoot(repoRoot, dir === '' ? '.gitignore' : `${dir}/.gitignore`);
-      rules = content === undefined ? [] : parseRules(content);
+      const read = tree.readText(dir === '' ? '.gitignore' : `${dir}/.gitignore`);
+      rules = read.state === 'found' ? parseRules(read.content) : [];
       cache.set(dir, rules);
     }
     return rules;

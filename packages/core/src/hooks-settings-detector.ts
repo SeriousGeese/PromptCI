@@ -23,6 +23,7 @@ import {
   SCRIPT_EXT_RE,
   aiConfigIssue as base,
 } from './ai-config.js';
+import { treeFor } from './repo-tree.js';
 
 /** curl/wget piped straight into a shell — the classic remote-code-execution footgun. */
 const CURL_PIPE_SH_RE = /\b(curl|wget)\b[^|]*\|\s*(sudo\s+)?(sh|bash|zsh|dash)\b/i;
@@ -220,7 +221,7 @@ export function detectHooksSettings(context: RepoContext): PromptCiIssue[] {
 
       // Missing local script references.
       for (const ref of extractScriptRefs(command)) {
-        if (isFileWithinRoot(context.repoRoot, ref)) continue;
+        if (isFileWithinRoot(treeFor(context), ref)) continue;
         const key = `${filePath}|${ref}`;
         if (reportedMissing.has(key)) continue;
         reportedMissing.add(key);

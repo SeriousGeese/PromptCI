@@ -168,6 +168,11 @@ export function readMakefile(
       if (stat.size > MAX_FILE_SIZE) return { file: rel, targets: [], patterns: [], unverifiable: true };
       return parseMakefileTargets(fs.readFileSync(found.path, 'utf8'), rel);
     } catch {
+      // pcic-csf: a caller's inventory can say a Makefile is there without the
+      // bytes being on disk. The file exists, so its targets are unknown rather
+      // than absent — reporting them missing would be the false positive the
+      // inventory exists to remove.
+      if (tree.inventory !== undefined) return { file: rel, targets: [], patterns: [], unverifiable: true };
       continue;
     }
   }

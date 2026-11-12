@@ -1078,6 +1078,12 @@ function movedLinkEdit(
 export function detectDeadReferences(
   files: InstructionFile[],
   repoRoot: string,
+  /**
+   * The scan's view of the repository. Pass `context.tree` so the listings and
+   * any caller-supplied file inventory (pcic-csf) are shared with every other
+   * detector; omitted, a plain filesystem-backed tree over `repoRoot` is used.
+   */
+  sharedTree?: RepoTree,
 ): PromptCiIssue[] {
   // normRef → { displayRef, filePaths, fileLines, evidenceLines, minConfidence }
   const byRef = new Map<string, {
@@ -1099,7 +1105,7 @@ export function detectDeadReferences(
     allRewritable: boolean;
   }>();
 
-  const tree = new RepoTree(repoRoot);
+  const tree = sharedTree ?? new RepoTree(repoRoot);
   let ctx: JudgeContext | undefined;
   let nameIndexCache: NameIndex | undefined;
   const nameIndex = (): NameIndex => (nameIndexCache ??= buildNameIndex(tree));
@@ -1126,7 +1132,7 @@ export function detectDeadReferences(
       if (isHomeRooted(ref)) continue;
 
       // Resolve relative to the instruction file first, then repo root.
-      ctx ??= { tree, isIgnored: createGitIgnoreChecker(repoRoot), suffixCache: new Map(), nameIndex };
+      ctx ??= { tree, isIgnored: createGitIgnoreChecker(tree), suffixCache: new Map(), nameIndex };
       const confidence = judgeReference(ref, kind, codeSpan ?? false, fileDir, ctx);
       if (confidence === null) continue;
       if (confidence === UNJUDGED) {

@@ -1,4 +1,3 @@
-import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as crypto from 'node:crypto';
 import type { RepoContext } from './repo-context.js';
@@ -8,7 +7,7 @@ import { fileIdPath } from './finding-id.js';
 import { anyWorkspaceHasScript, isKnownBinary, selectWorkspaces } from './workspace-manifests.js';
 import { makefileDefines, readMakefile } from './makefile.js';
 import type { MakefileFacts } from './makefile.js';
-import { RepoTree, incompleteCheckIssue, isAbsoluteAnywhere } from './repo-tree.js';
+import { RepoTree, incompleteCheckIssue, isAbsoluteAnywhere, treeFor } from './repo-tree.js';
 import { closestUniqueMatch, isMechanicalRename } from './close-match.js';
 import type { Lookup, UncheckedRef } from './repo-tree.js';
 
@@ -167,8 +166,14 @@ function readPackageScripts(
   const found = tree.lookup(packageJsonPath);
   if (found.state === 'unreadable') return 'unreadable';
   if (found.state !== 'found' || found.isDir) return null;
+  // pcic-csf: a caller's inventory can say the manifest is there without its
+  // bytes being on disk. Its scripts are then unknown, not absent — reporting
+  // them missing is the false positive the inventory exists to remove.
+  const read = tree.readText(packageJsonPath);
+  if (read.state === 'unreadable') return 'unreadable';
+  if (read.state !== 'found') return null;
   try {
-    const raw = fs.readFileSync(found.path, 'utf8');
+    const raw = read.content;
     const parsed = JSON.parse(raw) as Record<string, unknown>;
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return null;
     const scripts = typeof parsed.scripts === 'object' && parsed.scripts !== null && !Array.isArray(parsed.scripts)
@@ -931,7 +936,7 @@ function validateSegment(
   const parts = seg.trim().split(/\s+/);
   if (parts.length === 0) return null;
   const tool = parts[0]!;
-  const tree = opts.tree ?? new RepoTree(context.repoRoot);
+  const tree = opts.tree ?? treeFor(context);
 
   // Base directory for file-existence checks — respects a `cd`-established cwd.
   const baseDir = cwd === null
@@ -1066,7 +1071,7 @@ function computeCommandAnalysis(context: RepoContext): CommandAnalysis {
   const issues: PromptCiIssue[] = [];
   const evaluatedScripts = new Map<string, Set<string>>();
   const reported = new Set<string>();
-  const tree = new RepoTree(context.repoRoot);
+  const tree = treeFor(context);
   // pcic-x1vl: commands left unchecked because part of the tree could not be listed.
   const unchecked = new Map<string, UncheckedRef>();
   // Makefiles by repo-relative directory: the root one comes from the context,

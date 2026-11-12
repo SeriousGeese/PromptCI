@@ -12,6 +12,7 @@ import { readMakefile } from './makefile.js';
 import type { MakefileFacts } from './makefile.js';
 import { isOnDemandFileType } from './types.js';
 import { realPathWithinRoot } from './path-containment.js';
+import { RepoTree } from './repo-tree.js';
 import type { InstructionFile, ProjectType, ScanInput, ScanMetrics } from './types.js';
 import { budgetForTargetModel } from './model-budgets.js';
 import { loadCustomRules } from './custom-rules.js';
@@ -59,6 +60,14 @@ export type WorkflowFacts = {
 
 export type RepoContext = {
   repoRoot: string;
+  /**
+   * The scan's containment-safe view of the repository (pcic-e6xa): the one
+   * way a detector asks whether a path exists, and the carrier of a caller's
+   * `knownPaths` inventory (pcic-csf). Built once here so every detector
+   * shares its directory listings. Optional so hand-built contexts keep
+   * type-checking; `treeFor(context)` gives them a plain one over `repoRoot`.
+   */
+  tree?: RepoTree;
   files: InstructionFile[];
   projectType: ProjectType;
   manifests: ManifestData;
@@ -163,17 +172,14 @@ async function readRootFile(repoRoot: string, relativePath: string): Promise<str
   }
 }
 
-async function existingRootFiles(repoRoot: string, relativePaths: string[]): Promise<string[]> {
-  const found: string[] = [];
-  for (const rel of relativePaths) {
-    try {
-      const stat = await fs.stat(resolveWithinRoot(repoRoot, rel));
-      if (stat.isFile()) found.push(rel);
-    } catch {
-      // absent file
-    }
-  }
-  return found;
+/**
+ * pcic-e6xa: which of these fixed root names the repository holds, asked
+ * through the tree so a committed link out of the repository cannot make the
+ * answer depend on a path outside the scan root — and so a caller's inventory
+ * answers it when the files are not on disk (pcic-csf).
+ */
+function existingRootFiles(tree: RepoTree, relativePaths: string[]): string[] {
+  return relativePaths.filter((rel) => tree.isFile(rel));
 }
 
 function packageManagerFromString(packageManager: string | undefined): PackageManagerName {
@@ -278,17 +284,17 @@ function extractWorkflowCommands(filePath: string, content: string): WorkflowCom
   return commands;
 }
 
-async function readWorkflowFacts(repoRoot: string, exclude: string[] = []): Promise<WorkflowFacts> {
-  let workflowDir: string;
-  let entries: Array<{ name: string; isFile: () => boolean }>;
-  try {
-    workflowDir = resolveWithinRoot(repoRoot, path.join('.github', 'workflows'));
-    entries = await fs.readdir(workflowDir, { withFileTypes: true });
-  } catch {
+async function readWorkflowFacts(repoRoot: string, tree: RepoTree, exclude: string[] = []): Promise<WorkflowFacts> {
+  // pcic-e6xa: the workflow directory is a fixed name, listed through the tree
+  // so a `.github/workflows` committed as a link out of the repository is not
+  // read; pcic-csf: a caller's inventory supplies it when it is not on disk.
+  const workflowDir = path.join(repoRoot, '.github', 'workflows');
+  const entries = tree.entries(workflowDir);
+  if (typeof entries === 'string') {
     return { files: [], commands: [], sources: await readCompositeActionSources(repoRoot, exclude) };
   }
 
-  const files = entries
+  const files = [...entries.values()]
     .filter((entry) => entry.isFile() && /\.(ya?ml)$/i.test(entry.name))
     .map((entry) => path.join(workflowDir, entry.name))
     .sort();
@@ -411,7 +417,14 @@ function buildMetrics(files: InstructionFile[], onDemandFiles: InstructionFile[]
 
 export async function buildRepoContext(input: ScanInput): Promise<RepoContext> {
   const repoRoot = path.resolve(input.repoPath);
-  const { files: scanned, aliases: aliasFiles } = await scanFilesWithAliases({ ...input, repoPath: repoRoot });
+  // One tree per scan (pcic-e6xa): every existence check any detector makes
+  // goes through it, so listings are read once and nothing outside the root is
+  // touched. It carries the caller's file inventory when one was given (pcic-csf).
+  const tree = new RepoTree(repoRoot, {
+    ...(input.knownPaths !== undefined ? { knownPaths: input.knownPaths } : {}),
+    ...(input.knownPathsComplete !== undefined ? { knownPathsComplete: input.knownPathsComplete } : {}),
+  });
+  const { files: scanned, aliases: aliasFiles } = await scanFilesWithAliases({ ...input, repoPath: repoRoot }, tree);
 
   // Split load-on-demand skill/agent bodies out of the always-loaded set the
   // prose/bloat detectors consume via `context.files`. They stay available on
@@ -439,7 +452,7 @@ export async function buildRepoContext(input: ScanInput): Promise<RepoContext> {
   let projectType =
     input.projectType && input.projectType !== 'auto'
       ? input.projectType
-      : await detectProjectType(repoRoot);
+      : await detectProjectType(repoRoot, tree);
 
   if (projectType === 'unknown') {
     projectType = detectProjectTypeFromContent(files);
@@ -449,8 +462,8 @@ export async function buildRepoContext(input: ScanInput): Promise<RepoContext> {
     readRootFile(repoRoot, 'package.json'),
     readRootFile(repoRoot, 'pyproject.toml'),
     readRootFile(repoRoot, 'requirements.txt'),
-    existingRootFiles(repoRoot, LOCKFILES),
-    readWorkflowFacts(repoRoot, input.exclude),
+    Promise.resolve(existingRootFiles(tree, LOCKFILES)),
+    readWorkflowFacts(repoRoot, tree, input.exclude),
     // Throws a clear CustomRulesError on malformed config, surfaced at scan time.
     loadCustomRules(repoRoot),
   ]);
@@ -461,7 +474,7 @@ export async function buildRepoContext(input: ScanInput): Promise<RepoContext> {
     (posix) => isExcludedPath(posix, input.exclude ?? []),
   );
 
-  const makefile = readMakefile(repoRoot, '.');
+  const makefile = readMakefile(repoRoot, '.', tree);
 
   const manifests: ManifestData = {};
   if (packageJson) manifests.packageJson = packageJson;
@@ -474,6 +487,7 @@ export async function buildRepoContext(input: ScanInput): Promise<RepoContext> {
 
   return {
     repoRoot,
+    tree,
     files,
     projectType,
     manifests,

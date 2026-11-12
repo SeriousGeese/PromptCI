@@ -1,24 +1,21 @@
-import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
-import fg from 'fast-glob';
+import { RepoTree } from './repo-tree.js';
 import type { InstructionFile, ProjectType } from './types.js';
 
-async function exists(p: string): Promise<boolean> {
-  try {
-    await fs.access(p);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function dirExists(p: string): Promise<boolean> {
-  try {
-    const stat = await fs.stat(p);
-    return stat.isDirectory();
-  } catch {
-    return false;
-  }
+/**
+ * pcic-e6xa: the project-type probe reads fixed root names, so it goes through
+ * the tree like every other existence check — nothing outside the scan root is
+ * touched (a `Cargo.toml` or `Assets` committed as a link out of the
+ * repository used to decide the project type, and so the framework pack that
+ * runs), names match with exact case on every platform, and a caller's file
+ * inventory answers it when the repository is not on disk (pcic-csf).
+ */
+function rootFileNames(tree: RepoTree): ReadonlySet<string> {
+  const entries = tree.entries(tree.root);
+  if (typeof entries === 'string') return new Set();
+  const names = new Set<string>();
+  for (const entry of entries.values()) if (!entry.isDirectory()) names.add(entry.name);
+  return names;
 }
 
 /**
@@ -30,66 +27,56 @@ async function dirExists(p: string): Promise<boolean> {
  * bare-package.json check must not shadow their more specific markers. This matches
  * the unity-before-typescript ordering in detectProjectTypeFromContent.
  */
-export async function detectProjectType(repoRoot: string): Promise<ProjectType> {
+export async function detectProjectType(
+  repoRoot: string,
+  tree: RepoTree = new RepoTree(repoRoot),
+): Promise<ProjectType> {
   const root = path.resolve(repoRoot);
+  const exists = (...parts: string[]): boolean => tree.exists(path.join(root, ...parts));
+  const dirExists = (...parts: string[]): boolean => tree.isDir(path.join(root, ...parts));
+  const rootNames = rootFileNames(tree);
 
   // ── Next.js ──────────────────────────────────────────────────────────────
   // next.config.* exists OR (app/ or pages/ alongside package.json)
-  const nextConfigGlob = await fg('next.config.*', {
-    cwd: root,
-    dot: false,
-    followSymbolicLinks: false,
-    deep: 1,
-  });
-  if (nextConfigGlob.length > 0) return 'nextjs';
+  if ([...rootNames].some((name) => name.startsWith('next.config.'))) return 'nextjs';
 
-  const hasPkgJson = await exists(path.join(root, 'package.json'));
+  const hasPkgJson = exists('package.json');
   if (hasPkgJson) {
-    const hasApp = await dirExists(path.join(root, 'app'));
-    const hasPages = await dirExists(path.join(root, 'pages'));
-    if (hasApp || hasPages) return 'nextjs';
+    if (dirExists('app') || dirExists('pages')) return 'nextjs';
   }
 
   // ── Unity ────────────────────────────────────────────────────────────────
   // Assets/ directory AND ProjectSettings/ProjectVersion.txt both exist.
   // Checked before the package.json→typescript branch so a Unity repo with a
   // root package.json is not misclassified as typescript.
-  const hasAssets = await dirExists(path.join(root, 'Assets'));
-  const hasProjectVersion = await exists(
-    path.join(root, 'ProjectSettings', 'ProjectVersion.txt'),
-  );
+  const hasAssets = dirExists('Assets');
+  const hasProjectVersion = exists('ProjectSettings', 'ProjectVersion.txt');
   if (hasAssets && hasProjectVersion) return 'unity';
 
   // ── .NET ─────────────────────────────────────────────────────────────────
   // any .sln or .csproj file at repo root level. Also checked before the
   // typescript branch for the same reason (JS tooling drops a package.json).
-  const dotnetFiles = await fg(['*.sln', '*.csproj'], {
-    cwd: root,
-    dot: false,
-    followSymbolicLinks: false,
-    deep: 1,
-  });
-  if (dotnetFiles.length > 0) return 'dotnet';
+  if ([...rootNames].some((name) => name.endsWith('.sln') || name.endsWith('.csproj'))) return 'dotnet';
 
   // ── TypeScript ───────────────────────────────────────────────────────────
   // package.json or tsconfig.json present
-  const hasTsConfig = await exists(path.join(root, 'tsconfig.json'));
+  const hasTsConfig = exists('tsconfig.json');
   if (hasPkgJson || hasTsConfig) return 'typescript';
 
   // ── Python ───────────────────────────────────────────────────────────────
-  const hasPyProject = await exists(path.join(root, 'pyproject.toml'));
-  const hasRequirements = await exists(path.join(root, 'requirements.txt'));
-  const hasPipfile = await exists(path.join(root, 'Pipfile'));
-  const hasConda = await exists(path.join(root, 'environment.yml'));
-  const hasSetupPy = await exists(path.join(root, 'setup.py'));
+  const hasPyProject = exists('pyproject.toml');
+  const hasRequirements = exists('requirements.txt');
+  const hasPipfile = exists('Pipfile');
+  const hasConda = exists('environment.yml');
+  const hasSetupPy = exists('setup.py');
   if (hasPyProject || hasRequirements || hasPipfile || hasConda || hasSetupPy) return 'python';
 
   // ── Go ───────────────────────────────────────────────────────────────────
-  const hasGoMod = await exists(path.join(root, 'go.mod'));
+  const hasGoMod = exists('go.mod');
   if (hasGoMod) return 'go';
 
   // ── Rust ─────────────────────────────────────────────────────────────────
-  const hasCargoToml = await exists(path.join(root, 'Cargo.toml'));
+  const hasCargoToml = exists('Cargo.toml');
   if (hasCargoToml) return 'rust';
 
   return 'unknown';

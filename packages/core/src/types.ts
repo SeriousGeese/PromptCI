@@ -322,4 +322,30 @@ export type ScanInput = {
    * `vagueGuidanceSeverity` config key.
    */
   vagueGuidanceSeverity?: 'info' | 'warning';
+  /**
+   * pcic-csf: the repo-relative POSIX paths the repository holds, as a file
+   * inventory the scan consults BEFORE the filesystem for every existence
+   * check (a documented command's script, a dead reference, a skill's bundled
+   * file, `.env`, `supabase/migrations`, a build directory, `.gitignore`).
+   *
+   * For a caller that does not have the repository on disk: a hosted scan
+   * fetches the instruction files into a temp directory and leaves everything
+   * else unfetched, so without this every other path reads as missing and the
+   * scan reports references and commands as broken that are merely absent from
+   * the temp dir. Listing files is enough — every directory on the way to a
+   * listed file is implied.
+   *
+   * Paths are normalized (backslashes read as separators, `./` dropped); an
+   * absolute path, or one climbing out of the repository with `..`, is ignored.
+   * Leave unset for an ordinary scan of a checkout.
+   */
+  knownPaths?: ReadonlySet<string> | readonly string[];
+  /**
+   * True when `knownPaths` is the WHOLE repository: a path it does not list is
+   * then genuinely absent and the filesystem is never consulted for one.
+   * False/unset treats the list as a partial view — a listed path is known to
+   * exist, and an unlisted one is still looked for on disk. Ignored without
+   * `knownPaths`.
+   */
+  knownPathsComplete?: boolean;
 };
