@@ -109,6 +109,28 @@ export const AI_CONFIG_EXACT_FILES: readonly string[] = [
   '.mcp.json',
 ];
 
+/**
+ * Subagent, Cursor-rule and Copilot per-file instruction surfaces. These ARE
+ * markdown, and scanner.ts's own `DEFAULT_INSTRUCTION_PATTERNS` glob-matches
+ * the same locations — but the detectors that structurally audit them
+ * (subagents-detector.ts, cursor-rules-detector.ts, copilot-instructions-
+ * detector.ts) read them independently through `context.aiConfig`, which
+ * ai-config.ts discovers under `DISCOVERY_IGNORE_DIRS` (no `bin`/`obj`/
+ * `Library`/`Temp`), not scanner.ts's longer `SCAN_IGNORE_DIRS`. A file under
+ * one of those four extra ignored names is matched here but not by
+ * `instructionFiles`'s glob — put in `aiConfigFiles` rather than invented as
+ * a sixth result field, since that is genuinely how core reads it: never as
+ * always-loaded instruction prose there, always through the ai_config path.
+ * A copy outside those four directories legitimately appears in BOTH
+ * buckets, the same way a SKILL.md appears in both `instructionFiles` and
+ * `skillFiles` — two real pipelines reading the same file for two purposes.
+ */
+export const AI_CONFIG_MARKDOWN_GLOBS: readonly string[] = [
+  '.claude/agents/**/*.md',
+  '.cursor/rules/**/*.mdc',
+  '.github/instructions/**/*.md',
+];
+
 /** Directory names discovery for skills/agents/settings/mcp/cursor-rules ignores. */
 export const DISCOVERY_IGNORE_DIRS: readonly string[] = [
   'node_modules', '.git', 'dist', 'build', 'worktrees', '.worktrees',
@@ -203,10 +225,11 @@ export type SelectScanPathsOptions = {
   /**
    * Overrides `DEFAULT_INSTRUCTION_PATTERNS` entirely for instruction-file
    * matching — the same effect `ScanInput.include` has on a real scan. Also
-   * NARROWS (intersects with) the skill, settings and MCP surfaces, exactly
-   * as `discoverAiConfigFiles` does — it does not replace their own globs.
-   * Never affects workflow or composite-action discovery (neither does a
-   * real scan's `include`).
+   * NARROWS (intersects with) every `aiConfigFiles`/`skillFiles` surface
+   * (skills, settings, MCP, subagents, Cursor rules, Copilot instructions),
+   * exactly as `discoverAiConfigFiles` does — it does not replace their own
+   * globs. Never affects workflow or composite-action discovery (neither
+   * does a real scan's `include`).
    */
   include?: readonly string[];
   /**
@@ -223,7 +246,16 @@ export type SelectScanPathsResult = {
   instructionFiles: string[];
   /** `SKILL.md` files plus the files bundled alongside them. */
   skillFiles: string[];
-  /** Non-markdown AI config a detector reads and reports on: Claude settings, `.mcp.json`. */
+  /**
+   * AI config a detector reads and reports on through `context.aiConfig`,
+   * never through the always-loaded instruction-prose pipeline: Claude
+   * settings, `.mcp.json`, subagents, Cursor rules, Copilot per-file
+   * instructions. The last three are markdown and may ALSO appear in
+   * `instructionFiles` (two real pipelines read the same file) — but under
+   * `bin/`, `obj/`, `Library/` or `Temp/` they appear only here, since
+   * ai-config.ts's own discovery ignores a shorter list of directories than
+   * scanner.ts's does.
+   */
   aiConfigFiles: string[];
   /** GitHub Actions workflow files and composite `action.yml`/`action.yaml` files. */
   workflowFiles: string[];
@@ -275,6 +307,50 @@ function splitNegated(patterns: readonly string[]): { positive: string[]; negati
   return { positive, negative };
 }
 
+/** A pattern with no glob metacharacter at all — a plain literal path, directory-ish or not. */
+const GLOB_META_RE = /[*?{}[\]()!]/;
+
+/**
+ * fast-glob's directory-walk pruning of a literal (non-glob) pattern is NOT
+ * "matches the directory, so skip it" in either of the two places a literal
+ * can appear — and the two places behave DIFFERENTLY from each other
+ * (verified empirically against the built `scanFilesWithAliases`, not just
+ * read off fast-glob's docs):
+ *
+ *  - as a `!`-prefixed pattern inside the main pattern array (`include`'s own
+ *    negations): any literal that doesn't end in `/` prunes everything below
+ *    it, single path segment or many (`!prompts`, `!.claude/skills/foo`).
+ *  - as an entry of the separate `ignore` OPTION (scanner.ts's `IGNORE_DIRS`,
+ *    a caller's `exclude`): only a literal with an INTERNAL `/` and no
+ *    trailing one prunes (`'.claude/skills/foo'`) — a single-segment bare
+ *    name (`'prompts'`) or a trailing-slash one (`'prompts/'`) prunes
+ *    NOTHING at all, so leaving those exactly as given already matches real
+ *    behavior; appending `/**` to them would OVER-prune relative to a real
+ *    scan, not under-prune.
+ *
+ * `micromatch(list, ..., {ignore})` has no walk to prune either way; it only
+ * matches complete file paths, so a literal that should prune a subtree is
+ * over-fetched instead unless `/**` is appended for it specifically.
+ */
+function withNegationPruning(patterns: readonly string[]): string[] {
+  const out: string[] = [];
+  for (const p of patterns) {
+    out.push(p);
+    if (!GLOB_META_RE.test(p) && !p.endsWith('/')) out.push(`${p}/**`);
+  }
+  return out;
+}
+
+/** See {@link withNegationPruning} — the separate `ignore`-option rule, narrower than the in-pattern `!` rule. */
+function withIgnoreOptionPruning(patterns: readonly string[]): string[] {
+  const out: string[] = [];
+  for (const p of patterns) {
+    out.push(p);
+    if (!GLOB_META_RE.test(p) && p.includes('/') && !p.endsWith('/')) out.push(`${p}/**`);
+  }
+  return out;
+}
+
 /**
  * fast-glob's actual pattern-array semantics (scanner.ts, ai-config.ts's
  * `listFiles`): a `!`-prefixed pattern is a GLOBAL subtraction from the union
@@ -282,12 +358,15 @@ function splitNegated(patterns: readonly string[]): { positive: string[]; negati
  * a bare `micromatch(list, patterns)` call, which is order-sensitive (a `!`
  * pattern only subtracts from positive matches that appear earlier in the
  * same array). `extraIgnore` is an always-literal addition (scanner.ts's
- * `IGNORE_DIRS`, a caller's `exclude`).
+ * `IGNORE_DIRS`, a caller's `exclude`) — fast-glob's separate `ignore`
+ * option, pruned by its own (narrower) rule; `negative` is pruned by the
+ * in-pattern `!` rule instead, since that is what it really is.
  */
 function globMatch(list: readonly string[], patterns: readonly string[], extraIgnore: readonly string[] = []): string[] {
   const { positive, negative } = splitNegated(patterns);
   if (positive.length === 0) return [];
-  return micromatch(list, positive, { ignore: [...negative, ...extraIgnore], dot: true });
+  const ignore = [...withNegationPruning(negative), ...withIgnoreOptionPruning(extraIgnore)];
+  return micromatch(list, positive, { ignore, dot: true });
 }
 
 /**
@@ -373,23 +452,32 @@ function selectSkillFiles(
     if (rel.endsWith('/SKILL.md') || rel === 'SKILL.md') continue;
     const dir = nearestSkillDir(rel);
     if (dir === null) continue;
-    // `isExcluded`'s check comes before anything else in the real walk: an
-    // excluded path is never counted as owned, and never opens a node_modules
-    // dir for manifest harvesting either.
-    if (isAncestorExcluded(rel, exclude)) continue;
 
     const belowSkillDir = rel.split('/').slice(dir === '.' ? 0 : dir.split('/').length);
     const ancestors = belowSkillDir.slice(0, -1);
     const skipIdx = ancestors.findIndex((seg) => BUNDLE_SKIP_DIRS.has(seg));
     if (skipIdx !== -1) {
+      // The real walk never descends into a BUNDLE_SKIP_DIR (node_modules,
+      // .git, worktrees, .worktrees), so it never evaluates `isExcluded` on
+      // anything below it either — only on the skip-dir ITSELF (and its own
+      // ancestors), while it was still walking down to find it. Checking
+      // `exclude` against the full nested path (as if the walk had visited
+      // it) would wrongly drop a node_modules package.json that an
+      // unrelated-looking `exclude: ['**/package.json']` happens to match —
+      // ai-config.ts's `listPackageManifests` does not consult `exclude` at
+      // all once it opens a `node_modules` dir (see the comment below).
       if (ancestors[skipIdx] === 'node_modules') {
-        const nmPath = [dir === '.' ? null : dir, ...ancestors.slice(0, skipIdx + 1)].filter(Boolean).join('/');
+        const nmDirRel = [dir === '.' ? null : dir, ...ancestors.slice(0, skipIdx + 1)].filter(Boolean).join('/');
+        if (isAncestorExcluded(nmDirRel, exclude)) continue;
         const set = perSkillNodeModules.get(dir) ?? new Set<string>();
-        set.add(nmPath);
+        set.add(nmDirRel);
         perSkillNodeModules.set(dir, set);
       }
       continue; // inside node_modules/.git/worktrees/.worktrees — not an owned bundle file
     }
+    // `isExcluded`'s check comes before anything else for a regular file in
+    // the real walk: an excluded path is never counted as owned.
+    if (isAncestorExcluded(rel, exclude)) continue;
     if (!matchesInclude(rel, include)) continue;
     const list = perSkillOwned.get(dir) ?? [];
     list.push(rel);
@@ -408,6 +496,11 @@ function selectSkillFiles(
     owned.sort((a, b) => Number(isPriorityBundleFile(b)) - Number(isPriorityBundleFile(a)) || byPath(a, b));
     out.push(...owned.slice(0, MAX_BUNDLED_FILES_PER_SKILL));
 
+    // Known divergence, matching ai-config.ts's own `listPackageManifests`:
+    // `exclude` only gates whether a `node_modules` dir is entered at all (the
+    // check on `rel` above, before this point); once inside, every manifest
+    // found is harvested regardless of `exclude` — core's real reader does
+    // not re-check it per package.json either.
     const dependencyManifests: string[] = [];
     for (const nmDir of [...(perSkillNodeModules.get(dir) ?? [])].sort()) {
       const prefix = `${nmDir}/`;
@@ -442,7 +535,7 @@ function selectAiConfigFiles(
   include: readonly string[] | undefined,
   exclude: readonly string[],
 ): string[] {
-  const matches = globMatch(allPaths, AI_CONFIG_EXACT_FILES, [...discoveryIgnoreGlobs, ...exclude]);
+  const matches = globMatch(allPaths, [...AI_CONFIG_EXACT_FILES, ...AI_CONFIG_MARKDOWN_GLOBS], [...discoveryIgnoreGlobs, ...exclude]);
   return narrowByInclude(matches, include).sort();
 }
 
@@ -476,10 +569,15 @@ const ROOT_MAKEFILE_NAMES: readonly string[] = ['GNUmakefile', 'makefile', 'Make
 /** Root manifests read for cross-referencing (version/script checks), never scanned as prose. */
 const ROOT_MANIFEST_NAMES: readonly string[] = ['package.json', 'pyproject.toml', 'requirements.txt', 'Cargo.toml'];
 
-/** Directory names workspace-manifests.ts's own nested-package.json discovery ignores. */
-const WORKSPACE_MANIFEST_IGNORE_DIRS: readonly string[] = ['node_modules', '.git'];
-/** Workspace package manifests read per scan (workspace-manifests.ts's own cap). */
-const MAX_WORKSPACE_MANIFESTS = 200;
+/**
+ * The narrowest ignore list anything in core's context-reading paths uses:
+ * workspace-manifests.ts's own nested-package.json discovery ignores exactly
+ * this, and a Makefile read via `readMakefile`/RepoTree has no ignore list
+ * of its own at all (it is handed a directory directly, from a `make -C`/
+ * `cd dir && make` command) — `node_modules`/`.git` is the only pair nothing
+ * in a real checkout legitimately builds or documents a Makefile under.
+ */
+const MINIMAL_IGNORE_DIRS: readonly string[] = ['node_modules', '.git'];
 
 /** tsconfig/jsconfig/deno configs dependency-staleness.ts reads at the root and at each manifest's directory. */
 const NESTED_CONFIG_NAMES: readonly string[] = ['tsconfig.json', 'jsconfig.json', 'deno.json', 'deno.jsonc'];
@@ -502,14 +600,19 @@ function selectContextFiles(
   const rootCsproj = paths.filter((p) => !p.includes('/') && p.endsWith('.csproj')).sort()[0];
   if (rootCsproj !== undefined) out.add(rootCsproj);
 
-  // Makefile/GNUmakefile/makefile at any depth outside the scan's ignore dirs:
-  // `make -C dir` / `cd dir && make` makes a non-root one reachable, and WHICH
-  // one core actually opens is content-dependent (it follows an instruction
-  // file's documented command) — every candidate name is listed instead of
-  // guessing which directory a command points at.
+  // Makefile/GNUmakefile/makefile at any depth outside node_modules/.git:
+  // `make -C dir` / `cd dir && make` makes a non-root one reachable, and
+  // makefile.ts's `readMakefile` is handed that directory DIRECTLY (via
+  // RepoTree, with no ignore list of its own) rather than discovered by a
+  // glob — so a Makefile under `build/`, `bin/` or any other name in
+  // scanner.ts's SCAN_IGNORE_DIRS is still reachable this way. WHICH
+  // directory core actually opens is content-dependent (it follows an
+  // instruction file's documented command), so every candidate name outside
+  // the two directories nothing legitimately builds from is listed instead
+  // of guessing which one a command points at.
   for (const p of paths) {
     const base = p.slice(p.lastIndexOf('/') + 1);
-    if (ROOT_MAKEFILE_NAMES.includes(base) && !hasAncestorDir(p, SCAN_IGNORE_DIRS)) out.add(p);
+    if (ROOT_MAKEFILE_NAMES.includes(base) && !hasAncestorDir(p, MINIMAL_IGNORE_DIRS)) out.add(p);
   }
 
   // Nested .gitignore files, outside the directories the scan ignores wholesale.
@@ -519,18 +622,22 @@ function selectContextFiles(
 
   // Nested package.json (workspace manifests): workspace-manifests.ts's own
   // discovery ignores only node_modules/.git (narrower than the scanner's own
-  // ignore list) and honors `exclude`. It then resolves whichever directories
-  // the root package.json's `workspaces` field or pnpm-workspace.yaml's
-  // `packages:` declare — content this pure function cannot read. Every
-  // nested package.json outside node_modules/.git is listed instead: a
-  // superset of what any one such glob would reach, not a false negative.
+  // ignore list), honors `exclude`, and caps what it reads EAGERLY at 200 —
+  // but dependency-staleness.ts's `loadLazyFacts` reads up to 200 MORE,
+  // lazily, the first time an instruction mentions a package not already
+  // known, with its own (broader) ignore list. Between the two, core can end
+  // up reading any nested package.json outside node_modules/.git, and WHICH
+  // one depends on instruction content this pure function cannot read. So,
+  // deliberately, no cap is applied here: every nested package.json is
+  // listed as a candidate — a caller fetching hundreds of them in a huge
+  // monorepo pays a real cost for that completeness, but a 200-file cap here
+  // would silently drop a manifest core's lazy path can still reach.
   const nestedPackageJson = paths
     .filter((p) => p !== 'package.json' && p.endsWith('/package.json'))
-    .filter((p) => !hasAncestorDir(p, WORKSPACE_MANIFEST_IGNORE_DIRS))
+    .filter((p) => !hasAncestorDir(p, MINIMAL_IGNORE_DIRS))
     .filter((p) => !skillFiles.has(p))
     .filter((p) => !isAncestorExcluded(p, exclude))
-    .sort()
-    .slice(0, MAX_WORKSPACE_MANIFESTS);
+    .sort();
   for (const p of nestedPackageJson) out.add(p);
 
   // tsconfig/jsconfig/deno configs, read at the root and at each manifest dir above.

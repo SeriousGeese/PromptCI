@@ -57,10 +57,14 @@ function realSkillFiles(root: string, policy: { include?: string[]; exclude?: st
   return new Set([...(aiConfig.allSkills ?? []), ...(aiConfig.skillFiles ?? [])]);
 }
 
-/** Ground truth for the ai_config (settings/MCP) class: ai-config.ts's own discovery. */
+/**
+ * Ground truth for the aiConfigFiles class: ai-config.ts's own discovery for
+ * every surface it reads independently of scanner.ts (settings, MCP,
+ * subagents, Cursor rules, Copilot per-file instructions).
+ */
 function realAiConfigFiles(root: string, policy: { include?: string[]; exclude?: string[] } = {}): Set<string> {
   const aiConfig = discoverAiConfigFiles(root, policy);
-  return new Set([...aiConfig.settings, ...aiConfig.mcp]);
+  return new Set([...aiConfig.settings, ...aiConfig.mcp, ...aiConfig.agents, ...aiConfig.cursorRules, ...aiConfig.copilotInstructions]);
 }
 
 /**
@@ -324,6 +328,119 @@ describe('selectScanPaths: contextFiles', () => {
     expect(result.skillFiles).toContain('.claude/skills/deploy-helper/scripts/setup.sh');
     expect(result.skillFiles).toContain('.claude/skills/pdf-forms/package.json');
     expect(result.contextFiles).not.toContain('.claude/skills/pdf-forms/package.json');
+  });
+});
+
+describe('selectScanPaths: re-review fixes (pcic-zg3)', () => {
+  const cleanups: string[] = [];
+  afterEach(() => {
+    for (const dir of cleanups.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+  });
+  function repo(files: Record<string, string>): string {
+    const root = mkRepo(files);
+    cleanups.push(root);
+    return root;
+  }
+
+  it('does not cap nested package.json: a declared workspace package plus 250 others outside it must all be listed', async () => {
+    const files: Record<string, string> = {
+      'package.json': JSON.stringify({ name: 'root', private: true, workspaces: ['packages/*'] }),
+      'packages/a/package.json': JSON.stringify({ name: 'a', dependencies: { zod: '^3.0.0' } }),
+      'CLAUDE.md': '# Stack\n\n- Run `cd packages/a && npm run build`.\n',
+    };
+    for (let i = 0; i < 250; i++) files[`examples/e${String(i).padStart(3, '0')}/package.json`] = JSON.stringify({ name: `e${i}` });
+    const root = repo(files);
+    await assertMatches(root);
+    const result = selectScanPaths(listRepoFiles(root));
+    expect(result.contextFiles).toContain('packages/a/package.json');
+    expect(result.contextFiles).toContain('examples/e249/package.json');
+    expect(result.contextFiles.filter((p) => p.endsWith('/package.json')).length).toBe(251);
+  });
+
+  it('finds a Makefile reachable only via `make -C dir` under a directory scanner.ts otherwise ignores (build/, bin/)', async () => {
+    const root = repo({
+      'CLAUDE.md': '# Build\n\n- Run `make -C build all`.\n- Run `cd bin && make test`.\n',
+      'build/Makefile': 'all:\n\techo hi\n',
+      'bin/Makefile': 'test:\n\techo hi\n',
+    });
+    const result = selectScanPaths(listRepoFiles(root));
+    expect(result.contextFiles.sort()).toEqual(['bin/Makefile', 'build/Makefile']);
+  });
+
+  it('still excludes a Makefile under node_modules/.git', () => {
+    const result = selectScanPaths(['node_modules/pkg/Makefile', '.git/hooks/Makefile', 'Makefile']);
+    expect(result.contextFiles).toEqual(['Makefile']);
+  });
+
+  it('finds subagent/Cursor-rule/Copilot-instruction files under bin/obj/Library/Temp as aiConfigFiles, not instructionFiles', async () => {
+    const root = repo({
+      '.claude/agents/bin/a.md': '# agent',
+      '.cursor/rules/Temp/r.mdc': 'rule',
+      '.github/instructions/obj/i.instructions.md': 'instr',
+    });
+    await assertMatches(root);
+    const result = selectScanPaths(listRepoFiles(root));
+    expect(result.aiConfigFiles.sort()).toEqual([
+      '.claude/agents/bin/a.md',
+      '.cursor/rules/Temp/r.mdc',
+      '.github/instructions/obj/i.instructions.md',
+    ]);
+    expect(result.instructionFiles).toEqual([]);
+  });
+
+  it('a subagent outside those four dirs appears in both instructionFiles and aiConfigFiles', async () => {
+    const root = repo({ '.claude/agents/reviewer.md': '# reviewer' });
+    await assertMatches(root);
+    const result = selectScanPaths(listRepoFiles(root));
+    expect(result.instructionFiles).toEqual(['.claude/agents/reviewer.md']);
+    expect(result.aiConfigFiles).toEqual(['.claude/agents/reviewer.md']);
+  });
+
+  it('prunes a bare multi-segment exclude directory (fast-glob\'s own ignore-option rule)', async () => {
+    const root = repo({
+      'CLAUDE.md': '# x',
+      '.claude/skills/foo/SKILL.md': '---\nname: foo\n---',
+      '.claude/skills/foo/ref.md': 'ref',
+    });
+    await assertMatches(root, { exclude: ['.claude/skills/foo'] });
+    const result = selectScanPaths(listRepoFiles(root), { exclude: ['.claude/skills/foo'] });
+    expect(result.instructionFiles).toEqual(['CLAUDE.md']);
+    expect(result.skillFiles).toEqual([]);
+  });
+
+  it('a bare SINGLE-segment exclude does not prune (matches fast-glob\'s ignore-option behavior exactly, over-fetch and all)', async () => {
+    const root = repo({ 'CLAUDE.md': '# x', 'prompts/a.md': '# a' });
+    // Real core does not prune here either — this asserts parity, not correctness.
+    await assertMatches(root, { exclude: ['prompts'] });
+  });
+
+  it('prunes a bare negated directory inside `include` (fast-glob\'s in-pattern `!` rule, which IS single-segment-safe)', async () => {
+    const root = repo({ 'prompts/a.md': '# a', 'prompts/sub/b.md': '# b', 'README.md': '# r' });
+    await assertMatches(root, { include: ['**/*.md', '!prompts'] });
+    const result = selectScanPaths(listRepoFiles(root), { include: ['**/*.md', '!prompts'] });
+    expect(result.instructionFiles).toEqual(['README.md']);
+  });
+
+  it('does not filter manifests already inside a skill\'s node_modules by an unrelated-looking `exclude: ["**/package.json"]`', async () => {
+    const root = repo({
+      '.claude/skills/foo/SKILL.md': '---\nname: foo\n---',
+      '.claude/skills/foo/node_modules/a/package.json': '{}',
+      '.claude/skills/foo/node_modules/b/package.json': '{}',
+    });
+    await assertMatches(root, { exclude: ['**/package.json'] });
+    const result = selectScanPaths(listRepoFiles(root), { exclude: ['**/package.json'] });
+    expect(result.skillFiles).toContain('.claude/skills/foo/node_modules/a/package.json');
+    expect(result.skillFiles).toContain('.claude/skills/foo/node_modules/b/package.json');
+  });
+
+  it('still excludes a skill\'s node_modules dir when exclude matches the dir itself', async () => {
+    const root = repo({
+      '.claude/skills/foo/SKILL.md': '---\nname: foo\n---',
+      '.claude/skills/foo/node_modules/a/package.json': '{}',
+    });
+    await assertMatches(root, { exclude: ['.claude/skills/foo/node_modules'] });
+    const result = selectScanPaths(listRepoFiles(root), { exclude: ['.claude/skills/foo/node_modules'] });
+    expect(result.skillFiles).not.toContain('.claude/skills/foo/node_modules/a/package.json');
   });
 });
 
