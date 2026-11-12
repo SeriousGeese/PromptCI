@@ -48,7 +48,9 @@
   "devDependencies": {
     "@types/node": "*",
     "typescript": "*",
-    "@types/micromatch": "*"
+    "@types/micromatch": "*",
+    "ajv": "^8.20.0",
+    "ajv-draft-04": "^1.0.0"
   },
   "dependencies": {
     "fast-glob": "^3.3.3",

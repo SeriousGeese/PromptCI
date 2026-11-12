@@ -14,7 +14,9 @@ promptci score --path <dir>                 # score a specific directory
 promptci scan                               # scan current directory
 promptci scan --path <dir>                  # scan a specific directory
 promptci scan --json                        # print JSON report to stdout (files are still written)
+promptci scan --format sarif                # print SARIF 2.1.0 to stdout and write .promptci/report.sarif
 promptci scan --output <file>               # write markdown report to this path instead of default
+                                             # (SARIF path instead, when --format sarif is set)
 promptci scan --fail-on <severity>          # exit 1 if any issues meet/exceed severity (info|warning|high|critical)
 promptci scan --baseline <path>             # load baseline file to ignore existing issues
 promptci scan --update-baseline             # run scan and save findings as the new baseline
