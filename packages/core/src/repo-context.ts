@@ -17,6 +17,7 @@ import type { InstructionFile, ProjectType, ScanInput, ScanMetrics } from './typ
 import { budgetForTargetModel } from './model-budgets.js';
 import { loadCustomRules } from './custom-rules.js';
 import type { CustomRule } from './custom-rules.js';
+import { COMPOSITE_ACTION_GLOBS } from './discovery.js';
 
 export type PackageManagerName = 'pnpm' | 'npm' | 'yarn' | 'bun' | 'unknown';
 
@@ -327,17 +328,9 @@ async function readWorkflowFacts(repoRoot: string, tree: RepoTree, exclude: stri
   };
 }
 
-/** Composite actions: a root `action.yml` and any under `.github/actions/`. */
-const COMPOSITE_ACTION_GLOBS = [
-  'action.yml',
-  'action.yaml',
-  '.github/actions/**/action.yml',
-  '.github/actions/**/action.yaml',
-];
-
 async function readCompositeActionSources(repoRoot: string, exclude: string[]): Promise<WorkflowSource[]> {
   const sources: WorkflowSource[] = [];
-  for (const rel of listFiles(repoRoot, COMPOSITE_ACTION_GLOBS)) {
+  for (const rel of listFiles(repoRoot, [...COMPOSITE_ACTION_GLOBS])) {
     if (isExcludedPath(rel, exclude)) continue;
     const abs = resolveReadableWithinRoot(repoRoot, rel);
     if (!abs) continue;
