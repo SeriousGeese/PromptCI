@@ -16,6 +16,8 @@ import { scan } from '../src/scan.js';
 import { computeFingerprint, createBaseline, filterNewIssues } from '../src/baseline.js';
 import { isScored } from '../src/health-score.js';
 import type { PromptCiIssue } from '../src/types.js';
+import type { RepoContext } from '../src/repo-context.js';
+import { detectActionPinning } from '../src/action-pinning.js';
 import { expectGroupKeepsIdentity, writeFiles } from './grouped-identity-helpers.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -91,6 +93,15 @@ describe('grouped findings keep their identity when their list changes (baseline
     expect(grouped(fresh).map((i) => i.title)).toEqual([
       'GitHub Actions in `.github/workflows/release.yml` are not pinned to a commit SHA',
     ]);
+  });
+
+  it('keys a workflow by its forward-slash path whatever separator the platform used', () => {
+    const context = (filePath: string) =>
+      ({ repoRoot: '/repo', workflows: { files: [], commands: [], sources: [{ filePath, content: workflow('x/y@v1') }] } }) as unknown as RepoContext;
+    const [posix] = detectActionPinning(context('.github/workflows/ci.yml'));
+    const [windows] = detectActionPinning(context('.github\\workflows\\ci.yml'));
+    expect(windows!.fingerprintKey).toBe('action-pin:.github/workflows/ci.yml');
+    expect(computeFingerprint(windows!)).toBe(computeFingerprint(posix!));
   });
 
   it('keys each workflow file separately', async () => {
