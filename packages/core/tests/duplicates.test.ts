@@ -4,7 +4,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { detectDuplicates, normalizeSection } from '../src/duplicates.js';
+import { detectDuplicates, normalizeSection, sameSectionText } from '../src/duplicates.js';
 import { scan } from '../src/scan.js';
 import { applyFixRecipe, isRepairable } from '../src/fix-engine.js';
 import { expectGroupKeepsIdentity } from './grouped-identity-helpers.js';
@@ -1016,6 +1016,11 @@ describe('detectDuplicates — auto-fix only for identical copies', () => {
     expect(issue!.autoApplySafe).toBe(true);
     expect(issue!.summary).not.toContain('not identical');
     expect(issue!.recommendation).toMatch(/^Consolidate these sections/);
+  });
+
+  it('one definition of "the same text" serves per-section and mirror findings', () => {
+    expect(sameSectionText({ text: '## A\r\n\tKeep  it small.\r\n' })).toBe(sameSectionText({ text: '## A\nKeep it small.' }));
+    expect(sameSectionText({ text: '## A\nNever edit.' })).not.toBe(sameSectionText({ text: '## A\nAlways edit.' }));
   });
 
   it('copies that differ only in whitespace and line endings count as identical', () => {

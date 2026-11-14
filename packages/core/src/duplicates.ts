@@ -111,6 +111,21 @@ function isBoilerplateHeading(heading: string | undefined): boolean {
   return false;
 }
 
+/**
+ * The ONE definition of "the same text" for the consolidation auto-fix,
+ * shared by per-section duplicate findings and mirrored-file findings: equal
+ * after collapsing every run of whitespace (line endings included) to one
+ * space and trimming. Anything else, a near-duplicate, is advisory only.
+ */
+export function sameSectionText(section: Pick<InstructionSection, 'text'>): string {
+  return section.text.replace(/\s+/g, ' ').trim();
+}
+
+/** True when every section in the list has the same text (see {@link sameSectionText}). */
+function allSameText(sections: Array<Pick<InstructionSection, 'text'>>): boolean {
+  return new Set(sections.map(sameSectionText)).size === 1;
+}
+
 function normalizedHeading(heading: string | undefined): string {
   return heading?.toLowerCase().replace(/\s+/g, ' ').trim() ?? '';
 }
@@ -337,7 +352,7 @@ export function detectDuplicates(files: InstructionFile[]): PromptCiIssue[] {
     // be consolidated unattended: the pointer would replace the text that
     // differs, and with it the evidence of a conflict. Same text = equal after
     // collapsing whitespace and line endings (pcic-1ik0.5, PromptCI#160).
-    const identical = new Set(sections.map((s) => s.text.replace(/\s+/g, ' ').trim())).size === 1;
+    const identical = allSameText(sections);
     const summary =
       (fileCount > 2
         ? `This section appears highly similar in ${fileCount} files. Consider consolidating into one canonical location.`
@@ -602,10 +617,8 @@ function mirrorIssue(
 
   // Copies that have DRIFTED (near-duplicates, not the same text) must not be
   // replaced unattended: the pointer would delete the text that differs, and
-  // with it the evidence of a conflict. Same text = equal after collapsing
-  // whitespace and line endings.
-  const sameText = (s: InstructionSection) => s.text.replace(/\s+/g, ' ').trim();
-  const drifted = groupClusters.filter((keys) => new Set(sectionsOf(keys).map(sameText)).size > 1).map(heading);
+  // with it the evidence of a conflict. Same rule as per-section findings.
+  const drifted = groupClusters.filter((keys) => !allSameText(sectionsOf(keys))).map(heading);
   const counts = files
     .map((f, i) => `${names[i]} ${shared(f)} of ${Math.max(shared(f), mirrors.comparable.get(f) ?? 0)}`)
     .join(', ');
