@@ -4,7 +4,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { detectDuplicates, normalizeSection } from '../src/duplicates.js';
+import { detectDuplicates, normalizeSection, sameSectionText } from '../src/duplicates.js';
 import { scan } from '../src/scan.js';
 import { applyFixRecipe, isRepairable } from '../src/fix-engine.js';
 import { expectGroupKeepsIdentity } from './grouped-identity-helpers.js';
@@ -987,6 +987,104 @@ describe('detectDuplicates — BUG-003 borderline info-level near-duplicate', ()
 });
 
 // ---------------------------------------------------------------------------
+// pcic-1ik0.5 (PromptCI#160): only identical copies are auto-applied
+// ---------------------------------------------------------------------------
+
+describe('detectDuplicates — auto-fix only for identical copies', () => {
+  const pair = (textA: string, textB: string) => {
+    const a = makeSection({ text: textA, id: 'a', heading: 'Testing', filePath: '/repo/CLAUDE.md', startLine: 1, endLine: 7 });
+    const b = makeSection({ text: textB, id: 'b', heading: 'Testing', filePath: '/repo/AGENTS.md', startLine: 1, endLine: 7 });
+    // CLAUDE.md has a section of its own, so the pair is a per-section duplicate, not a whole-file mirror.
+    return detectDuplicates([makeFile('/repo/CLAUDE.md', [a, ownSection('/repo/CLAUDE.md')]), makeFile('/repo/AGENTS.md', [b])]);
+  };
+
+  it('a drifted pair ("never" versus "always") is reported without an auto-fix', () => {
+    const drifted = LONG_TEXT_A.replace('before committing', 'never before committing');
+    const issues = pair(LONG_TEXT_A.replace('before committing', 'always before committing'), drifted);
+    expect(issues).toHaveLength(1);
+    const issue = issues[0]!;
+    expect(issue.severity).toBe('warning');
+    expect(issue.autoApplySafe).toBe(false);
+    expect(issue.fixEdits).toBeUndefined();
+    expect(issue.summary).toContain('The copies are not identical');
+    expect(issue.recommendation).toMatch(/^The copies differ: decide which text is right before consolidating/);
+  });
+
+  it('an identical pair keeps the auto-fix', () => {
+    const [issue] = pair(LONG_TEXT_A, LONG_TEXT_A);
+    expect(issue!.severity).toBe('high');
+    expect(issue!.autoApplySafe).toBe(true);
+    expect(issue!.summary).not.toContain('not identical');
+    expect(issue!.recommendation).toMatch(/^Consolidate these sections/);
+  });
+
+  describe('sameSectionText: byte-identical after line endings, trailing whitespace, BOM and edge blank lines only', () => {
+    const same = (a: string, b: string) => sameSectionText({ text: a }) === sameSectionText({ text: b });
+    const fence = (body: string) => `## Database rules\n\nRun this:\n\n\`\`\`python\n${body}\n\`\`\`\n`;
+
+    it.each([
+      ['CRLF and CR line endings plus trailing spaces and tabs', '## A\nKeep it small.\nRun tests.', '## A  \r\nKeep it small.\t\r\nRun tests.\r'],
+      ['a leading byte-order mark', '## A\nKeep it small.', '\uFEFF## A\nKeep it small.'],
+      ['leading and trailing blank lines of the section', '## A\nKeep it small.', '\n\n## A\nKeep it small.\n\n\n'],
+    ])('treats %s as the same', (_label, a, b) => {
+      expect(same(a, b)).toBe(true);
+    });
+
+    it.each([
+      ['a nested list versus a flat one', '- a\n  - b\n  - c', '- a\n- b\n- c'],
+      ['a nested ordered list versus a flat one', '1. a\n   1. b', '1. a\n1. b'],
+      ['spacing inside <pre>', '<pre>a   b</pre>', '<pre>a b</pre>'],
+      ['spacing inside an inline code span', 'Run `a  b` first.', 'Run `a b` first.'],
+      ['a reflowed paragraph', 'Keep each change small and\nfocused on one task.', 'Keep each change small and focused\non one task.'],
+      ['collapsed interior spaces in prose', 'Keep  it small.', 'Keep it small.'],
+      ['tabs versus spaces', fence('if x:\n    run()'), fence('if x:\n\trun()')],
+      ['indentation inside a fence', fence('if x:\n    run()'), fence('if x:\nrun()')],
+      ['NFC versus NFD', 'Caf\u00e9 rules.', 'Cafe\u0301 rules.'],
+      ['a look-alike character (Cyrillic er for p)', 'Use pnpm.', 'Use \u0440npm.'],
+      ['a changed number', 'Keep coverage above 80 percent.', 'Keep coverage above 90 percent.'],
+      ['a changed flag', 'Run `pnpm test --run`.', 'Run `pnpm test --watch`.'],
+      ['case', 'Never commit to main.', 'never commit to main.'],
+      ['punctuation', 'Ask first; then edit.', 'Ask first, then edit.'],
+      ['a link target', 'See [docs](docs/a.md).', 'See [docs](docs/b.md).'],
+      ['list order', '- one\n- two', '- two\n- one'],
+      ['a blank line inside the section', 'First paragraph.\n\nSecond paragraph.', 'First paragraph.\nSecond paragraph.'],
+    ])('treats %s as different, without throwing', (_label, a, b) => {
+      expect(() => sameSectionText({ text: a })).not.toThrow();
+      expect(same(a, b)).toBe(false);
+    });
+  });
+
+
+  it('a section whose python fence was flattened is not auto-fixed, per-section or as a mirror', () => {
+    const indented = (fence: string) => `## Database rules\n\nMigrations run in order.\n\n\`\`\`python\nif x:\n${fence}run()\nelse:\n${fence}stop()\n\`\`\`\n`;
+    const original = indented('    ') + '\nQueries go through the repository modules in src/repos, never the client directly.\n';
+    const flattened = indented('') + '\nQueries go through the repository modules in src/repos, never the client directly.\n';
+    const sec = (filePath: string, text: string) => makeSection({ text, id: filePath, heading: 'Database rules', filePath, startLine: 1, endLine: 12 });
+    // Per-section: CLAUDE.md has a section of its own, so this is not a whole-file mirror.
+    const [perSection] = detectDuplicates([
+      makeFile('/repo/AGENTS.md', [sec('/repo/AGENTS.md', original)]),
+      makeFile('/repo/CLAUDE.md', [sec('/repo/CLAUDE.md', flattened), ownSection('/repo/CLAUDE.md')]),
+    ]);
+    expect(perSection!.title).toBe('Possible duplicate: Database rules');
+    expect(perSection!.autoApplySafe).toBe(false);
+    expect(perSection!.summary).toContain('The copies are not identical');
+    // Mirror: the same two one-section files.
+    const [mirror] = detectDuplicates([
+      makeFile('/repo/AGENTS.md', [sec('/repo/AGENTS.md', original)]),
+      makeFile('/repo/CLAUDE.md', [sec('/repo/CLAUDE.md', flattened)]),
+    ]);
+    expect(mirror!.title).toBe('Possible mirrored instruction files: AGENTS.md, CLAUDE.md');
+    expect(mirror!.autoApplySafe).toBe(false);
+    expect(mirror!.summary).toContain('The copies already differ in 1 section(s): Database rules.');
+  });
+
+  it('copies that differ only in trailing whitespace and line endings count as identical', () => {
+    const [issue] = pair(LONG_TEXT_A, LONG_TEXT_A.replace(/\n/g, '  \r\n'));
+    expect(issue!.autoApplySafe).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // pcic-1ik0.5: mirrored instruction files are ONE warning, not one per section
 // ---------------------------------------------------------------------------
 
@@ -1193,11 +1291,11 @@ describe('detectDuplicates — mirrored files after review', () => {
     }
   });
 
-  it('identical copies stay auto-applicable even when only whitespace and line endings differ', async () => {
+  it('identical copies stay auto-applicable even when only trailing whitespace and line endings differ', async () => {
     const root = copyOf(MIRROR_FIXTURE);
     try {
       const claude = path.join(root, 'CLAUDE.md');
-      fs.writeFileSync(claude, fs.readFileSync(claude, 'utf8').replace(/\n/g, '\r\n').replace(/ with a /g, '  with  a '));
+      fs.writeFileSync(claude, fs.readFileSync(claude, 'utf8').replace(/\n/g, ' \t\r\n'));
       const [issue] = (await scan({ repoPath: root })).issues.filter(isMirror);
       expect(issue!.autoApplySafe).toBe(true);
     } finally {
