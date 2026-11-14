@@ -145,17 +145,23 @@ const ECOSYSTEM_OUTPUT_DIRS: Record<string, (tree: Tree, rootNames: string[]) =>
   obj: (_tree, names) => names.some(isDotnetBuildFile),
 };
 
-/** True when the root package.json's `bin` field (string or map) or `directories.bin` points into `bin/`. */
+/**
+ * True when the root package.json's `bin` field (string or map) or
+ * `directories.bin` points into `bin/`. A package.json that exists but cannot
+ * be read or parsed counts as true too: the cost of guessing wrong is a
+ * `bin/` line in .gitignore that silently drops the next script added there.
+ */
 function packageJsonNamesBinDir(tree: Tree): boolean {
   const read = tree.readText('package.json', { maxBytes: 1_000_000 });
-  if (read.state !== 'found') return false;
+  if (read.state === 'missing' || read.state === 'outside') return false;
+  if (read.state !== 'found') return true;
   let pkg: unknown;
   try {
     pkg = JSON.parse(read.content);
   } catch {
-    return false;
+    return true;
   }
-  if (typeof pkg !== 'object' || pkg === null) return false;
+  if (typeof pkg !== 'object' || pkg === null || Array.isArray(pkg)) return true;
   const { bin, directories } = pkg as { bin?: unknown; directories?: { bin?: unknown } };
   const targets: unknown[] = typeof bin === 'string' ? [bin] : typeof bin === 'object' && bin !== null ? Object.values(bin) : [];
   if (directories && typeof directories === 'object') targets.push(directories.bin);

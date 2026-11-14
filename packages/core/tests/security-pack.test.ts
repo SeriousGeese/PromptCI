@@ -24,6 +24,11 @@ function repo(files: Record<string, string>): RepoTree {
     const rel = String(target).replace(/\\/g, '/').replace(/^.*\/repo\//, '');
     return files[rel] ?? '';
   });
+  // `readText(..., { maxBytes })` stats the file first; every fixture file is a small regular file.
+  vi.mocked(fs.statSync).mockImplementation(((target: unknown) => {
+    const rel = String(target).replace(/\\/g, '/').replace(/^.*\/repo\//, '');
+    return { isFile: () => true, size: (files[rel] ?? '').length };
+  }) as unknown as typeof fs.statSync);
   return new RepoTree('/repo', { knownPaths, knownPathsComplete: true });
 }
 
@@ -414,6 +419,23 @@ describe('detectSecurityPack', () => {
       for (const marker of ['pom.xml', 'Directory.Build.props']) {
         expect(unignored({ [marker]: '<x/>', ...files }), marker).toBeUndefined();
       }
+    });
+
+    it.each([
+      ['malformed JSON', '{"bin": "bin/x",'],
+      ['a JSON array', '[]'],
+    ])('does NOT report bin/ beside a build file when package.json is %s (it may name bin/)', (_label, body) => {
+      expect(unignored({ 'pom.xml': '<project/>', 'package.json': body, 'bin/Debug/App.dll': 'MZ' })).toBeUndefined();
+    });
+
+    it('an extensionless file without #! (a compiled apphost) does not make bin/ source', () => {
+      const issue = unignored({ 'App.csproj': '<Project />', 'bin/App': 'MZ\u0090\u0000' });
+      expect(issue?.evidence).toEqual(['Directory "bin" exists but is not ignored in .gitignore.']);
+    });
+
+    it('a well-formed package.json without a bin target does not block a build-output bin/', () => {
+      const issue = unignored({ 'pom.xml': '<project/>', 'package.json': '{"name":"x"}', 'bin/Debug/App.class': 'x' });
+      expect(issue?.evidence).toEqual(['Directory "bin" exists but is not ignored in .gitignore.']);
     });
 
     it('still reports a bin/ of build output (subdirectories, .dll) beside a .NET project file', () => {
