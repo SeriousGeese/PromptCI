@@ -122,6 +122,23 @@ describe('runFix CLI command', () => {
     expect(await fs.readFile(claudePath, 'utf-8')).toBe(body('always'));
   });
 
+  it('leaves a copy whose fenced code lost its indentation untouched', async () => {
+    const agentsPath = path.join(tmpDir, 'AGENTS.md');
+    const claudePath = path.join(tmpDir, 'CLAUDE.md');
+    const body = (indent: string) =>
+      '## Database Rules\n' +
+      'Every schema change ships as a new migration under drizzle/ and is never edited after merge.\n' +
+      'Queries go through the repository modules in src/repos so transactions stay in one place.\n' +
+      '\n```python\nif x:\n' + `${indent}run()\nelse:\n${indent}stop()\n` + '```\n';
+    await fs.writeFile(agentsPath, body('    '), 'utf-8');
+    await fs.writeFile(claudePath, body(''), 'utf-8');
+
+    await runFix({ scanPath: tmpDir, interactive: false });
+
+    expect(await fs.readFile(agentsPath, 'utf-8')).toBe(body('    '));
+    expect(await fs.readFile(claudePath, 'utf-8')).toBe(body(''));
+  });
+
   it('prompts user in interactive mode and applies changes on confirmation', async () => {
     const gitignorePath = path.join(tmpDir, '.gitignore');
     await fs.writeFile(gitignorePath, 'node_modules/\n', 'utf-8');

@@ -1018,9 +1018,73 @@ describe('detectDuplicates — auto-fix only for identical copies', () => {
     expect(issue!.recommendation).toMatch(/^Consolidate these sections/);
   });
 
-  it('one definition of "the same text" serves per-section and mirror findings', () => {
-    expect(sameSectionText({ text: '## A\r\n\tKeep  it small.\r\n' })).toBe(sameSectionText({ text: '## A\nKeep it small.' }));
-    expect(sameSectionText({ text: '## A\nNever edit.' })).not.toBe(sameSectionText({ text: '## A\nAlways edit.' }));
+  describe('sameSectionText, the one "same text" rule for every consolidation auto-fix', () => {
+    const same = (a: string, b: string) => sameSectionText({ text: a }) === sameSectionText({ text: b });
+    const fence = (body: string) => `## Database rules\n\nRun this:\n\n\`\`\`python\n${body}\n\`\`\`\n`;
+
+    it('treats an indentation-only difference inside a fence as different', () => {
+      expect(same(fence('if x:\n    run()\nelse:\n    stop()'), fence('if x:\nrun()\nelse:\nstop()'))).toBe(false);
+      expect(same('```yaml\na:\n  b:\n    c: 1\n```', '```yaml\na:\n  b:\n  c: 1\n```')).toBe(false);
+    });
+
+    it('treats tabs versus spaces inside a fence as different', () => {
+      expect(same(fence('if x:\n    run()'), fence('if x:\n\trun()'))).toBe(false);
+    });
+
+    it('treats indented code blocks and nested list items verbatim too', () => {
+      expect(same('Run:\n\n    make build\n        --verbose\n', 'Run:\n\n    make build\n    --verbose\n')).toBe(false);
+      expect(same('- a\n    - b\n', '- a\n- b\n')).toBe(false);
+    });
+
+    it('ignores trailing spaces and CRLF line endings, in prose and in code', () => {
+      expect(same(fence('if x:   \r\n    run()'), fence('if x:\n    run()'))).toBe(true);
+      expect(same('## A\r\nKeep it small.  \r\n', '## A\nKeep it small.')).toBe(true);
+    });
+
+    it('treats reflowed prose as the same', () => {
+      expect(same('Keep each change small and\nfocused on one task.', 'Keep  each change small and focused\non one task.')).toBe(true);
+      expect(same('- Keep changes small and\n  focused.\n- Run tests.', '- Keep changes small and focused.\n- Run tests.')).toBe(true);
+    });
+
+    it('never makes a reflowed list equal to a paragraph', () => {
+      expect(same('- Keep changes small.\n- Run tests.', 'Keep changes small. Run tests.')).toBe(false);
+      expect(same('- Keep changes small.\n- Run tests.', '- Keep changes small. - Run tests.')).toBe(false);
+      expect(same('First paragraph.\n\nSecond paragraph.', 'First paragraph. Second paragraph.')).toBe(false);
+    });
+
+    it.each([
+      ['a number', 'Keep coverage above 80 percent.', 'Keep coverage above 90 percent.'],
+      ['a flag', 'Run `pnpm test --run`.', 'Run `pnpm test --watch`.'],
+      ['case', 'Never commit to main.', 'never commit to main.'],
+      ['punctuation', 'Ask first; then edit.', 'Ask first, then edit.'],
+      ['a link target', 'See [docs](docs/a.md).', 'See [docs](docs/b.md).'],
+      ['list order', '- one\n- two', '- two\n- one'],
+    ])('treats a changed %s as different', (_label, a, b) => {
+      expect(same(a, b)).toBe(false);
+    });
+  });
+
+  it('a section whose python fence was flattened is not auto-fixed, per-section or as a mirror', () => {
+    const indented = (fence: string) => `## Database rules\n\nMigrations run in order.\n\n\`\`\`python\nif x:\n${fence}run()\nelse:\n${fence}stop()\n\`\`\`\n`;
+    const original = indented('    ') + '\nQueries go through the repository modules in src/repos, never the client directly.\n';
+    const flattened = indented('') + '\nQueries go through the repository modules in src/repos, never the client directly.\n';
+    const sec = (filePath: string, text: string) => makeSection({ text, id: filePath, heading: 'Database rules', filePath, startLine: 1, endLine: 12 });
+    // Per-section: CLAUDE.md has a section of its own, so this is not a whole-file mirror.
+    const [perSection] = detectDuplicates([
+      makeFile('/repo/AGENTS.md', [sec('/repo/AGENTS.md', original)]),
+      makeFile('/repo/CLAUDE.md', [sec('/repo/CLAUDE.md', flattened), ownSection('/repo/CLAUDE.md')]),
+    ]);
+    expect(perSection!.title).toBe('Possible duplicate: Database rules');
+    expect(perSection!.autoApplySafe).toBe(false);
+    expect(perSection!.summary).toContain('The copies are not identical');
+    // Mirror: the same two one-section files.
+    const [mirror] = detectDuplicates([
+      makeFile('/repo/AGENTS.md', [sec('/repo/AGENTS.md', original)]),
+      makeFile('/repo/CLAUDE.md', [sec('/repo/CLAUDE.md', flattened)]),
+    ]);
+    expect(mirror!.title).toBe('Possible mirrored instruction files: AGENTS.md, CLAUDE.md');
+    expect(mirror!.autoApplySafe).toBe(false);
+    expect(mirror!.summary).toContain('The copies already differ in 1 section(s): Database rules.');
   });
 
   it('copies that differ only in whitespace and line endings count as identical', () => {
