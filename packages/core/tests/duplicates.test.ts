@@ -1018,51 +1018,42 @@ describe('detectDuplicates — auto-fix only for identical copies', () => {
     expect(issue!.recommendation).toMatch(/^Consolidate these sections/);
   });
 
-  describe('sameSectionText, the one "same text" rule for every consolidation auto-fix', () => {
+  describe('sameSectionText: byte-identical after line endings, trailing whitespace, BOM and edge blank lines only', () => {
     const same = (a: string, b: string) => sameSectionText({ text: a }) === sameSectionText({ text: b });
     const fence = (body: string) => `## Database rules\n\nRun this:\n\n\`\`\`python\n${body}\n\`\`\`\n`;
 
-    it('treats an indentation-only difference inside a fence as different', () => {
-      expect(same(fence('if x:\n    run()\nelse:\n    stop()'), fence('if x:\nrun()\nelse:\nstop()'))).toBe(false);
-      expect(same('```yaml\na:\n  b:\n    c: 1\n```', '```yaml\na:\n  b:\n  c: 1\n```')).toBe(false);
-    });
-
-    it('treats tabs versus spaces inside a fence as different', () => {
-      expect(same(fence('if x:\n    run()'), fence('if x:\n\trun()'))).toBe(false);
-    });
-
-    it('treats indented code blocks and nested list items verbatim too', () => {
-      expect(same('Run:\n\n    make build\n        --verbose\n', 'Run:\n\n    make build\n    --verbose\n')).toBe(false);
-      expect(same('- a\n    - b\n', '- a\n- b\n')).toBe(false);
-    });
-
-    it('ignores trailing spaces and CRLF line endings, in prose and in code', () => {
-      expect(same(fence('if x:   \r\n    run()'), fence('if x:\n    run()'))).toBe(true);
-      expect(same('## A\r\nKeep it small.  \r\n', '## A\nKeep it small.')).toBe(true);
-    });
-
-    it('treats reflowed prose as the same', () => {
-      expect(same('Keep each change small and\nfocused on one task.', 'Keep  each change small and focused\non one task.')).toBe(true);
-      expect(same('- Keep changes small and\n  focused.\n- Run tests.', '- Keep changes small and focused.\n- Run tests.')).toBe(true);
-    });
-
-    it('never makes a reflowed list equal to a paragraph', () => {
-      expect(same('- Keep changes small.\n- Run tests.', 'Keep changes small. Run tests.')).toBe(false);
-      expect(same('- Keep changes small.\n- Run tests.', '- Keep changes small. - Run tests.')).toBe(false);
-      expect(same('First paragraph.\n\nSecond paragraph.', 'First paragraph. Second paragraph.')).toBe(false);
+    it.each([
+      ['CRLF and CR line endings plus trailing spaces and tabs', '## A\nKeep it small.\nRun tests.', '## A  \r\nKeep it small.\t\r\nRun tests.\r'],
+      ['a leading byte-order mark', '## A\nKeep it small.', '\uFEFF## A\nKeep it small.'],
+      ['leading and trailing blank lines of the section', '## A\nKeep it small.', '\n\n## A\nKeep it small.\n\n\n'],
+    ])('treats %s as the same', (_label, a, b) => {
+      expect(same(a, b)).toBe(true);
     });
 
     it.each([
-      ['a number', 'Keep coverage above 80 percent.', 'Keep coverage above 90 percent.'],
-      ['a flag', 'Run `pnpm test --run`.', 'Run `pnpm test --watch`.'],
+      ['a nested list versus a flat one', '- a\n  - b\n  - c', '- a\n- b\n- c'],
+      ['a nested ordered list versus a flat one', '1. a\n   1. b', '1. a\n1. b'],
+      ['spacing inside <pre>', '<pre>a   b</pre>', '<pre>a b</pre>'],
+      ['spacing inside an inline code span', 'Run `a  b` first.', 'Run `a b` first.'],
+      ['a reflowed paragraph', 'Keep each change small and\nfocused on one task.', 'Keep each change small and focused\non one task.'],
+      ['collapsed interior spaces in prose', 'Keep  it small.', 'Keep it small.'],
+      ['tabs versus spaces', fence('if x:\n    run()'), fence('if x:\n\trun()')],
+      ['indentation inside a fence', fence('if x:\n    run()'), fence('if x:\nrun()')],
+      ['NFC versus NFD', 'Caf\u00e9 rules.', 'Cafe\u0301 rules.'],
+      ['a look-alike character (Cyrillic er for p)', 'Use pnpm.', 'Use \u0440npm.'],
+      ['a changed number', 'Keep coverage above 80 percent.', 'Keep coverage above 90 percent.'],
+      ['a changed flag', 'Run `pnpm test --run`.', 'Run `pnpm test --watch`.'],
       ['case', 'Never commit to main.', 'never commit to main.'],
       ['punctuation', 'Ask first; then edit.', 'Ask first, then edit.'],
       ['a link target', 'See [docs](docs/a.md).', 'See [docs](docs/b.md).'],
       ['list order', '- one\n- two', '- two\n- one'],
-    ])('treats a changed %s as different', (_label, a, b) => {
+      ['a blank line inside the section', 'First paragraph.\n\nSecond paragraph.', 'First paragraph.\nSecond paragraph.'],
+    ])('treats %s as different, without throwing', (_label, a, b) => {
+      expect(() => sameSectionText({ text: a })).not.toThrow();
       expect(same(a, b)).toBe(false);
     });
   });
+
 
   it('a section whose python fence was flattened is not auto-fixed, per-section or as a mirror', () => {
     const indented = (fence: string) => `## Database rules\n\nMigrations run in order.\n\n\`\`\`python\nif x:\n${fence}run()\nelse:\n${fence}stop()\n\`\`\`\n`;
@@ -1087,8 +1078,8 @@ describe('detectDuplicates — auto-fix only for identical copies', () => {
     expect(mirror!.summary).toContain('The copies already differ in 1 section(s): Database rules.');
   });
 
-  it('copies that differ only in whitespace and line endings count as identical', () => {
-    const [issue] = pair(LONG_TEXT_A, LONG_TEXT_A.replace(/\n/g, '\r\n').replace(/ the /g, '  the '));
+  it('copies that differ only in trailing whitespace and line endings count as identical', () => {
+    const [issue] = pair(LONG_TEXT_A, LONG_TEXT_A.replace(/\n/g, '  \r\n'));
     expect(issue!.autoApplySafe).toBe(true);
   });
 });
@@ -1300,11 +1291,11 @@ describe('detectDuplicates — mirrored files after review', () => {
     }
   });
 
-  it('identical copies stay auto-applicable even when only whitespace and line endings differ', async () => {
+  it('identical copies stay auto-applicable even when only trailing whitespace and line endings differ', async () => {
     const root = copyOf(MIRROR_FIXTURE);
     try {
       const claude = path.join(root, 'CLAUDE.md');
-      fs.writeFileSync(claude, fs.readFileSync(claude, 'utf8').replace(/\n/g, '\r\n').replace(/ with a /g, '  with  a '));
+      fs.writeFileSync(claude, fs.readFileSync(claude, 'utf8').replace(/\n/g, ' \t\r\n'));
       const [issue] = (await scan({ repoPath: root })).issues.filter(isMirror);
       expect(issue!.autoApplySafe).toBe(true);
     } finally {
