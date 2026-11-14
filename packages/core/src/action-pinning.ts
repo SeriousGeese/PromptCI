@@ -2,6 +2,7 @@ import * as crypto from 'node:crypto';
 import * as path from 'node:path';
 import type { RepoContext, WorkflowSource } from './repo-context.js';
 import type { PromptCiIssue } from './types.js';
+import { UNSCORED_TAG } from './health-score.js';
 
 /**
  * GitHub Actions pinning detector (detect-only).
@@ -12,6 +13,9 @@ import type { PromptCiIssue } from './types.js';
  * pointer: whoever can push to the action's repository can move it, and every
  * workflow referencing it runs the new code on its next run. A SHA cannot be
  * repointed.
+ *
+ * One info-level finding per file lists every unpinned ref in it, tagged
+ * unscored: it costs no health-score points (pcic-1ik0.3).
  *
  * Deliberately DETECT-ONLY: there is no fix recipe and `autoApplySafe` is never
  * set. Resolving a tag to its SHA needs a network call, and this package makes
@@ -227,88 +231,106 @@ function codeSafe(text: string): string {
   return text.replace(/`/g, "'");
 }
 
-type Site = { filePath: string; lines: number[]; use: UnpinnedUse };
+type Site = { lines: number[]; use: UnpinnedUse };
 
-function buildIssue(context: RepoContext, site: Site): PromptCiIssue {
-  const { filePath, lines, use } = site;
+/** Evidence line for one unpinned ref; the raw text of an odd-shaped ref never appears. */
+function evidenceLine(filePath: string, use: UnpinnedUse): string {
+  return use.displayable
+    ? `${filePath}: uses: ${codeSafe(use.ref)}`
+    // No line numbers (baseline fingerprints hash evidence); a hash of the
+    // raw value keeps two different refs in one file distinct.
+    : `${filePath}: unrecognised uses: value (sha1 ${shortHash(use.ref)})`;
+}
+
+/**
+ * ONE info-level finding per workflow or composite-action file, listing every
+ * unpinned ref in it (pcic-1ik0.3, PromptCI#158). One finding per ref made
+ * this 29% of all findings in a 43-repository corpus, and it describes CI
+ * configuration rather than instruction health, so it is tagged unscored and
+ * costs no health-score points.
+ */
+function buildIssue(context: RepoContext, filePath: string, sites: Site[]): PromptCiIssue {
   const absPath = path.resolve(context.repoRoot, filePath);
-  const base = {
-    // One finding per (file, ref): pinning the ref in one workflow must not
-    // re-key the finding for the other files that still use it.
-    id: `action-pin-${shortHash(`action-pin:${filePath}:${use.ref}`)}`,
-    category: 'security' as const,
+  const lines = [...new Set(sites.flatMap((site) => site.lines))].sort((a, b) => a - b);
+  const shown = sites.filter((site) => site.use.displayable).map((site) => site.use);
+  const hidden = sites.length - shown.length;
+  const thirdParty = shown.filter((use) => !FIRST_PARTY_OWNERS.has(use.owner));
+  // The example in the recommendation: a third-party ref when there is one.
+  const example = thirdParty[0] ?? shown[0];
+  const file = codeSafe(filePath);
+
+  const listed = shown.map((use) => `\`${codeSafe(use.ref)}\``).join(', ');
+  const odd =
+    hidden === 0
+      ? ''
+      : ` ${shown.length > 0 ? 'It also has' : 'They are'} ${hidden} \`uses:\` value(s) that do not look like a ` +
+        'plain `owner/repo@ref` and are not shown here; review them by hand.';
+  const firstPartyNote =
+    shown.length > 0 && thirdParty.length === 0 && hidden === 0
+      ? ' All of them are maintained by GitHub, which lowers but does not remove the risk.'
+      : '';
+
+  let recommendation =
+    'Pin each action to the full commit SHA of a release you trust and keep the version in a trailing comment';
+  if (example) {
+    const [repoOwner, repoName] = example.action.split('/');
+    recommendation +=
+      `, e.g. \`uses: ${codeSafe(example.action)}@<40-char-sha> # ${codeSafe(example.version)}\`. ` +
+      `Resolve the SHA from the action's own repository (\`gh api repos/${repoOwner}/${repoName}/commits/` +
+      `${example.version} --jq .sha\`)`;
+  } else {
+    recommendation += ", resolving the SHA from the action's own repository";
+  }
+  recommendation +=
+    ', and let Dependabot or Renovate update the SHA and comment together. PromptCI reports this but does not ' +
+    'rewrite workflow files.';
+
+  return {
+    id: `action-pin-${shortHash(`action-pin:${filePath}`)}`,
+    severity: 'info',
+    category: 'security',
+    title: `GitHub Actions in \`${file}\` are not pinned to a commit SHA`,
+    summary:
+      `${file} references ${sites.length} action(s) by a tag or branch rather than a full commit SHA` +
+      (shown.length > 0 ? `: ${listed}.` : '.') +
+      odd +
+      " A tag or branch is a mutable pointer: whoever can push to the action's repository can move it, and the " +
+      "next run executes the new code with this repository's token and secrets." +
+      firstPartyNote +
+      ' This finding does not count toward the health score.',
     // Absolute, like every other finding's paths; the JSON report relativizes.
     filePaths: [absPath],
     locations: lines.map((line) => ({ filePath: absPath, startLine: line, endLine: line })),
-    // The ref is certainly mutable; whether that matters for this repo is the
-    // heuristic part, so confidence stays below 1 and the score hit modest
-    // (and capped — see TAG_DEDUCTION_CAP in health-score.ts).
+    evidence: sites.map((site) => evidenceLine(filePath, site.use)),
+    recommendation,
+    // The refs are certainly mutable; whether that matters for this repo is
+    // the heuristic part, so confidence stays below 1.
     confidence: 0.8,
-    tags: ['supply-chain', 'github-actions'],
-  };
-  const why =
-    "A tag or branch is a mutable pointer: whoever can push to the action's repository can move " +
-    "it, and the next run executes the new code with this repository's token and secrets.";
-
-  if (!use.displayable) {
-    // The raw value never reaches the title, evidence, or a shell command.
-    return {
-      ...base,
-      severity: 'warning',
-      title: 'GitHub Action reference is not pinned to a commit SHA',
-      summary:
-        `${filePath} has a \`uses:\` reference (line ${lines.join(', ')}) that is not pinned to a full ` +
-        `commit SHA and does not look like a plain \`owner/repo@ref\` value. ${why}`,
-      // No line numbers (baseline fingerprints hash evidence); a hash of the
-      // raw value keeps two different refs in one file distinct.
-      evidence: [`${filePath}: unrecognised uses: value (sha1 ${shortHash(use.ref)})`],
-      recommendation:
-        'Review this `uses:` line by hand. Pin the action to the full 40-character commit SHA of a ' +
-        "release you trust (resolved from the action's own repository), keep the version in a trailing " +
-        'comment, and let Dependabot or Renovate update both. PromptCI reports this but does not rewrite ' +
-        'workflow files.',
-    };
-  }
-
-  const firstParty = FIRST_PARTY_OWNERS.has(use.owner);
-  const [repoOwner, repoName] = use.action.split('/');
-  const ref = codeSafe(use.ref);
-  return {
-    ...base,
-    severity: firstParty ? 'info' : 'warning',
-    title: `GitHub Action \`${ref}\` is not pinned to a commit SHA`,
-    summary:
-      `${filePath} references \`${codeSafe(use.action)}\` at \`${codeSafe(use.version)}\`, which appears ` +
-      `to be a tag or branch rather than a full commit SHA. ${why} ` +
-      (firstParty
-        ? 'This action is maintained by GitHub, which lowers but does not remove the risk.'
-        : 'Consider pinning third-party actions to a reviewed commit.'),
-    evidence: [`${filePath}: uses: ${ref}`],
-    recommendation:
-      'Pin the action to the full commit SHA of the release you trust and keep the version in a ' +
-      `trailing comment, e.g. \`uses: ${codeSafe(use.action)}@<40-char-sha> # ${codeSafe(use.version)}\`. ` +
-      `Resolve the SHA from the action's own repository (\`gh api repos/${repoOwner}/${repoName}/commits/` +
-      `${use.version} --jq .sha\`), and let Dependabot or Renovate update the SHA and comment together. ` +
-      'PromptCI reports this but does not rewrite workflow files.',
+    tags: ['supply-chain', 'github-actions', UNSCORED_TAG],
   };
 }
 
 export function detectActionPinning(context: RepoContext): PromptCiIssue[] {
   const sources: WorkflowSource[] = context.workflows.sources ?? [];
 
-  // Group occurrences by (file, ref): several jobs in one workflow using the
-  // same unpinned action are one fix, and one finding.
-  const sites = new Map<string, Site>();
+  // Group occurrences by file, then by ref: several jobs in one workflow using
+  // the same unpinned action are one entry in that file's finding.
+  const byFile = new Map<string, Map<string, Site>>();
   for (const source of sources) {
     for (const use of extractActionUses(source.content)) {
       const unpinned = unpinnedUse(use);
       if (!unpinned) continue;
-      const key = `${source.filePath}\u0000${unpinned.ref}`;
-      const site = sites.get(key) ?? { filePath: source.filePath, lines: [], use: unpinned };
+      const refs = byFile.get(source.filePath) ?? new Map<string, Site>();
+      const site = refs.get(unpinned.ref) ?? { lines: [], use: unpinned };
       site.lines.push(unpinned.line);
-      sites.set(key, site);
+      refs.set(unpinned.ref, site);
+      byFile.set(source.filePath, refs);
     }
   }
 
-  return [...sites.keys()].sort().map((key) => buildIssue(context, sites.get(key)!));
+  return [...byFile.keys()].sort().map((filePath) => {
+    const refs = byFile.get(filePath)!;
+    const sites = [...refs.keys()].sort().map((ref) => refs.get(ref)!);
+    return buildIssue(context, filePath, sites);
+  });
 }

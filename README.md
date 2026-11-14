@@ -176,11 +176,13 @@ The score is self-reported by your own scan; regenerate the file in CI to keep i
 - CI/workflow alignment between instructions and GitHub Actions
 - Security and privacy gaps in instruction guidance
 - Vague guidance, broken local references (files, directories, and documented package
-  scripts or `make` targets that no longer exist), agent-practice gaps
+  scripts or `make` targets that no longer exist), agent-practice gaps (common practices such as
+  a verification loop or "ask when unsure" that no instruction file mentions are listed in one
+  info finding per repository that does not count toward the health score)
 - Prompt-cache-hostile content that inflates the cost of every agent turn
 - GitHub Actions `uses:` references (in workflows and composite actions) pinned to a tag or
-  branch instead of a full commit SHA — detect-only, never rewritten; these findings cost at
-  most 8 health-score points in total
+  branch instead of a full commit SHA — detect-only, never rewritten; one info finding per
+  workflow file lists its unpinned actions and does not count toward the health score
 <!-- promptci-ignore-start: structure
      reason: `.mcp.json` here names the config file the ai_config detectors audit,
      not a file this repo ships — PromptCI itself intentionally has no MCP config. -->
