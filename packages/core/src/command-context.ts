@@ -230,6 +230,8 @@ export function commandContext(
     let intro = open - 1;
     while (intro >= 1 && s.lines[intro - 1]!.trim() === '') intro--;
     introduction = paragraphEndingAt(s, intro, 4);
+    // A trailing comment on the command line can say where it runs (`npm run dev  # at the repo root`).
+    rootCandidates.push(own);
   } else if (LIST_ITEM_RE.test(own)) {
     introduction = listLeadIn(s, line);
     rootCandidates.push(sentenceHolding(own, command));

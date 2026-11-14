@@ -466,6 +466,12 @@ describe('what a list lead-in, a cd and a subshell say about the directory (re-r
     expect(brief(issues)).toEqual(['warning:npm run dev']);
   });
 
+  it('reads a root phrase in a trailing comment on a fenced command line', async () => {
+    const issues = await findings({ ...base, 'CLAUDE.md': '# P\n\nSee `site/`.\n\n```sh\nnpm run dev   # at the repo root\n```\n' });
+    expect(issues).toHaveLength(1);
+    expect(issues[0]!.severity).toBe('warning');
+  });
+
   it('does not count a negated root phrase', async () => {
     const issues = await findings({ ...base, 'CLAUDE.md': '# P\n\nNot from the repo root, but from `site/`: `npm run dev`.\n' });
     expect(issues).toEqual([]);
