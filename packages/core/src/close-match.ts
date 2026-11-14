@@ -52,18 +52,25 @@ function normalizeName(name: string): string {
  */
 export const MECHANICAL_TWO_EDIT_MIN_LENGTH = 8;
 
-/** Shortest differing word that may be corrected by dropping or adding one character. */
+/** Shortest differing word in which a doubled letter may be dropped or added. */
 export const MECHANICAL_SEGMENT_MIN_LENGTH = 5;
 
 /** The separators a script name is split into words on. */
 const WORD_SEPARATORS = /([-_:./])/;
 
-/** True when `longer` is `shorter` with exactly one character inserted somewhere. */
-function isSingleInsertion(shorter: string, longer: string): boolean {
+/**
+ * True when `longer` is `shorter` with one letter DOUBLED (`comit`/`commit`,
+ * `build`/`buildd`). Any other single insertion is refused: an added letter at
+ * either end or in the middle often spells another word (`serve`/`server`,
+ * `review`/`preview`, `build`/`builds`).
+ */
+function isDoubledLetter(shorter: string, longer: string): boolean {
   if (longer.length !== shorter.length + 1) return false;
   let i = 0;
   while (i < shorter.length && shorter[i] === longer[i]) i++;
-  return shorter.slice(i) === longer.slice(i + 1);
+  // `i` is the first position the inserted letter can sit at; it doubles the
+  // letter before it (a later position in the same run is the same edit).
+  return i > 0 && longer[i] === longer[i - 1] && shorter.slice(i) === longer.slice(i + 1);
 }
 
 /** True when `a` and `b` are the same characters with one adjacent pair swapped. */
@@ -110,10 +117,12 @@ function isDigitForDigitSubstitution(a: string, b: string): boolean {
  *  4. The differing word must be a plausible slip of the fingers on the SAME
  *     word: an adjacent transposition (`bulid`/`build`), a digit swapped for a
  *     digit (`e3e`/`e2e`), or — in a word of at least
- *     {@link MECHANICAL_SEGMENT_MIN_LENGTH} characters — one dropped or
- *     doubled character (`buld`/`build`, `typecheeck`/`typecheck`). A
- *     substituted letter, or any two edits, usually spells another real word
- *     (`api`/`app`, `unit`/`init`, `major`/`minor`, pcic-1ik0.11), and no
+ *     {@link MECHANICAL_SEGMENT_MIN_LENGTH} characters — one letter of a
+ *     double dropped or one letter doubled (`comit`/`commit`,
+ *     `typecheeck`/`typecheck`). A substituted letter, any other added or
+ *     dropped letter, or any two edits usually spells another real word
+ *     (`api`/`app`, `unit`/`init`, `serve`/`server`, `major`/`minor`,
+ *     pcic-1ik0.11), and no
  *     deterministic rule can tell which was meant. (A dictionary would
  *     separate these more sharply; the repository has no dictionary and
  *     detectors make no network call, so the test is structural.)
@@ -143,7 +152,7 @@ export function isMechanicalRename(missing: string, candidate: string): boolean 
   // 4. A slip of the fingers on the same word, never a different word.
   if (isAdjacentTransposition(a, b) || isDigitForDigitSubstitution(a, b)) return true;
   if (Math.max(a.length, b.length) < MECHANICAL_SEGMENT_MIN_LENGTH) return false;
-  return isSingleInsertion(a, b) || isSingleInsertion(b, a);
+  return isDoubledLetter(a, b) || isDoubledLetter(b, a);
 }
 
 /**

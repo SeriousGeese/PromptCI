@@ -107,10 +107,10 @@ describe('isMechanicalRename', () => {
     ['type-check', 'typecheck', 'a separator difference'],
     ['Build', 'build', 'a case difference'],
     ['buidl', 'build', 'a transposition at the end of the word (pcic-1ik0.11)'],
-    ['buld', 'build', 'a dropped character'],
+    ['comit', 'commit', 'one letter of a double dropped'],
     ['buildd', 'build', 'a doubled character'],
     ['deploy-stagign', 'deploy-staging', 'a transposition in one hyphen-separated word'],
-    ['release:minr', 'release:minor', 'a dropped character in one colon-separated word'],
+    ['release:pacth', 'release:patch', 'a transposition in one colon-separated word'],
   ])('accepts %s -> %s (%s)', (missing, candidate) => {
     expect(isMechanicalRename(missing, candidate)).toBe(true);
   });
@@ -132,6 +132,14 @@ describe('isMechanicalRename', () => {
     ['test:unit', 'test:e2e', 'a different word in the last segment'],
     ['majorrelease', 'minorrelease', 'two substitutions inside one long word'],
     ['deploy-staging', 'deploy-stating', 'one substituted letter in a long word'],
+    // Review of pcic-1ik0.11: an added or dropped letter that is not a double.
+    ['serve', 'server', 'a letter added at the end'],
+    ['review', 'preview', 'a letter added at the start'],
+    ['rebuild', 'prebuild', 'a lifecycle hook, not a typo'],
+    ['build', 'builds', 'a plural'],
+    ['buld', 'build', 'a dropped letter that is not a double'],
+    ['a:', 'b:', 'an empty word on both sides'],
+    ['x-', 'x-y', 'an empty word on one side'],
   ])('refuses %s -> %s (%s)', (missing, candidate) => {
     expect(isMechanicalRename(missing, candidate)).toBe(false);
   });
