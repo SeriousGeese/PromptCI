@@ -143,9 +143,9 @@ describe('detectActionPinning — fixture-agent-formats', () => {
       [11, 18, 30].map((line) => ({ filePath: ciPath, startLine: line, endLine: line })),
     );
     expect(ci.evidence).toEqual([
-      '.github/workflows/ci.yml: uses: actions/checkout@v4',
-      '.github/workflows/ci.yml: uses: example-org/shared-workflows/.github/workflows/lint.yml@main',
-      '.github/workflows/ci.yml: uses: pnpm/action-setup@v4',
+      '.github/workflows/ci.yml:11: uses: actions/checkout@v4',
+      '.github/workflows/ci.yml:30: uses: example-org/shared-workflows/.github/workflows/lint.yml@main',
+      '.github/workflows/ci.yml:18: uses: pnpm/action-setup@v4',
     ]);
     expect(ci.summary).toContain('references 3 action(s)');
     expect(ci.summary).toContain('does not count toward the health score');
@@ -193,14 +193,14 @@ describe('detectActionPinning — one finding per file', () => {
     const [b, ...bRest] = detectActionPinning(await buildRepoContext({ repoPath: before }));
     expect(bRest).toEqual([]);
     expect(b!.evidence).toEqual([
-      '.github/workflows/ci.yml: uses: one/action@v1',
-      '.github/workflows/ci.yml: uses: two/action@v2',
+      '.github/workflows/ci.yml:5,7: uses: one/action@v1',
+      '.github/workflows/ci.yml:6: uses: two/action@v2',
     ]);
     expect(b!.locations.map((l) => l.startLine)).toEqual([5, 6, 7]);
 
     const [a] = detectActionPinning(await buildRepoContext({ repoPath: after }));
     expect(a!.id).toBe(b!.id);
-    expect(a!.evidence).toEqual(['.github/workflows/ci.yml: uses: two/action@v2']);
+    expect(a!.evidence).toEqual(['.github/workflows/ci.yml:6: uses: two/action@v2']);
   });
 
   it('the same ref in two workflows is two findings; pinning one leaves the other id unchanged', async () => {
@@ -301,8 +301,8 @@ describe('detectActionPinning — composite actions, clean and excluded files', 
   it('audits composite actions under .github/actions and at the root', async () => {
     const issues = detectActionPinning(await buildRepoContext({ repoPath: root }));
     expect(issues.map((i) => i.evidence).flat().sort()).toEqual([
-      '.github/actions/local/action.yml: uses: composite/step@v3',
-      '.github/workflows/legacy.yml: uses: some/action@v1',
+      '.github/actions/local/action.yml:5: uses: composite/step@v3',
+      '.github/workflows/legacy.yml:5: uses: some/action@v1',
     ]);
   });
 
@@ -317,7 +317,7 @@ describe('detectActionPinning — composite actions, clean and excluded files', 
   it('honors directory-level exclude patterns, like discovery does', async () => {
     for (const exclude of [['.github'], ['.github/'], ['.github/workflows'], ['.github/workflows/']]) {
       const evidence = detectActionPinning(await buildRepoContext({ repoPath: root, exclude })).flatMap((i) => i.evidence);
-      expect(evidence, exclude[0]).not.toContain('.github/workflows/legacy.yml: uses: some/action@v1');
+      expect(evidence.some((e) => e.startsWith('.github/workflows/legacy.yml')), exclude[0]).toBe(false);
     }
     expect(isExcludedPath('.github/workflows/ci.yml', ['.github'])).toBe(true);
     expect(isExcludedPath('.github/workflows/ci.yml', ['.githubx'])).toBe(false);
