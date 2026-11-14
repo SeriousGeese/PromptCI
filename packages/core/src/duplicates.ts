@@ -295,7 +295,7 @@ export function detectDuplicates(files: InstructionFile[]): PromptCiIssue[] {
 
   // pcic-1ik0.5: clusters entirely inside a group of mirrored files are
   // reported once for the group (below), not once per section.
-  const mirrors = findMirrorGroups(eligible, edges, sectionByKey);
+  const mirrors = findMirrorGroups(files, edges, sectionByKey);
   const absorbed = new Map<number, string[][]>(); // mirror group index → its clusters
   for (const [, keys] of clusters) {
     if (keys.length < 2) continue;
@@ -427,17 +427,22 @@ function canonicalFirst(files: string[]): string[] {
  * mirror was dozens of high-severity findings.
  */
 function findMirrorGroups(
-  eligible: InstructionSection[],
+  files: InstructionFile[],
   edges: Array<{ keyA: string; keyB: string; severity: PromptCiIssue['severity'] }>,
   sectionByKey: Map<string, InstructionSection>,
 ): MirrorGroups {
-  // Comparable sections: long enough for cross-file comparison and not boilerplate.
+  // The share's denominator: EVERY section of the file that has body text,
+  // short ones included. Counting only the sections long enough to compare
+  // made two files whose one long section matched read as "1 of 1" mirrors
+  // however many short sections each had of its own.
   const comparableKeys = new Map<string, Set<string>>();
-  for (const s of eligible) {
-    if (s.normalizedText.length < MIN_SECTION_LENGTH || isBoilerplateHeading(s.heading)) continue;
-    const set = comparableKeys.get(s.filePath) ?? new Set<string>();
-    set.add(`${sectionIdPath(s)}:${s.startLine}`);
-    comparableKeys.set(s.filePath, set);
+  for (const file of files) {
+    for (const s of file.sections) {
+      if (!hasBody(s)) continue;
+      const set = comparableKeys.get(s.filePath) ?? new Set<string>();
+      set.add(`${sectionIdPath(s)}:${s.startLine}`);
+      comparableKeys.set(s.filePath, set);
+    }
   }
 
   // For each ordered file pair, the sections of the first that match the second.
@@ -503,6 +508,12 @@ function findMirrorGroups(
   return { groups, groupOfFile, comparable };
 }
 
+/** True when a section has text beyond its heading line. */
+function hasBody(section: InstructionSection): boolean {
+  const body = section.text.replace(/^\s*#{1,6}\s+[^\n]*\n?/, '');
+  return normalizeSection(body).length > 0;
+}
+
 /** The mirror group holding every one of these files (at least two distinct), if any. */
 function mirrorGroupOf(files: string[], mirrors: MirrorGroups): number | undefined {
   const distinct = [...new Set(files)];
@@ -546,7 +557,18 @@ function mirrorIssue(
   const locations = [...all]
     .sort((a, b) => order.get(a.filePath)! - order.get(b.filePath)! || a.startLine - b.startLine)
     .map((s) => ({ filePath: s.filePath, startLine: s.startLine, endLine: s.endLine }));
-  const headings = [...new Set(groupClusters.map((keys) => sectionsOf(keys)[0]!.heading ?? '(untitled)'))];
+  const heading = (keys: string[]) => sectionsOf(keys)[0]!.heading ?? '(untitled)';
+  const headings = [...new Set(groupClusters.map(heading))];
+
+  // Copies that have DRIFTED (near-duplicates, not the same text) must not be
+  // replaced unattended: the pointer would delete the text that differs, and
+  // with it the evidence of a conflict. Same text = equal after collapsing
+  // whitespace and line endings.
+  const sameText = (s: InstructionSection) => s.text.replace(/\s+/g, ' ').trim();
+  const drifted = groupClusters.filter((keys) => new Set(sectionsOf(keys).map(sameText)).size > 1).map(heading);
+  const counts = files
+    .map((f, i) => `${names[i]} ${shared(f)} of ${Math.max(shared(f), mirrors.comparable.get(f) ?? 0)}`)
+    .join(', ');
 
   return {
     id: mirrorIssueId(files.map((f) => idPath.get(f) ?? f)),
@@ -556,25 +578,35 @@ function mirrorIssue(
     summary:
       `These ${files.length} instruction files appear to be copies of one another: ${groupClusters.length} ` +
       'section(s) have the same or nearly the same text in more than one of them, covering most of at least one ' +
-      'file. That is common when copies are kept in step for tools that read different files, or generated. ' +
-      'Reported once for the group rather than once per section. Every tool that loads more than one of them ' +
-      `pays about ${duplicateTokens} extra tokens per session, and copies tend to drift apart.`,
+      `file (shared sections per file: ${counts}). That is common when copies are kept in step for tools that ` +
+      'read different files, or generated. Reported once for the group rather than once per section. Every tool ' +
+      `that loads more than one of them pays about ${duplicateTokens} extra tokens per session, and copies tend ` +
+      'to drift apart.' +
+      (drifted.length > 0
+        ? ` The copies already differ in ${drifted.length} section(s): ${snippet(drifted.join(', '), 200)}.`
+        : ''),
     filePaths: files,
     locations,
-    evidence: [
-      ...files.map((f, i) => `${names[i]}: ${shared(f)} of ${Math.max(shared(f), mirrors.comparable.get(f) ?? 0)} sections also appear in another listed file`),
-      `Shared sections: ${snippet(headings.join(', '), 200)}`,
-      `Duplicated size: ~${duplicateTokens} tokens`,
-    ],
+    // The member files and shared headings. Counts and sizes live in the
+    // summary; identity is `fingerprintKey`, so neither moves the fingerprint.
+    evidence: [...names.map((n) => `Mirrored file: ${n}`), `Shared sections: ${snippet(headings.join(', '), 200)}`],
     recommendation:
-      `Consider keeping one canonical file (here ${canonicalName}) and replacing the others with a short pointer ` +
+      (drifted.length > 0
+        ? `Reconcile the sections that differ (${snippet(drifted.join(', '), 120)}) first: decide which text is ` +
+          'right, since a pointer would discard the other. Then consider '
+        : 'Consider ') +
+      `keeping one canonical file (here ${canonicalName}) and replacing the others with a short pointer ` +
       `such as "Follow ${path.basename(canonicalName)}", or a symlink where the tool follows one. If a generator ` +
       'writes these files, configure it to write the pointer instead. Keep only genuinely tool-specific guidance ' +
       'in the other files.',
     // The consolidation recipe replaces each copied section outside the
-    // canonical (first-listed) file with a pointer to it, as for any
-    // multi-file duplicate.
-    autoApplySafe: true,
+    // canonical (first-listed) file with a pointer to it. Only safe when every
+    // copy is the same text; otherwise advisory.
+    autoApplySafe: drifted.length === 0,
+    // One identity per mirror group, keyed on its canonical file: editing a
+    // copied section, or the group gaining or losing a member, is the same
+    // finding (baseline, trend, SARIF), not "resolved + new".
+    fingerprintKey: `duplicate-mirror:${idPath.get(canonical) ?? canonical}`,
     confidence: 0.8,
   };
 }

@@ -324,7 +324,11 @@ workflow file, listing its unpinned actions). They carry a `fingerprintKey`, and
 fingerprint hashes only the category and that key. Pinning one action, adding one rule or adding
 an instruction file keeps them baselined, and so does a grouped finding that grows (one more
 unpinned action): both are `info` and do not count toward the health score. A workflow that gets
-its first unpinned action is a new finding. `review-diff --fail-on-regression`, the scan trend
+its first unpinned action is a new finding. The mirrored-instruction-files finding (one `warning`
+per group of files that copy each other) is keyed the same way, on its canonical file: editing a
+copied section, or a copy turning into a pointer, keeps it. Its consolidation fix is offered only
+when every copy is the same text; copies that have drifted are reported with the sections that
+differ and must be reconciled by hand. `review-diff --fail-on-regression`, the scan trend
 (`trend.newIssueIds`, `trend.resolvedIssueIds` and their counts) and SARIF `partialFingerprints`
 use the same fingerprint. `fingerprintKey` is an optional field on `PromptCiIssue` and is written
 to `report.json` with the rest of the finding.
