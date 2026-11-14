@@ -635,7 +635,13 @@ function collectRefs(
     const labelPart = m[0].slice(0, m[0].lastIndexOf(']('));
     if (!labelPart.includes('](')) continue;
     const raw = m[1] ?? '';
-    pushLink(stripFragment(stripLinkTitle(raw)), `[...](${raw})`, m.index, raw);
+    // pcic-1ik0.7: this pattern can start at an EARLIER link and run, through
+    // that link's own `](…)` and any prose between, to the last link in the
+    // file. `m.index` is then the first link's position while `raw` is the last
+    // link's target, which put the finding on the wrong line and starved the
+    // moved-link recipe of the `](target)` it looks for. The captured target
+    // belongs to the final `](`, so that is where the reference lives.
+    pushLink(stripFragment(stripLinkTitle(raw)), `[...](${raw})`, m.index + m[0].lastIndexOf(']('), raw);
   }
 
   // Reference-style link definitions: [ref]: docs/missing.md "Title"

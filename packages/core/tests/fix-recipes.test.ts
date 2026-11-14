@@ -359,6 +359,76 @@ describe('structure: broken link whose basename is unique in the tree', () => {
     for (const issue of issues) expect(issue.autoApplySafe).toBeUndefined();
   });
 
+  /**
+   * pcic-1ik0.7 (issue 155): with an inline link EARLIER in the file, the last
+   * broken link was reported at the first link's line and got no edit, because
+   * the nested-link pattern started at the first link and ended at the last.
+   */
+  describe('a broken link that is the last inline link after an earlier one', () => {
+    const CASES: Array<[string, string, number]> = [
+      [
+        'earlier link, heading, prose',
+        '# CLAUDE.md\n\nSee [AGENTS.md](./AGENTS.md) for details.\n\n## B\n\nNew joiners start with the [onboarding checklist](onboarding-checklist.md).\n',
+        7,
+      ],
+      [
+        'earlier link, three lines of prose',
+        '# CLAUDE.md\n\nSee [AGENTS.md](./AGENTS.md).\n\nOne.\nTwo.\nThree.\nStart with the [onboarding checklist](onboarding-checklist.md).\n',
+        8,
+      ],
+      [
+        'earlier link and the broken link on adjacent lines',
+        '# C\n\nSee [AGENTS.md](./AGENTS.md).\n[onboarding checklist](onboarding-checklist.md)\n',
+        4,
+      ],
+      [
+        'earlier link on the same line as the broken one',
+        '# C\n\nSee [AGENTS.md](./AGENTS.md) and [onboarding checklist](onboarding-checklist.md).\n',
+        3,
+      ],
+    ];
+
+    it.each(CASES)('reports its own line and offers the edit: %s', async (_name, claude, line) => {
+      const repo = repoWith({
+        'package.json': MANIFEST,
+        'AGENTS.md': '# Agents\n',
+        'CLAUDE.md': claude,
+        'docs/onboarding-checklist.md': '# Onboarding\n',
+      });
+      const issues = brokenRefIssues(await issuesIn(repo));
+      expect(issues).toHaveLength(1);
+      const issue = issues[0]!;
+      expect(issue.locations).toEqual([{ filePath: path.join(repo, 'CLAUDE.md'), startLine: line }]);
+      expect(issue.autoApplySafe).toBe(true);
+      expect(issue.fixEdits).toEqual([
+        {
+          filePath: path.join(repo, 'CLAUDE.md'),
+          line,
+          find: '](onboarding-checklist.md)',
+          replace: '](./docs/onboarding-checklist.md)',
+        },
+      ]);
+      expect(await applyAll(repo, issues, 'CLAUDE.md')).toBe(
+        claude.replace('](onboarding-checklist.md)', '](./docs/onboarding-checklist.md)'),
+      );
+    });
+
+    it('is unchanged when a link follows the broken one', async () => {
+      const claude =
+        '# C\n\nSee [AGENTS.md](./AGENTS.md).\n\nStart with [the checklist](onboarding-checklist.md).\n\nAlso [AGENTS.md](./AGENTS.md).\n';
+      const repo = repoWith({
+        'package.json': MANIFEST,
+        'AGENTS.md': '# Agents\n',
+        'CLAUDE.md': claude,
+        'docs/onboarding-checklist.md': '# Onboarding\n',
+      });
+      const issues = brokenRefIssues(await issuesIn(repo));
+      expect(issues).toHaveLength(1);
+      expect(issues[0]!.locations).toEqual([{ filePath: path.join(repo, 'CLAUDE.md'), startLine: 5 }]);
+      expect(issues[0]!.autoApplySafe).toBe(true);
+    });
+  });
+
   /** Review finding M3: a link inside a fence or a code span is sample text. */
   it('leaves a link inside a fenced code block alone', async () => {
     const original = '# Agents\n\n```markdown\n[the runbook](./docs/runbook.md)\n```\n';
