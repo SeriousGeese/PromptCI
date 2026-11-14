@@ -1,0 +1,10 @@
+{
+  "name": "command-scope-fixture",
+  "private": true,
+  "scripts": {
+    "build": "echo root build",
+    "build:web": "echo root build web",
+    "build:api": "echo root build api",
+    "check": "echo root check"
+  }
+}
