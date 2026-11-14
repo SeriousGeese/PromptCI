@@ -713,6 +713,24 @@ export const REPO_CHECKS_PROVENANCE: readonly CheckProvenance[] = [
     lastVerified: VERIFIED,
   },
 
+  // ── cross-tool-parity ───────────────────────────────────────────────────────
+  {
+    id: 'cross-tool-parity',
+    detector: 'cross-tool-parity',
+    title: 'A tool instruction file disagrees with AGENTS.md',
+    kind: 'repo-fact',
+    claim:
+      'When another tool\'s instruction file in the same directory names a different package manager or test runner than AGENTS.md, or tells the reader to edit a path AGENTS.md says not to edit, the two files give different instructions for the same repository.',
+    appliesTo: 'all',
+    sources: [],
+    thresholds: [
+      { name: 'MIRROR_SIMILARITY', value: 0.9, unit: 'share of distinct lines in common', where: 'cross-tool-parity.ts:MIRROR_SIMILARITY', source: 'unverified' },
+      { name: 'finding confidence (package manager, one file rules out the other)', value: 0.75, unit: 'confidence score', where: 'cross-tool-parity.ts:compareToAnchor', source: 'unverified' },
+      { name: 'finding confidence (test runner)', value: 0.55, unit: 'confidence score', where: 'cross-tool-parity.ts:compareToAnchor', source: 'unverified' },
+    ],
+    lastVerified: VERIFIED,
+  },
+
   // ── version-conflicts ───────────────────────────────────────────────────────
   {
     id: 'version-conflicts',
