@@ -1061,16 +1061,21 @@ function findMissingScript(
 /** Closing quotes, backticks and brackets trailing a token (pcic-1ik0.12). */
 const TRAILING_CLOSERS_RE = /["'`)\]}]+$/;
 
-/** The opener that a closer pairs with. */
-const OPENER_FOR: Readonly<Record<string, string>> = { '"': '"', "'": "'", ')': '(', ']': '[', '}': '{' };
+/**
+ * The opener that a closer pairs with. Square brackets and braces are left
+ * out: `[script]` and `{name}` are placeholders, and the bracket is what
+ * SCRIPT_PATTERN_RE / PLACEHOLDER_RE recognise them by (PR #209 review).
+ */
+const OPENER_FOR: Readonly<Record<string, string>> = { '"': '"', "'": "'", ')': '(' };
 
 /** Any quote, backtick or bracket. */
 const PUNCTUATION_RE = /["'`()[\]{}]/;
 
 /**
  * pcic-1ik0.12: the script name inside a token, with trailing closers removed
- * and, when the last removed closer pairs with the token's first character, that
- * opener too (`"build"`, `'typecheck'`, `(build)` are `build` / `typecheck`).
+ * and, when the outermost removed closer pairs with the token's first
+ * character, that opener too (`"build"`, `'typecheck'`, `(build)` are `build` /
+ * `typecheck`). Only one pair is matched: `"'build'"` is `'build`.
  * `punctuated` says whether anything was removed: the token as written is then
  * not the bare name, so no rewrite built from the bare name may touch it.
  */

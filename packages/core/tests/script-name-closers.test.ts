@@ -127,6 +127,44 @@ describe('a closing quote, backtick or bracket is not part of a script name (pci
     expect(fs.readFileSync(path.join(repo, 'AGENTS.md'), 'utf-8')).toBe(before);
   });
 
+  // PR #209 delta review: a bracketed word is a placeholder, not a script name.
+  // Stripping `[`…`]` as a matched pair hid the bracket from SCRIPT_PATTERN_RE.
+  it.each([
+    ['a code span', 'Run `npm run [script-name]` for any script.'],
+    ['a bash fence', '```bash\nnpm run [script]\n```'],
+    ['pnpm in a bash fence', '```bash\npnpm [command]\n```'],
+    ['yarn in a bash fence', '```bash\nyarn [script]\n```'],
+    ['pnpm run in a code span', 'Use `pnpm run [name]`.'],
+    ['prose', 'To run one task, run npm run [task] from the root.'],
+    ['a brace placeholder', '```bash\nnpm run {name}\n```'],
+  ])('reports nothing for a bracketed placeholder in %s', async (_label, body) => {
+    const repo = repoWith({ 'package.json': QUOTED_MANIFEST, 'AGENTS.md': `# Agents\n\n${body}\n` });
+    expect(await commandIssues(repo)).toEqual([]);
+  });
+
+  it('still reports a missing name followed by a stray closing bracket', async () => {
+    const repo = repoWith({ 'package.json': QUOTED_MANIFEST, 'AGENTS.md': '# Agents\n\n```bash\nnpm run tset]\n```\n' });
+    const issues = (await commandIssues(repo)).filter((i) => i.category === 'command_validity');
+    expect(issues).toHaveLength(1);
+    expect(issues[0]!.summary).toContain('npm script "tset" does not appear');
+  });
+
+  // PR #209 delta review: the half of the guard that looks inside the names.
+  // An unmatched opener or a quote mid-token survives the strip; main rewrote
+  // both to `npm run build-frontend`, deleting the quote.
+  it.each([
+    ['an opening quote only', 'npm run "build-frontedn'],
+    ['a quote inside the token', 'npm run build"frontedn'],
+  ])('offers no edit for %s', async (_label, line) => {
+    const text = `# Agents\n\n\`\`\`bash\n${line}\n\`\`\`\n`;
+    const repo = repoWith({ 'package.json': QUOTED_MANIFEST, 'AGENTS.md': text });
+    for (const issue of (await commandIssues(repo)).filter((i) => i.category === 'command_validity')) {
+      expect(issue.fixEdits).toBeUndefined();
+      expect(issue.autoApplySafe).toBeUndefined();
+    }
+    expect(fs.readFileSync(path.join(repo, 'AGENTS.md'), 'utf-8')).toBe(text);
+  });
+
   it('reports nothing for a quoted script name that exists (a matched leading quote is stripped too)', async () => {
     for (const body of ['```bash\nnpm run "build-frontend"\n```', "```bash\nnpm run 'typecheck' -- --watch\n```", '`pnpm "build-frontend"`']) {
       const repo = repoWith({ 'package.json': QUOTED_MANIFEST, 'AGENTS.md': `# Agents\n\n${body}\n` });

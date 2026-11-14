@@ -15,6 +15,14 @@ npm run "build-frontend"
 npm run 'typecheck' -- --watch
 ```
 
+A bracketed or braced word is a placeholder, not a script name, so these stay
+clean too:
+
+```bash
+npm run [script]
+npm run {name}
+```
+
 ## Advisory
 
 This script does not exist. It is reported under its bare name, and because
