@@ -29,22 +29,17 @@ const PAGES = {
     title: 'Claude API docs: Prompting best practices',
     readOn: '2026-11-13',
   },
-  anthContext: { url: 'https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents', title: 'Anthropic engineering: Effective context engineering for AI agents', readOn: '2026-11-14' },
+  anthContext: { url: 'https://www.anthropic.com/research/effective-context-engineering-for-ai-agents', title: 'Anthropic engineering: Effective context engineering for AI agents', readOn: '2026-11-14' },
   codex: { url: 'https://learn.chatgpt.com/docs/agent-configuration/agents-md', title: 'Codex docs: AGENTS.md (redirect target of developers.openai.com/codex/guides/agents-md)', readOn: '2026-11-13' },
   agentsMd: { url: 'https://agents.md/', title: 'agents.md: the AGENTS.md format', readOn: '2026-11-13' },
-  cursor: { url: 'https://cursor.com/docs/context/rules', title: 'Cursor docs: Rules', readOn: '2026-11-13' },
-  windsurf: { url: 'https://docs.devin.ai/desktop/cascade/memories', title: 'Windsurf Cascade memories and rules (redirect target of docs.windsurf.com)', readOn: '2026-11-13' },
+  cursor: { url: 'https://cursor.com/docs/rules', title: 'Cursor docs: Rules', readOn: '2026-11-13' },
+  windsurf: { url: 'https://docs.devin.ai/desktop/devin-local/customizations', title: 'Devin Local docs: Customizations (docs.windsurf.com redirects here; Windsurf has no docs of its own to read, so this is another product\'s documentation)', readOn: '2026-11-13' },
   ghRepo: {
-    url: 'https://docs.github.com/en/copilot/how-tos/configure-custom-instructions/add-repository-instructions',
+    url: 'https://docs.github.com/en/copilot/how-tos/copilot-on-github/customize-copilot/add-custom-instructions/add-repository-instructions',
     title: 'GitHub Docs: Adding repository custom instructions for GitHub Copilot',
     readOn: '2026-11-13',
   },
-  ghConcept: { url: 'https://docs.github.com/en/copilot/concepts/prompting/response-customization', title: 'GitHub Docs: About customizing GitHub Copilot responses', readOn: '2026-11-14' },
-  ghGuide: {
-    url: 'https://docs.github.com/en/copilot/how-tos/use-copilot-agents/request-a-code-review/configure-coding-guidelines',
-    title: 'GitHub Docs: Configuring coding guidelines for Copilot code review',
-    readOn: '2026-11-14',
-  },
+  ghConcept: { url: 'https://docs.github.com/en/copilot/concepts/prompting-and-context/custom-instructions', title: 'GitHub Docs: About customizing GitHub Copilot responses', readOn: '2026-11-14' },
   gemini: { url: 'https://geminicli.com/docs/cli/gemini-md/', title: 'Gemini CLI docs: GEMINI.md context files', readOn: '2026-11-13' },
 } as const;
 
@@ -73,7 +68,7 @@ export const INSTRUCTION_ADVICE_PROVENANCE: readonly CheckProvenance[] = [
       src('ccMemory', 'supports', 'Says CLAUDE.md is read at the start of every session and advises under 200 lines per file because longer files consume more context and reduce adherence, and that imports do not reduce the cost.'),
       src('ccBest', 'supports', 'Says every CLAUDE.md line takes a little of the attention on every task and that a line gets lost once the file has grown long.'),
       src('cursor', 'supports', 'Says rule contents are included at the start of the model context and advises keeping rules under 500 lines.'),
-      src('windsurf', 'supports', 'Says rules are injected at the start of every session and advises short specific rules because they cost tokens on every message; the page states no character limit.'),
+      src('windsurf', 'context', 'Devin Local docs, not Windsurf docs: Says rules are injected at the start of every session and advises short specific rules because they cost tokens on every message; the page states no character limit.'),
       src('ghConcept', 'supports', 'Says custom instructions are sent with every chat message, so they should be broadly applicable to most requests; the page states no length limit.'),
       src('gemini', 'supports', 'Says the CLI concatenates all found context files and sends them to the model with every prompt; the page states no size limit.'),
       src('codex', 'supports', 'Says Codex stops adding AGENTS.md files once their combined size reaches project_doc_max_bytes, 32 KiB by default.'),
@@ -87,6 +82,8 @@ export const INSTRUCTION_ADVICE_PROVENANCE: readonly CheckProvenance[] = [
       heuristic('contextBudget high multiplier', 2, 'times the configured contextBudget', 'detectors.ts:DETECTORS context-bloat entry'),
       heuristic('fileContextBudget high multiplier', 2.5, 'times the configured fileContextBudget', 'detectors.ts:DETECTORS context-bloat entry'),
     ],
+    caveat:
+      'geminicli.com carries a banner (read 2026-11-14): Gemini CLI was replaced by Antigravity CLI on June 18th, 2026 for unpaid-tier and Google One users, and it has not been optimized for Gemini 4 Argon; a claim about gemini-cli may not hold for the replacement.',
     lastVerified: V14,
   },
   {
@@ -94,9 +91,11 @@ export const INSTRUCTION_ADVICE_PROVENANCE: readonly CheckProvenance[] = [
     detector: 'context-bloat',
     title: 'Copilot instructions file line limit',
     kind: 'tool-fact',
-    claim: 'GitHub recommends keeping a Copilot instructions file under 1,000 lines and warns that a longer file may be truncated, degrading response quality.',
+    claim: 'A Copilot instructions file of more than 1,000 lines may be truncated or degrade response quality.',
     appliesTo: ['copilot'],
-    sources: [],
+    sources: [
+      src('ghRepo', 'context', 'The only length statement is in the sample prompt for generating the file, which says instructions must be no longer than 2 pages; the page does not mention 1,000 lines or 1,000 characters.'),
+    ],
     unverified: true,
     thresholds: [heuristic('copilotLineWarning', 1000, 'lines per copilot-instructions file', 'context-bloat.ts:DEFAULTS.copilotLineWarning')],
     lastVerified: V13,
@@ -118,6 +117,7 @@ export const INSTRUCTION_ADVICE_PROVENANCE: readonly CheckProvenance[] = [
   },
   {
     id: 'context-bloat/readme-dominance',
+    unverified: true,
     detector: 'context-bloat',
     title: 'README carrying most of the agent context',
     kind: 'opinion',
@@ -145,21 +145,35 @@ export const INSTRUCTION_ADVICE_PROVENANCE: readonly CheckProvenance[] = [
     kind: 'tool-fact',
     claim:
       'A date, timestamp, branch name, current-task line or pasted scan report in an always-loaded instruction file changes the prompt prefix whenever it is edited, so the cached prefix is rebuilt and the next request is slower and costlier.',
-    appliesTo: 'all',
+    appliesTo: ['claude-code'],
+    refuted: true,
+    sources: [
+      src('ccCache', 'contradicts', 'Says that editing CLAUDE.md in the middle of a session does not invalidate the cache, because project-root and user-level CLAUDE.md files are read once at session start and the edit applies only after /clear, /compact or a restart.'),
+      src('apiCache', 'context', 'The Claude API (not a Claude Code page) says cache hits need identical prompt segments up to the breakpoint and that a change at one level invalidates that level and all later ones; see prompt-cache-friendliness/volatile-content-api.'),
+    ],
+    lastVerified: V14,
+  },
+  {
+    id: 'prompt-cache-friendliness/volatile-content-api',
+    detector: 'prompt-cache-friendliness',
+    title: 'A changed prompt prefix invalidates the Claude API cache',
+    kind: 'tool-fact',
+    claim:
+      'On the Claude API a cache hit requires every segment of the prompt up to the cache breakpoint to be identical, and a change at one level invalidates that level and every later one.',
+    appliesTo: 'n/a',
     sources: [
       src('apiCache', 'supports', 'Says cache hits require 100 percent identical prompt segments up to the cache breakpoint and that a change at one level invalidates that level and all later levels.'),
-      src('ccCache', 'supports', 'Says a change anywhere in the prefix recomputes everything after it and that CLAUDE.md sits in the project-context layer, but also that a mid-session CLAUDE.md edit does not invalidate the cache because the file is read once at session start and applies at the next /clear, /compact or restart.'),
-      src('ghGuide', 'context', 'The prompt for generating a Copilot instructions file says instructions must not be task specific, which matches the current-task and branch lines but is not a caching claim.'),
     ],
     lastVerified: V14,
   },
   {
     id: 'prompt-cache-friendliness/local-paths',
+    refuted: true,
     detector: 'prompt-cache-friendliness',
     title: 'Absolute local machine paths in instructions',
     kind: 'tool-fact',
     claim: 'Absolute local machine paths in an always-loaded instruction file differ between environments and so prevent prompt-cache reuse across them.',
-    appliesTo: 'all',
+    appliesTo: ['claude-code'],
     sources: [
       src(
         'ccCache',
@@ -171,6 +185,7 @@ export const INSTRUCTION_ADVICE_PROVENANCE: readonly CheckProvenance[] = [
   },
   {
     id: 'prompt-cache-friendliness/large-table',
+    unverified: true,
     detector: 'prompt-cache-friendliness',
     title: 'Large table in always-loaded instructions',
     kind: 'opinion',
@@ -192,6 +207,7 @@ export const INSTRUCTION_ADVICE_PROVENANCE: readonly CheckProvenance[] = [
   // ───────────────────────────── negative-instructions ─────────────────────────────
   {
     id: 'negative-instructions',
+    unverified: true,
     detector: 'negative-instructions',
     title: 'Mostly-prohibition instruction files',
     kind: 'opinion',
@@ -215,6 +231,7 @@ export const INSTRUCTION_ADVICE_PROVENANCE: readonly CheckProvenance[] = [
   // ───────────────────────────── buried-critical ─────────────────────────────
   {
     id: 'buried-critical',
+    refuted: true,
     detector: 'buried-critical',
     title: 'Critical instructions near the bottom of a long file',
     kind: 'opinion',
@@ -227,8 +244,8 @@ export const INSTRUCTION_ADVICE_PROVENANCE: readonly CheckProvenance[] = [
         'contradicts',
         'In long-context guidance (20k-plus-token prompts) it says to put long documents at the top above the query, instructions and examples, and that queries at the end can improve response quality by up to 30 percent, which favours later instructions and not earlier ones.',
       ),
-      src('ccMemory', 'supports', 'Says that when an on-demand subdirectory CLAUDE.md or rules file is over a per-file size limit Claude receives only the start of it, so later instructions are not in context.'),
-      src('ccContext', 'supports', 'Says truncation of an over-cap invoked skill keeps the start of the file, so the most important instructions belong near the top of SKILL.md.'),
+      src('ccMemory', 'context', 'About truncation, not weighting: says that when an on-demand subdirectory CLAUDE.md or rules file is over a per-file size limit Claude receives only the start of it, so later instructions are not in context.'),
+      src('ccContext', 'context', 'About truncation, not weighting: says truncation of an over-cap invoked skill keeps the start of the file, so the most important instructions belong near the top of SKILL.md.'),
       src('ccBest', 'context', 'Attributes a CLAUDE.md line that keeps being missed to the file having grown long and says to shorten the file, and says nothing about where in the file a line sits.'),
     ],
     thresholds: [
@@ -241,6 +258,7 @@ export const INSTRUCTION_ADVICE_PROVENANCE: readonly CheckProvenance[] = [
   // ───────────────────────────── vague-guidance ─────────────────────────────
   {
     id: 'vague-guidance/platitudes',
+    unverified: true,
     detector: 'vague-guidance',
     title: 'Non-actionable quality platitudes',
     kind: 'opinion',
@@ -252,7 +270,7 @@ export const INSTRUCTION_ADVICE_PROVENANCE: readonly CheckProvenance[] = [
       src('apiPrompt', 'supports', 'Says Claude responds well to clear explicit instructions and gives a test of whether a colleague with no context would be confused.'),
       src('anthContext', 'supports', 'Names vague high-level guidance that fails to give concrete signals as one of two failure modes for prompt altitude.'),
       src('cursor', 'supports', 'Says rules should be focused, actionable and scoped and should avoid vague guidance.'),
-      src('windsurf', 'supports', 'Advises skipping generic rules such as write good code.'),
+      src('windsurf', 'context', 'Devin Local docs, not Windsurf docs: Advises skipping generic rules such as write good code.'),
     ],
     thresholds: [heuristic('MAX_LINE_LENGTH_TO_FLAG', 120, 'characters in the matching line', 'vague-guidance.ts:MAX_LINE_LENGTH_TO_FLAG')],
     lastVerified: V14,
@@ -272,6 +290,7 @@ export const INSTRUCTION_ADVICE_PROVENANCE: readonly CheckProvenance[] = [
   // ───────────────────────────── agent-practices ─────────────────────────────
   {
     id: 'agent-practices/verification-loop',
+    unverified: true,
     detector: 'agent-practices',
     title: 'Verification loop before reporting done',
     kind: 'opinion',
@@ -289,6 +308,7 @@ export const INSTRUCTION_ADVICE_PROVENANCE: readonly CheckProvenance[] = [
   },
   {
     id: 'agent-practices/grounding',
+    unverified: true,
     detector: 'agent-practices',
     title: 'Read before edit and report failures honestly',
     kind: 'opinion',
@@ -317,6 +337,7 @@ export const INSTRUCTION_ADVICE_PROVENANCE: readonly CheckProvenance[] = [
   },
   {
     id: 'agent-practices/scope-control',
+    unverified: true,
     detector: 'agent-practices',
     title: 'Keep diffs focused',
     kind: 'opinion',
@@ -349,6 +370,7 @@ export const INSTRUCTION_ADVICE_PROVENANCE: readonly CheckProvenance[] = [
   },
   {
     id: 'agent-practices/plan-first',
+    unverified: true,
     detector: 'agent-practices',
     title: 'Outline the approach before coding',
     kind: 'opinion',
@@ -375,13 +397,16 @@ export const INSTRUCTION_ADVICE_PROVENANCE: readonly CheckProvenance[] = [
       src('ccMemory', 'supports', 'Says Claude Code reads AGENTS.md by default only when there is no CLAUDE.md or CLAUDE.local.md in the working directory or above it, so a CLAUDE.md without the rules hides AGENTS.md.'),
       src('gemini', 'supports', 'Shows AGENTS.md only as a context.fileName configuration example and does not say it is read by default.'),
       src('cursor', 'contradicts', 'Says AGENTS.md in the project root or subdirectories is read as an alternative to .cursor/rules, so Cursor does see rules that exist only in AGENTS.md.'),
-      src('windsurf', 'contradicts', 'Says AGENTS.md, AGENTS.local.md and AGENT.md are read as always-on rules at the workspace root and in directories down to the working directory, so Windsurf sees rules that exist only in AGENTS.md.'),
+      src('windsurf', 'context', 'Devin Local docs, not Windsurf docs: Says AGENTS.md, AGENTS.local.md and AGENT.md are read as always-on rules at the workspace root and in directories down to the working directory, so Windsurf sees rules that exist only in AGENTS.md.'),
       src('ghRepo', 'contradicts', 'Says Copilot uses the nearest AGENTS.md in the directory tree and alternatively a root CLAUDE.md or GEMINI.md besides copilot-instructions.md, so Copilot sees rules that exist only in those files.'),
     ],
+    caveat:
+      'geminicli.com carries a banner (read 2026-11-14): Gemini CLI was replaced by Antigravity CLI on June 18th, 2026 for unpaid-tier and Google One users, and it has not been optimized for Gemini 4 Argon; a claim about gemini-cli may not hold for the replacement.',
     lastVerified: V13,
   },
   {
     id: 'agent-practices/forwarding-pointer',
+    refuted: true,
     detector: 'agent-practices',
     title: 'Prose forwarding pointer to AGENTS.md',
     kind: 'tool-fact',
@@ -417,6 +442,7 @@ export const INSTRUCTION_ADVICE_PROVENANCE: readonly CheckProvenance[] = [
   },
   {
     id: 'agent-practices/claude-xml-tags',
+    unverified: true,
     detector: 'agent-practices',
     title: 'Claude-specific XML tags in other tools files',
     kind: 'tool-fact',
@@ -429,12 +455,15 @@ export const INSTRUCTION_ADVICE_PROVENANCE: readonly CheckProvenance[] = [
         'Presents XML tags as an author-chosen structuring technique with consistent descriptive names such as instructions, context and input, and mentions no claude: namespaced tag vocabulary; this is inferred from the page text, not stated.',
       ),
     ],
+    caveat:
+      'geminicli.com carries a banner (read 2026-11-14): Gemini CLI was replaced by Antigravity CLI on June 18th, 2026 for unpaid-tier and Google One users, and it has not been optimized for Gemini 4 Argon; a claim about gemini-cli may not hold for the replacement.',
     lastVerified: V13,
   },
 
   // ───────────────────────────── missing-context ─────────────────────────────
   {
     id: 'missing-context/setup-commands',
+    unverified: true,
     detector: 'missing-context',
     title: 'Install, build, test commands and environment variables',
     kind: 'opinion',
@@ -453,6 +482,7 @@ export const INSTRUCTION_ADVICE_PROVENANCE: readonly CheckProvenance[] = [
   },
   {
     id: 'missing-context/project-type-keywords',
+    unverified: true,
     detector: 'missing-context',
     title: 'Stack-specific build and test context',
     kind: 'opinion',
@@ -472,6 +502,7 @@ export const INSTRUCTION_ADVICE_PROVENANCE: readonly CheckProvenance[] = [
   },
   {
     id: 'missing-context/security-and-secrets',
+    unverified: true,
     detector: 'missing-context',
     title: 'Security and secret-handling guidance',
     kind: 'opinion',
@@ -483,6 +514,7 @@ export const INSTRUCTION_ADVICE_PROVENANCE: readonly CheckProvenance[] = [
   },
   {
     id: 'missing-context/copilot-topic-silence',
+    refuted: true,
     detector: 'missing-context',
     title: 'Copilot reads only its own instruction files',
     kind: 'tool-fact',
@@ -538,6 +570,7 @@ export const INSTRUCTION_ADVICE_PROVENANCE: readonly CheckProvenance[] = [
   },
   {
     id: 'duplicates/cost-and-drift',
+    unverified: true,
     detector: 'duplicates',
     title: 'Duplicate sections cost context and drift apart',
     kind: 'opinion',
@@ -580,6 +613,7 @@ export const INSTRUCTION_ADVICE_PROVENANCE: readonly CheckProvenance[] = [
   // ───────────────────────────── canonical-owner ─────────────────────────────
   {
     id: 'canonical-owner/ambiguous-authority',
+    unverified: true,
     detector: 'canonical-owner',
     title: 'Several files claim to be the canonical source',
     kind: 'opinion',
@@ -594,6 +628,7 @@ export const INSTRUCTION_ADVICE_PROVENANCE: readonly CheckProvenance[] = [
   },
   {
     id: 'canonical-owner/duplicated-behavior',
+    unverified: true,
     detector: 'canonical-owner',
     title: 'Large duplicated behaviour in a tool-specific file',
     kind: 'opinion',

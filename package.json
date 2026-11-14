@@ -15,7 +15,8 @@
     "dev": "vitest",
     "selfscan": "node packages/cli/dist/cli.cjs scan --baseline .promptci/baseline.json --fail-on-new warning --fail-on high",
     "selfscan:update": "node packages/cli/dist/cli.cjs scan --baseline .promptci/baseline.json --update-baseline && node scripts/health-badge.mjs",
-    "check-versions": "node scripts/check-version-sync.mjs"
+    "check-versions": "node scripts/check-version-sync.mjs",
+    "provenance:check": "node scripts/check-provenance.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

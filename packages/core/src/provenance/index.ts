@@ -4,7 +4,15 @@ import { REPO_CHECKS_PROVENANCE } from './repo-checks.js';
 import { TOOL_CONFIG_PROVENANCE } from './tool-config.js';
 
 export * from './types.js';
-export { PROVENANCE_MAX_AGE_DAYS, daysSince, provenanceExpiringSoon, provenanceProblems } from './check.js';
+export {
+  PROVENANCE_MAX_AGE_DAYS,
+  daysSince,
+  provenanceDateProblems,
+  provenanceExpiringSoon,
+  provenanceProblems,
+  provenanceStatus,
+  provenanceStructureProblems,
+} from './check.js';
 
 /**
  * The provenance record of every check family (pcic-kvv3.1). Grouped by what the

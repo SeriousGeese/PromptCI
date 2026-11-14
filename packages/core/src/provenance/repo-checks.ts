@@ -42,7 +42,7 @@ const YARN_RUN = src(
   'Says yarn run checks package.json scripts first and then runs a dependency binary of the same name, and shows yarn <name> as the same thing without the run keyword.',
 );
 const BUN_RUN = src(
-  'https://bun.sh/docs/cli/run',
+  'https://bun.sh/docs/runtime',
   'bun run documentation',
   'supports',
   'Says bun <script> works without run, that a built-in bun command takes precedence over a same-named script, and that bun run resolves binaries from project packages.',
@@ -60,7 +60,7 @@ const NPM_WORKSPACES = src(
   'Documents the workspaces field of package.json, -w and --workspace to target one workspace, and --workspaces to run in all of them; the -ws short form is not mentioned on the page.',
 );
 const PNPM_WORKSPACE_YAML = src(
-  'https://pnpm.io/pnpm-workspace_yaml',
+  'https://pnpm.io/settings',
   'pnpm-workspace.yaml documentation',
   'contradicts',
   'Says pnpm reads workspaces only from pnpm-workspace.yaml and not from the workspaces field of the root package.json, while workspace-manifests.ts merges package.json workspaces globs with pnpm-workspace.yaml globs for every repository whatever its package manager.',
@@ -218,6 +218,12 @@ const REQUEST_ISSUE = src(
   'context',
   'Shows the maintainers discussing maintenance mode and deprecation and an npm warning that request has been deprecated quoted in an October 2022 comment; no 2020 deprecation date appears on the page.',
 );
+const REQUEST_NPM = src(
+  'https://registry.npmjs.org/request/latest',
+  'npm registry entry for the latest request release',
+  'supports',
+  'The registry marks the latest release deprecated with the message: request has been deprecated, see https://github.com/request/request/issues/3142.',
+);
 const CRA_SUNSET = src(
   'https://react.dev/blog/2025/02/14/sunsetting-create-react-app',
   'React blog, sunsetting Create React App',
@@ -255,7 +261,7 @@ const CLIPPY_USAGE = src(
   'https://doc.rust-lang.org/clippy/usage.html',
   'Clippy usage',
   'supports',
-  'Says Clippy runs as the cargo clippy subcommand and checks code for common mistakes and style issues.',
+  'Says Clippy can be used as a cargo subcommand or directly with the clippy-driver binary; the page does not state in one sentence what Clippy is for.',
 );
 const CARGO_FMT = src(
   'https://doc.rust-lang.org/cargo/commands/cargo-fmt.html',
@@ -318,25 +324,25 @@ const DOTNET_TEST = src(
   'Says dotnet test builds the solution and runs the tests with VSTest or Microsoft Testing Platform.',
 );
 const UNITY_MONOBEHAVIOUR_MANUAL = src(
-  'https://docs.unity.com/en-us/engine/current/manual/scripting/get-started/fundamental-unity-types/class-mono-behaviour',
+  'https://docs.unity.com/en-us/engine/6000.6/manual/scripting/get-started/fundamental-unity-types/class-mono-behaviour',
   'Unity manual, MonoBehaviour',
   'supports',
   'Warns that defining a constructor for a MonoBehaviour interferes with the normal operation of Unity, and describes Start and Update as the initialisation and per-frame hooks; it says nothing about empty methods costing performance.',
 );
 const UNITY_MONOBEHAVIOUR_REF = src(
-  'https://docs.unity.com/en-us/engine/current/script-reference/unityengine/monobehaviour',
+  'https://docs.unity.com/en-us/engine/6000.6/script-reference/unityengine/monobehaviour',
   'Unity script reference, MonoBehaviour',
   'supports',
   'Says a MonoBehaviour always exists as a Component of a GameObject and can be instantiated with GameObject.AddComponent; it does not explicitly forbid new and does not mention empty event methods.',
 );
 const UNITY_SERIALIZE_FIELD = src(
-  'https://docs.unity.com/en-us/engine/current/script-reference/unityengine/serializefield',
+  'https://docs.unity.com/en-us/engine/6000.6/script-reference/unityengine/serializefield',
   'Unity script reference, SerializeField',
   'supports',
-  'Says SerializeField forces Unity to serialize a private field, which then appears in the Inspector.',
+  'Says SerializeField forces Unity to serialize a private field and that Unity only serializes public fields by default; the page does not mention the Inspector.',
 );
 const UNITY_META = src(
-  'https://docs.unity.com/en-us/engine/current/manual/assets-and-media/import-assets/asset-metadata',
+  'https://docs.unity.com/en-us/engine/6000.6/manual/assets-and-media/import-assets/asset-metadata',
   'Unity manual, asset metadata',
   'supports',
   'Says Unity creates a .meta file per asset holding its unique ID and import settings, that losing it breaks references to the asset, and that moving an asset outside Unity requires moving its .meta file too; it does not say never to edit it.',
@@ -360,7 +366,7 @@ const GIT_PUSH = src(
   'https://git-scm.com/docs/git-push',
   'git push documentation',
   'context',
-  'Says --force disables the safety checks and can cause the remote repository to lose commits, and recommends --force-with-lease as the safer form.',
+  'Says --force can cause the remote repository to lose commits and describes --force-with-lease as saying you expect the remote to hold the history you are replacing; the page does not recommend one over the other.',
 );
 const GH_SECURE_USE = src(
   'https://docs.github.com/en/actions/reference/security/secure-use',
@@ -375,7 +381,7 @@ const GH_WORKFLOW_SYNTAX = src(
   'Says the commit SHA of a released action version is the safest for stability and security, a branch reference is risky, ./ refers to an action in the same repository, and docker:// references use image tags.',
 );
 const SUPABASE_KEYS = src(
-  'https://supabase.com/docs/guides/api/api-keys',
+  'https://supabase.com/docs/guides/getting-started/api-keys',
   'Supabase API keys',
   'supports',
   'Says the secret and service_role key bypasses every Row Level Security policy and must never be put in a browser, a shipped application or source control.',
@@ -393,10 +399,10 @@ const OWASP_UPLOAD = src(
   'Recommends an allowlist of extensions, not trusting the Content-Type header and setting a file size limit for uploads.',
 );
 const CURSOR_IGNORE = src(
-  'https://cursor.com/docs/context/ignore-files',
+  'https://cursor.com/docs/reference/ignore-file',
   'Cursor ignore files',
-  'supports',
-  'Says Cursor automatically ignores files in .gitignore and blocks Agent and Tab access to files in .cursorignore, with caveats that terminal and MCP tools are not blocked.',
+  'contradicts',
+  'Says Cursor ignores files in .gitignore and also a default ignore list (.env*, *.lock, node_modules/, .git/) and blocks Agent and Tab access to files in .cursorignore, so it skips more than gitignored paths; terminal and MCP tools are not blocked.',
 );
 const CLAUDE_SETTINGS_REFERENCE = src(
   'https://code.claude.com/docs/en/settings-reference',
@@ -477,7 +483,7 @@ export const REPO_CHECKS_PROVENANCE: readonly CheckProvenance[] = [
     kind: 'tool-fact',
     claim:
       'A path that the repository gitignore rules exclude is expected to be missing from a checkout, with the last matching rule winning, deeper gitignore files overriding shallower ones and files under an ignored directory ignored.',
-    appliesTo: 'all',
+    appliesTo: 'n/a',
     sources: [GITIGNORE],
     lastVerified: VERIFIED,
   },
@@ -524,7 +530,7 @@ export const REPO_CHECKS_PROVENANCE: readonly CheckProvenance[] = [
     kind: 'tool-fact',
     claim:
       'npm and pnpm treat run-script as an alias of run, pnpm and yarn and bun also run a script or an installed binary through the bare form, and a built-in command takes precedence over a same-named script.',
-    appliesTo: 'all',
+    appliesTo: 'n/a',
     sources: [NPM_RUN, PNPM_RUN, YARN_RUN, BUN_RUN],
     lastVerified: VERIFIED,
   },
@@ -535,7 +541,7 @@ export const REPO_CHECKS_PROVENANCE: readonly CheckProvenance[] = [
     kind: 'tool-fact',
     claim:
       'pnpm --filter, npm -w and --workspace, and the workspaces globs of package.json or pnpm-workspace.yaml decide which workspace package a script command runs in, with conventional apps, packages and libs roots assumed when none are declared.',
-    appliesTo: 'all',
+    appliesTo: 'n/a',
     sources: [PNPM_FILTER, NPM_WORKSPACES, PNPM_WORKSPACE_YAML],
     lastVerified: VERIFIED,
   },
@@ -546,7 +552,7 @@ export const REPO_CHECKS_PROVENANCE: readonly CheckProvenance[] = [
     kind: 'tool-fact',
     claim:
       'GNU make reads GNUmakefile, then makefile, then Makefile when no -f is given, and a target can come from an explicit rule, a .PHONY name, a pattern rule or a built-in implicit rule.',
-    appliesTo: 'all',
+    appliesTo: 'n/a',
     sources: [GNU_MAKE_NAMES],
     lastVerified: VERIFIED,
   },
@@ -576,7 +582,7 @@ export const REPO_CHECKS_PROVENANCE: readonly CheckProvenance[] = [
     kind: 'tool-fact',
     claim:
       'The packageManager field of package.json names the project package manager as name@version, the lockfile is the fallback signal, and engines.node states the Node.js versions the package works on.',
-    appliesTo: 'all',
+    appliesTo: 'n/a',
     sources: [COREPACK, NPM_PACKAGE_JSON],
     lastVerified: VERIFIED,
   },
@@ -587,7 +593,7 @@ export const REPO_CHECKS_PROVENANCE: readonly CheckProvenance[] = [
     kind: 'tool-fact',
     claim:
       'A pyproject.toml states the required Python version in requires-python or in the Poetry python dependency, and a Poetry project is installed from pyproject.toml rather than from a requirements.txt.',
-    appliesTo: 'all',
+    appliesTo: 'n/a',
     sources: [POETRY_PYPROJECT, PYPA_PYPROJECT],
     lastVerified: VERIFIED,
   },
@@ -615,8 +621,8 @@ export const REPO_CHECKS_PROVENANCE: readonly CheckProvenance[] = [
     kind: 'tool-fact',
     claim:
       'moment is in maintenance mode, request, tslint and node-sass are deprecated, react-scripts belongs to the deprecated Create React App, and enzyme has no adapter for current React versions.',
-    appliesTo: 'all',
-    sources: [MOMENT_STATUS, REQUEST_ISSUE, TSLINT_README, LIBSASS_DEPRECATED, CRA_SUNSET, ENZYME_README],
+    appliesTo: 'n/a',
+    sources: [MOMENT_STATUS, REQUEST_NPM, REQUEST_ISSUE, TSLINT_README, LIBSASS_DEPRECATED, CRA_SUNSET, ENZYME_README],
     lastVerified: VERIFIED,
   },
   {
@@ -625,13 +631,27 @@ export const REPO_CHECKS_PROVENANCE: readonly CheckProvenance[] = [
     title: 'APIs that a framework major version removed or replaced',
     kind: 'tool-fact',
     claim:
-      'ReactDOM.render was deprecated in React 18 and removed in React 19, getInitialProps belongs to the Next.js Pages Router only, and Angular 17 and later projects default to standalone components rather than NgModules.',
-    appliesTo: 'all',
-    sources: [REACT_19, REACT_18, NEXT_GET_INITIAL_PROPS, NEXT_MIGRATION_SUPPORTS, ANGULAR_COMPONENTS, ANGULAR_NGMODULES],
+      'ReactDOM.render was deprecated in React 18 and removed in React 19, and getInitialProps belongs to the Next.js Pages Router only.',
+    appliesTo: 'n/a',
+    sources: [REACT_19, REACT_18, NEXT_GET_INITIAL_PROPS, NEXT_MIGRATION_SUPPORTS],
     thresholds: [
       { name: 'ReactDOM.render warning at React major', value: 18, unit: 'major version', where: 'dependency-staleness.ts:checkReactRender', source: REACT_18 },
       { name: 'ReactDOM.render removed at React major', value: 19, unit: 'major version', where: 'dependency-staleness.ts:checkReactRender', source: REACT_19 },
-      { name: 'NgModule guidance stale from Angular major', value: 17, unit: 'major version', where: 'dependency-staleness.ts:checkNgModule', source: 'unverified' },
+    ],
+    lastVerified: VERIFIED,
+  },
+
+  {
+    id: 'dependency-staleness/angular-standalone-default',
+    refuted: true,
+    detector: 'dependency-staleness',
+    title: 'Angular standalone components by default',
+    kind: 'tool-fact',
+    claim: 'Angular 17 and later projects default to standalone components rather than NgModules.',
+    appliesTo: 'n/a',
+    sources: [ANGULAR_COMPONENTS, { ...ANGULAR_NGMODULES, stance: 'context' }],
+    thresholds: [
+      { name: 'NgModule guidance stale from Angular major (the detector value; the standalone default arrives in 19.0.0)', value: 17, unit: 'major version', where: 'dependency-staleness.ts:checkNgModule', source: 'unverified' },
     ],
     lastVerified: VERIFIED,
   },
@@ -655,7 +675,7 @@ export const REPO_CHECKS_PROVENANCE: readonly CheckProvenance[] = [
     kind: 'tool-fact',
     claim:
       'npm, pnpm, yarn and bun run a package script through the run form, and npm test, start, stop and restart are built-in lifecycle commands rather than user scripts.',
-    appliesTo: 'all',
+    appliesTo: 'n/a',
     sources: [NPM_RUN, PNPM_RUN, YARN_RUN, BUN_RUN],
     lastVerified: VERIFIED,
   },
@@ -666,7 +686,7 @@ export const REPO_CHECKS_PROVENANCE: readonly CheckProvenance[] = [
     kind: 'tool-fact',
     claim:
       'Running tsc with --noEmit type-checks without writing output files, while running tsc without it emits compiled output as a build.',
-    appliesTo: 'all',
+    appliesTo: 'n/a',
     sources: [TS_NOEMIT],
     lastVerified: VERIFIED,
   },
@@ -716,7 +736,7 @@ export const REPO_CHECKS_PROVENANCE: readonly CheckProvenance[] = [
     kind: 'tool-fact',
     claim:
       'A difference in major version is significant for most frameworks, a difference in Go minor version is significant, and for Rust crates below 1.0 a change of minor version is a compatibility break.',
-    appliesTo: 'all',
+    appliesTo: 'n/a',
     sources: [CARGO_SEMVER_ZERO, GO_MOD_REF, RUST_EDITIONS],
     lastVerified: VERIFIED,
   },
@@ -740,12 +760,13 @@ export const REPO_CHECKS_PROVENANCE: readonly CheckProvenance[] = [
   },
   {
     id: 'competing-tech-conflicts/nextjs-routers',
+    refuted: true,
     detector: 'competing-tech-conflicts',
     title: 'Pages Router and App Router treated as exclusive',
     kind: 'tool-fact',
     claim:
       'The Next.js Pages Router and App Router are mutually exclusive routing strategies, so instruction files recommending one and the other conflict.',
-    appliesTo: 'all',
+    appliesTo: 'n/a',
     sources: [NEXT_MIGRATION],
     lastVerified: VERIFIED,
   },
@@ -775,7 +796,7 @@ export const REPO_CHECKS_PROVENANCE: readonly CheckProvenance[] = [
     kind: 'tool-fact',
     claim:
       'Node.js 16 and earlier, Python 3.9 and earlier, Python 2, .NET 5 and earlier and Vue 2 are past end of life, and Go 1.17 and earlier pre-date generics.',
-    appliesTo: 'all',
+    appliesTo: 'n/a',
     sources: [NODE_RELEASES, PYTHON_DEVGUIDE, DOTNET_POLICY, VUE2_EOL, GO_118],
     thresholds: [
       { name: 'Node.js newest flagged major', value: 16, unit: 'major version', where: 'stale-instructions.ts:OLD_VERSION_PATTERNS', source: NODE_RELEASES },
@@ -792,7 +813,7 @@ export const REPO_CHECKS_PROVENANCE: readonly CheckProvenance[] = [
     kind: 'tool-fact',
     claim:
       'React 16 and earlier, Next.js 9 and earlier, Angular 9 and earlier, Webpack 3 and earlier, Babel 6 and earlier, TypeScript 3 and earlier and Unity 2019 and earlier are old enough that instructions naming them are stale.',
-    appliesTo: 'all',
+    appliesTo: 'n/a',
     sources: [],
     unverified: true,
     thresholds: [
@@ -815,7 +836,7 @@ export const REPO_CHECKS_PROVENANCE: readonly CheckProvenance[] = [
     kind: 'tool-fact',
     claim:
       'A GitHub Actions uses reference pinned to a tag or branch can be moved by whoever controls the action repository, while a full commit SHA cannot be repointed.',
-    appliesTo: 'all',
+    appliesTo: 'n/a',
     sources: [GH_SECURE_USE, GH_WORKFLOW_SYNTAX],
     thresholds: [
       { name: 'SHA-1 commit id length', value: 40, unit: 'hex characters', where: 'action-pinning.ts:FULL_SHA_RE', source: 'unverified' },
@@ -830,7 +851,7 @@ export const REPO_CHECKS_PROVENANCE: readonly CheckProvenance[] = [
     kind: 'tool-fact',
     claim:
       'A local ./ action lives in the same repository and a docker:// action names an image rather than a git ref, so a commit SHA pin does not apply to either.',
-    appliesTo: 'all',
+    appliesTo: 'n/a',
     sources: [GH_WORKFLOW_SYNTAX],
     lastVerified: VERIFIED,
   },
@@ -861,6 +882,7 @@ export const REPO_CHECKS_PROVENANCE: readonly CheckProvenance[] = [
   },
   {
     id: 'security-pack/secret-handling',
+    unverified: true,
     detector: 'security-pack',
     title: 'Instructions should say never to print or commit secrets',
     kind: 'opinion',
@@ -877,12 +899,13 @@ export const REPO_CHECKS_PROVENANCE: readonly CheckProvenance[] = [
     kind: 'tool-fact',
     claim:
       'The Supabase service role key bypasses Row Level Security and must only be used server-side, never in browser code, logs or committed files.',
-    appliesTo: 'all',
+    appliesTo: 'n/a',
     sources: [SUPABASE_KEYS],
     lastVerified: VERIFIED,
   },
   {
     id: 'security-pack/upload-validation',
+    unverified: true,
     detector: 'security-pack',
     title: 'Instructions should define upload validation',
     kind: 'opinion',
@@ -894,6 +917,7 @@ export const REPO_CHECKS_PROVENANCE: readonly CheckProvenance[] = [
   },
   {
     id: 'security-pack/destructive-commands',
+    unverified: true,
     detector: 'security-pack',
     title: 'Destructive commands need safety language',
     kind: 'opinion',
@@ -910,12 +934,13 @@ export const REPO_CHECKS_PROVENANCE: readonly CheckProvenance[] = [
     kind: 'tool-fact',
     claim:
       'A gitignore negation cannot re-include a file under an excluded parent directory, so ignoring .promptci with a carve-out needs .promptci/* rather than .promptci/, and a line ignores a directory only when a path segment matches its name exactly.',
-    appliesTo: 'all',
+    appliesTo: 'n/a',
     sources: [GITIGNORE],
     lastVerified: VERIFIED,
   },
   {
     id: 'security-pack/generated-directories',
+    refuted: true,
     detector: 'security-pack',
     title: 'Unignored generated directories reach AI tools',
     kind: 'tool-fact',
@@ -934,7 +959,7 @@ export const REPO_CHECKS_PROVENANCE: readonly CheckProvenance[] = [
     kind: 'tool-fact',
     claim:
       'In Next.js the app directory is the App Router whose layouts and pages are Server Components by default, getStaticProps and getServerSideProps and getInitialProps are Pages Router APIs, and the config file is next.config.js, .mjs or .ts.',
-    appliesTo: 'all',
+    appliesTo: 'n/a',
     sources: [NEXT_SERVER_CLIENT, NEXT_MIGRATION_SUPPORTS, NEXT_GET_INITIAL_PROPS, NEXT_CONFIG, NEXT_STRUCTURE],
     lastVerified: VERIFIED,
   },
@@ -945,7 +970,7 @@ export const REPO_CHECKS_PROVENANCE: readonly CheckProvenance[] = [
     kind: 'tool-fact',
     claim:
       'A Pipfile marks a Pipenv project, an environment.yml marks a Conda environment, a [tool.poetry] table marks a Poetry project, and pytest runs tests by discovering test_*.py or *_test.py files.',
-    appliesTo: 'all',
+    appliesTo: 'n/a',
     sources: [PIPENV_PIPFILE, CONDA_ENVIRONMENTS, POETRY_PYPROJECT, PYTEST_START],
     lastVerified: VERIFIED,
   },
@@ -956,7 +981,7 @@ export const REPO_CHECKS_PROVENANCE: readonly CheckProvenance[] = [
     kind: 'tool-fact',
     claim:
       'The rust-version key of Cargo.toml is the minimum supported Rust version, and cargo test, cargo clippy and cargo fmt are the standard Rust verification commands.',
-    appliesTo: 'all',
+    appliesTo: 'n/a',
     sources: [CARGO_RUST_VERSION, CARGO_TEST, CLIPPY_USAGE, CARGO_FMT],
     lastVerified: VERIFIED,
   },
@@ -967,7 +992,7 @@ export const REPO_CHECKS_PROVENANCE: readonly CheckProvenance[] = [
     kind: 'tool-fact',
     claim:
       'A go.mod file in the root directory defines a Go module, and go test with the three-dot package pattern runs the tests of every package in it.',
-    appliesTo: 'all',
+    appliesTo: 'n/a',
     sources: [GO_MOD_REF, GO_TEST],
     lastVerified: VERIFIED,
   },
@@ -978,7 +1003,7 @@ export const REPO_CHECKS_PROVENANCE: readonly CheckProvenance[] = [
     kind: 'tool-fact',
     claim:
       'A .sln or .csproj file marks a .NET project, its TargetFramework is a moniker such as net8.0, netcoreapp3.1 and net5.0 are out of support, and dotnet build and dotnet test are the validation commands.',
-    appliesTo: 'all',
+    appliesTo: 'n/a',
     sources: [DOTNET_FRAMEWORKS, DOTNET_POLICY, DOTNET_BUILD, DOTNET_TEST],
     lastVerified: VERIFIED,
   },
@@ -988,8 +1013,8 @@ export const REPO_CHECKS_PROVENANCE: readonly CheckProvenance[] = [
     title: 'Unity pack',
     kind: 'tool-fact',
     claim:
-      'A MonoBehaviour is attached to a GameObject rather than created with a constructor, SerializeField exposes a private field to the Inspector, a missing .meta file breaks asset references, and the Unity Test Framework runs Edit Mode and Play Mode tests.',
-    appliesTo: 'all',
+      'A MonoBehaviour is attached to a GameObject rather than created with a constructor, SerializeField makes Unity serialize a private field, a missing .meta file breaks asset references, and the Unity Test Framework runs Edit Mode and Play Mode tests.',
+    appliesTo: 'n/a',
     sources: [
       UNITY_MONOBEHAVIOUR_MANUAL,
       UNITY_MONOBEHAVIOUR_REF,
@@ -1001,6 +1026,7 @@ export const REPO_CHECKS_PROVENANCE: readonly CheckProvenance[] = [
   },
   {
     id: 'framework-packs/verification-guidance',
+    unverified: true,
     detector: 'framework-packs',
     title: 'Instructions should name the verification command',
     kind: 'opinion',

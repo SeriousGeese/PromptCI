@@ -42,9 +42,9 @@ const PAGES = {
     title: 'GitHub Copilot CLI: command reference',
     readOn: D2,
   },
-  cursorRules: { url: 'https://cursor.com/docs/context/rules', title: 'Cursor: Rules', readOn: D2 },
+  cursorRules: { url: 'https://cursor.com/docs/rules', title: 'Cursor: Rules', readOn: D2 },
   ghRepoInstructions: {
-    url: 'https://docs.github.com/en/copilot/how-tos/configure-custom-instructions/add-repository-instructions',
+    url: 'https://docs.github.com/en/copilot/how-tos/copilot-on-github/customize-copilot/add-custom-instructions/add-repository-instructions',
     title: 'GitHub Docs: Adding repository custom instructions for Copilot',
     readOn: D2,
   },
@@ -54,12 +54,12 @@ const PAGES = {
     readOn: D2,
   },
   vscodeInstructions: {
-    url: 'https://code.visualstudio.com/docs/copilot/customization/custom-instructions',
+    url: 'https://code.visualstudio.com/docs/agent-customization/custom-instructions',
     title: 'VS Code: Custom instructions',
     readOn: D2,
   },
-  windsurfRules: { url: 'https://docs.devin.ai/desktop/cascade/memories', title: 'Windsurf (docs.devin.ai): Rules and memories', readOn: D2 },
-  rfc8259: { url: 'https://www.rfc-editor.org/rfc/rfc8259', title: 'RFC 8259: The JSON Data Interchange Format', readOn: D2 },
+  windsurfRules: { url: 'https://docs.devin.ai/desktop/devin-local/customizations', title: 'Devin Local docs: Customizations (docs.windsurf.com redirects here; Windsurf has no docs of its own to read, so this is another product\'s documentation)', readOn: D2 },
+  rfc8259: { url: 'https://www.rfc-editor.org/info/rfc8259/', title: 'RFC 8259: The JSON Data Interchange Format', readOn: D2 },
 } as const satisfies Record<string, Page>;
 
 const cite = (page: Page, stance: SourceStance, note: string): ProvenanceSource => ({ ...page, stance, note });
@@ -211,6 +211,7 @@ export const TOOL_CONFIG_PROVENANCE: readonly CheckProvenance[] = [
   },
   {
     id: 'ai-config-subagents/model-values',
+    refuted: true,
     detector: 'ai-config-subagents',
     title: 'Subagent model values',
     kind: 'tool-fact',
@@ -228,6 +229,7 @@ export const TOOL_CONFIG_PROVENANCE: readonly CheckProvenance[] = [
   },
   {
     id: 'ai-config-subagents/tool-names',
+    refuted: true,
     detector: 'ai-config-subagents',
     title: 'Subagent tool names',
     kind: 'tool-fact',
@@ -358,6 +360,7 @@ export const TOOL_CONFIG_PROVENANCE: readonly CheckProvenance[] = [
   },
   {
     id: 'ai-config-mcp/duplicate-names',
+    unverified: true,
     detector: 'ai-config-mcp',
     title: 'Duplicate MCP server names',
     kind: 'tool-fact',
@@ -414,6 +417,7 @@ export const TOOL_CONFIG_PROVENANCE: readonly CheckProvenance[] = [
   },
   {
     id: 'ai-config-cursor-rules/no-trigger',
+    refuted: true,
     detector: 'ai-config-cursor-rules',
     title: 'Cursor rule with no trigger',
     kind: 'tool-fact',
@@ -477,6 +481,7 @@ export const TOOL_CONFIG_PROVENANCE: readonly CheckProvenance[] = [
   },
   {
     id: 'ai-config-copilot-instructions/apply-to-default',
+    refuted: true,
     detector: 'ai-config-copilot-instructions',
     title: 'Copilot instructions without applyTo',
     kind: 'tool-fact',
@@ -495,6 +500,7 @@ export const TOOL_CONFIG_PROVENANCE: readonly CheckProvenance[] = [
   },
   {
     id: 'ai-config-copilot-instructions/glob-semantics',
+    refuted: true,
     detector: 'ai-config-copilot-instructions',
     title: 'Copilot applyTo glob matching',
     kind: 'tool-fact',
@@ -518,6 +524,7 @@ export const TOOL_CONFIG_PROVENANCE: readonly CheckProvenance[] = [
   // ── ai-config-windsurf-rules ────────────────────────────────────────────────
   {
     id: 'ai-config-windsurf-rules/legacy-always-on',
+    unverified: true,
     detector: 'ai-config-windsurf-rules',
     title: 'Windsurf legacy rules file',
     kind: 'tool-fact',
@@ -534,6 +541,7 @@ export const TOOL_CONFIG_PROVENANCE: readonly CheckProvenance[] = [
   },
   {
     id: 'ai-config-windsurf-rules/scoped-rules',
+    unverified: true,
     detector: 'ai-config-windsurf-rules',
     title: 'Windsurf scoped rule files',
     kind: 'tool-fact',
@@ -542,14 +550,15 @@ export const TOOL_CONFIG_PROVENANCE: readonly CheckProvenance[] = [
     sources: [
       cite(
         PAGES.windsurfRules,
-        'supports',
-        'Lists always_on, glob, model_decision and manual triggers for rule files with globs set in frontmatter, and says legacy .windsurf/rules/*.md files are still imported.',
+        'context',
+        'Documents Devin Local, not Windsurf: lists always_on, glob, model_decision and manual triggers for rule files with globs set in frontmatter, and says legacy .windsurf/rules/*.md files are still imported.',
       ),
     ],
     lastVerified: VERIFIED,
   },
   {
     id: 'ai-config-windsurf-rules/language-scoping',
+    unverified: true,
     detector: 'ai-config-windsurf-rules',
     title: 'Language-specific rules belong in scoped files',
     kind: 'opinion',
@@ -598,6 +607,7 @@ export const TOOL_CONFIG_PROVENANCE: readonly CheckProvenance[] = [
   },
   {
     id: 'skill-supply-chain/code-abuse-patterns',
+    unverified: true,
     detector: 'skill-supply-chain',
     title: 'Code patterns typical of a malicious or fragile skill',
     kind: 'opinion',
@@ -656,6 +666,8 @@ export const TOOL_CONFIG_PROVENANCE: readonly CheckProvenance[] = [
         'Says --allow-all-tools grants blanket tool permissions without a model safety review or approval prompts; --yolo appears only as a slash-command alias in the part of the page read.',
       ),
     ],
+    caveat:
+      'geminicli.com carries a banner (read 2026-11-14): Gemini CLI was replaced by Antigravity CLI on June 18th, 2026 for unpaid-tier and Google One users, and it has not been optimized for Gemini 4 Argon; a claim about gemini-cli may not hold for the replacement.',
     lastVerified: VERIFIED,
   },
   {

@@ -26,8 +26,22 @@ export type ProvenanceKind = 'repo-fact' | 'tool-fact' | 'opinion';
 export const PROVENANCE_TOOLS = ['claude-code', 'codex', 'cursor', 'copilot', 'gemini-cli', 'windsurf'] as const;
 export type ProvenanceTool = (typeof PROVENANCE_TOOLS)[number];
 
-/** How a source bears on the claim, as read on `readOn`. */
+/**
+ * How a source bears on the claim, as read on `readOn`.
+ *
+ * - `supports`: the page says what the claim says. Only this makes a `tool-fact` sourced.
+ * - `contradicts`: the page says the opposite, or something that makes the claim false.
+ * - `context`: related reading. It does not support the claim and never counts as a source.
+ */
 export type SourceStance = 'supports' | 'contradicts' | 'context';
+
+/**
+ * What a record stands on, derived from its fields (see `provenanceStatus`):
+ * `repo-fact` (needs nothing), `sourced` (a supporting page, or an eval),
+ * `unverified` (nothing supports it; it rests on judgement) or `refuted` (the
+ * only on-point source says the opposite: the check is probably wrong).
+ */
+export type ProvenanceStatus = 'repo-fact' | 'sourced' | 'unverified' | 'refuted';
 
 export type ProvenanceSource = {
   /** A page that was actually read; never reconstructed from memory. */
@@ -62,17 +76,40 @@ export type CheckProvenance = {
   kind: ProvenanceKind;
   /** One sentence the check depends on, written so it can be false. */
   claim: string;
-  /** Tools the claim is about, or `all`. */
-  appliesTo: readonly ProvenanceTool[] | 'all';
-  /** Pages read for this claim. A `tool-fact` or `opinion` needs one, or `unverified: true`. */
+  /**
+   * The AI tools the claim is about; `all` when it holds for every AI tool (or the
+   * scanned repository), `n/a` when it is not about an AI tool at all (a package
+   * manager, a language, a framework, git).
+   */
+  appliesTo: readonly ProvenanceTool[] | 'all' | 'n/a';
+  /**
+   * Pages read for this claim. A `tool-fact` is sourced only by a `supports`
+   * source; `context` pages are related reading and `contradicts` pages mean the
+   * claim is `refuted`. Stances are judged against `appliesTo`.
+   */
   sources: readonly ProvenanceSource[];
-  /** For an opinion: an eval (a path or URL) that shows the advice changes what an agent does. */
+  /**
+   * For an opinion: an eval (a path or URL) that shows the advice changes what an
+   * agent does. A documentation page is not an eval: an opinion with none is `unverified`.
+   */
   evals?: readonly string[];
   /**
-   * True when no source or eval was found for the claim. A result, not a failure:
-   * it says the check rests on judgement, and it stays visible until someone sources it.
+   * True when nothing supports the claim: no `supports` source for a tool-fact, no
+   * eval for an opinion. A result, not a failure: the check rests on judgement and
+   * stays visible until someone sources it. May list `context` sources (related reading).
    */
   unverified?: true;
+  /**
+   * True when the only on-point source contradicts the claim. It needs at least one
+   * `contradicts` source and no `supports` one; the check is reviewed by a person,
+   * never retired automatically.
+   */
+  refuted?: true;
+  /**
+   * Something a reader of the record should know that is not a source: a banner on
+   * the vendor's page saying the product is being replaced, a caveat on a claim.
+   */
+  caveat?: string;
   /** Every numeric threshold the check uses, each with its own source. */
   thresholds?: readonly ProvenanceThreshold[];
   lastVerified: {

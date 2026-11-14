@@ -1,4 +1,4 @@
-import type { CheckProvenance } from './types.js';
+import type { CheckProvenance, ProvenanceStatus } from './types.js';
 
 /** A `tool-fact` or `opinion` record older than this many days has expired. */
 export const PROVENANCE_MAX_AGE_DAYS = 90;
@@ -24,51 +24,120 @@ export function daysSince(date: string, today: string): number | undefined {
   return from === undefined || to === undefined ? undefined : to - from;
 }
 
+/** What the record stands on; see {@link ProvenanceStatus}. */
+export function provenanceStatus(record: CheckProvenance): ProvenanceStatus {
+  if (record.kind === 'repo-fact') return 'repo-fact';
+  if (record.refuted) return 'refuted';
+  if (record.unverified) return 'unverified';
+  return 'sourced';
+}
+
 /**
- * What is wrong with a set of provenance records on `today`, one sentence each.
- * Empty means the set passes.
+ * What is structurally wrong with a set of records, one sentence each. Needs no
+ * clock, so it belongs in the test suite: it is the same on every day.
  *
- * - A `tool-fact` or `opinion` whose `lastVerified` is more than
- *   {@link PROVENANCE_MAX_AGE_DAYS} days old fails, and the message names the
- *   check and the sources to re-read. `repo-fact` records are exempt.
- * - A `tool-fact` or `opinion` with no source and not explicitly `unverified`
- *   fails: silence is not an answer.
- * - A record that says `unverified` yet lists a source contradicts itself.
- * - Dates that are not real dates fail for every kind, so expiry cannot be
- *   dodged with a malformed one.
+ * - A `tool-fact` is sourced only by a `supports` source (or an eval). A page that
+ *   merely `contradicts` or gives `context` does not make it sourced.
+ * - An `opinion` is sourced only by an eval: documentation is related reading, so
+ *   an opinion without one is `unverified`.
+ * - `unverified` lists only `context` sources and no eval; `refuted` needs a
+ *   `contradicts` source and no `supports` one or eval; the two exclude each other.
+ * - Dates are real `YYYY-MM-DD` dates, and a record is not verified before a
+ *   source it cites was read.
  */
-export function provenanceProblems(records: readonly CheckProvenance[], today: string): string[] {
+export function provenanceStructureProblems(records: readonly CheckProvenance[]): string[] {
   const problems: string[] = [];
   for (const record of records) {
-    const reread = record.sources.length > 0 ? record.sources.map((s) => s.url).join(', ') : 'no sources recorded';
-    const verifiedDays = daysSince(record.lastVerified.date, today);
-    if (verifiedDays === undefined) {
-      problems.push(`${record.id}: lastVerified "${record.lastVerified.date}" or today "${today}" is not a YYYY-MM-DD date`);
+    const stances = (stance: string): number => record.sources.filter((s) => s.stance === stance).length;
+    const supports = stances('supports');
+    const contradicts = stances('contradicts');
+    const evals = record.evals?.length ?? 0;
+
+    const verified = dayNumber(record.lastVerified.date);
+    if (verified === undefined) {
+      problems.push(`${record.id}: lastVerified "${record.lastVerified.date}" is not a YYYY-MM-DD date`);
     }
     for (const source of record.sources) {
-      if (dayNumber(source.readOn) === undefined) {
+      const read = dayNumber(source.readOn);
+      if (read === undefined) {
         problems.push(`${record.id}: source ${source.url} has readOn "${source.readOn}", which is not a YYYY-MM-DD date`);
+      } else if (verified !== undefined && verified < read) {
+        problems.push(`${record.id}: lastVerified ${record.lastVerified.date} is before source ${source.url} was read (${source.readOn})`);
       }
     }
-    if (record.unverified && record.sources.length > 0) {
-      problems.push(`${record.id}: marked unverified but lists ${record.sources.length} source(s); drop the flag or the sources`);
+    if (record.unverified && record.refuted) {
+      problems.push(`${record.id}: marked both unverified and refuted`);
     }
     if (record.kind === 'repo-fact') continue;
-    const hasBasis = record.sources.length > 0 || (record.evals?.length ?? 0) > 0 || record.unverified === true;
-    if (!hasBasis) {
-      problems.push(`${record.id}: a ${record.kind} check needs a source, an eval, or an explicit unverified: true`);
-    }
-    if (verifiedDays !== undefined && verifiedDays > PROVENANCE_MAX_AGE_DAYS) {
+
+    if (record.unverified) {
+      if (evals > 0) problems.push(`${record.id}: marked unverified but lists ${evals} eval(s); drop the flag`);
+      // A tool-fact that a page supports is sourced. An opinion has no page that can
+      // support it, so related documentation of any stance may stay next to the flag.
+      if (record.kind === 'tool-fact' && (supports > 0 || contradicts > 0)) {
+        problems.push(
+          `${record.id}: marked unverified but lists ${supports} supporting and ${contradicts} contradicting source(s); ` +
+            'keep only context sources, or drop the flag (or mark it refuted when a source contradicts it)',
+        );
+      }
+    } else if (record.refuted) {
+      if (contradicts === 0) problems.push(`${record.id}: marked refuted but no source contradicts it`);
+      if (supports > 0 || evals > 0) problems.push(`${record.id}: marked refuted but a source or eval supports it`);
+    } else if (record.kind === 'tool-fact') {
+      if (supports === 0 && evals === 0) {
+        problems.push(
+          `${record.id}: a tool-fact needs a source that supports it (or an eval); ` +
+            `it has ${record.sources.length} source(s), none supporting. Mark it unverified, or refuted when a source contradicts it`,
+        );
+      }
+    } else if (evals === 0) {
       problems.push(
-        `${record.id}: lastVerified ${record.lastVerified.date} is ${verifiedDays} days old (limit ${PROVENANCE_MAX_AGE_DAYS}); ` +
-          `re-read: ${reread}`,
+        `${record.id}: an opinion needs an eval; a documentation page is related reading, not support. Mark it unverified (context sources may stay)`,
       );
     }
   }
   return problems;
 }
 
-/** Records whose `lastVerified` falls within `withinDays` of expiring (or already past it), for the monthly triage. */
+/**
+ * What the calendar makes wrong on `today`, one sentence each: a `tool-fact` or
+ * `opinion` (of any status) whose `lastVerified` is more than
+ * {@link PROVENANCE_MAX_AGE_DAYS} days old, naming the check and the sources to
+ * re-read; and a date after `today`. `repo-fact` records never expire.
+ *
+ * This depends on the clock, so it must not run in the test suite: it would turn
+ * every build red on the day the records age out, including a rebuild of an old
+ * release. It runs from `scripts/check-provenance.mjs`, on a schedule.
+ */
+export function provenanceDateProblems(records: readonly CheckProvenance[], today: string): string[] {
+  const problems: string[] = [];
+  if (dayNumber(today) === undefined) return [`today "${today}" is not a YYYY-MM-DD date`];
+  for (const record of records) {
+    const verifiedDays = daysSince(record.lastVerified.date, today);
+    if (verifiedDays !== undefined && verifiedDays < 0) {
+      problems.push(`${record.id}: lastVerified ${record.lastVerified.date} is in the future`);
+    }
+    for (const source of record.sources) {
+      const readDays = daysSince(source.readOn, today);
+      if (readDays !== undefined && readDays < 0) problems.push(`${record.id}: source ${source.url} was read on ${source.readOn}, in the future`);
+    }
+    if (record.kind === 'repo-fact' || verifiedDays === undefined) continue;
+    if (verifiedDays > PROVENANCE_MAX_AGE_DAYS) {
+      const reread = record.sources.length > 0 ? record.sources.map((s) => s.url).join(', ') : 'no sources recorded';
+      problems.push(
+        `${record.id}: lastVerified ${record.lastVerified.date} is ${verifiedDays} days old (limit ${PROVENANCE_MAX_AGE_DAYS}); re-read: ${reread}`,
+      );
+    }
+  }
+  return problems;
+}
+
+/** Everything {@link provenanceStructureProblems} and {@link provenanceDateProblems} find on `today`. */
+export function provenanceProblems(records: readonly CheckProvenance[], today: string): string[] {
+  return [...provenanceStructureProblems(records), ...provenanceDateProblems(records, today)];
+}
+
+/** Records within `withinDays` of expiring (or already past it), for the monthly triage and the early warning. */
 export function provenanceExpiringSoon(
   records: readonly CheckProvenance[],
   today: string,
