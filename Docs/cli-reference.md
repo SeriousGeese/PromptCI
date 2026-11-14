@@ -324,8 +324,15 @@ workflow file, listing its unpinned actions). They carry a `fingerprintKey`, and
 fingerprint hashes only the category and that key. Pinning one action, adding one rule or adding
 an instruction file keeps them baselined, and so does a grouped finding that grows (one more
 unpinned action): both are `info` and do not count toward the health score. A workflow that gets
-its first unpinned action is a new finding. `review-diff --fail-on-regression` and SARIF
-`partialFingerprints` use the same fingerprint.
+its first unpinned action is a new finding. `review-diff --fail-on-regression`, the scan trend
+(`trend.newIssueIds`, `trend.resolvedIssueIds` and their counts) and SARIF `partialFingerprints`
+use the same fingerprint. `fingerprintKey` is an optional field on `PromptCiIssue` and is written
+to `report.json` with the rest of the finding.
+
+Upgrading from 0.3.0: a baseline (or previous `report.json`) written by 0.3.0 has these findings
+under their old, per-practice and per-action form, so the first scan with the new version shows
+the two grouped findings as new once, and the old ones as resolved. They are `info`, so only
+`--fail-on-new info` trips on it; refresh the baseline with `--update-baseline`.
 
 ## SARIF
 

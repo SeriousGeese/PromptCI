@@ -16,6 +16,7 @@ import { scan } from '../src/scan.js';
 import { computeFingerprint, createBaseline, filterNewIssues } from '../src/baseline.js';
 import { isScored } from '../src/health-score.js';
 import type { PromptCiIssue } from '../src/types.js';
+import { expectGroupKeepsIdentity, writeFiles } from './grouped-identity-helpers.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const TRIGGER = path.resolve(__dirname, '../../../examples/fixture-grouped-findings');
@@ -34,12 +35,7 @@ function repoFrom(files: Record<string, string>): string {
   return root;
 }
 
-function write(root: string, files: Record<string, string>): void {
-  for (const [rel, body] of Object.entries(files)) {
-    fs.mkdirSync(path.dirname(path.join(root, rel)), { recursive: true });
-    fs.writeFileSync(path.join(root, rel), body);
-  }
-}
+const write = writeFiles;
 
 const workflow = (...uses: string[]) =>
   ['jobs:', '  t:', '    runs-on: ubuntu-latest', '    steps:', ...uses.map((u) => `      - uses: ${u}`)].join('\n') + '\n';
@@ -56,30 +52,33 @@ async function newAfter(root: string, change: Record<string, string>): Promise<P
   return filterNewIssues(after.issues, baseline, root).newIssues;
 }
 
-describe('grouped findings keep their fingerprint when their list changes', () => {
-  it('pinning one of several actions in a workflow is not a new finding', async () => {
+const isPin = (i: PromptCiIssue) => i.id.startsWith('action-pin-');
+const isPractice = (i: PromptCiIssue) => i.id.startsWith('agent-practice-');
+
+describe('grouped findings keep their identity when their list changes (baseline, trend, SARIF)', () => {
+  it('pinning one of several actions in a workflow', async () => {
     const root = repoFrom({ 'AGENTS.md': '# Rules\n', '.github/workflows/ci.yml': workflow('a/one@v1', 'b/two@v2') });
-    const fresh = await newAfter(root, { '.github/workflows/ci.yml': workflow(`a/one@${SHA}`, 'b/two@v2') });
-    expect(grouped(fresh)).toEqual([]);
+    await expectGroupKeepsIdentity(root, { '.github/workflows/ci.yml': workflow(`a/one@${SHA}`, 'b/two@v2') }, isPin);
   });
 
-  it('adding one practice sentence is not a new finding', async () => {
+  it('adding one practice sentence', async () => {
     const root = repoFrom({ 'AGENTS.md': '# Rules\nUse TypeScript.\n' });
-    const fresh = await newAfter(root, { 'AGENTS.md': '# Rules\nUse TypeScript.\nIf you are unsure, ask before proceeding.\n' });
-    expect(grouped(fresh)).toEqual([]);
+    await expectGroupKeepsIdentity(
+      root,
+      { 'AGENTS.md': '# Rules\nUse TypeScript.\nIf you are unsure, ask before proceeding.\n' },
+      isPractice,
+    );
   });
 
-  it('adding a second instruction file is not a new agent-practice finding', async () => {
+  it('adding a second instruction file', async () => {
     const root = repoFrom({ 'AGENTS.md': '# Rules\nUse TypeScript.\n' });
-    const fresh = await newAfter(root, { 'CLAUDE.md': '# More rules\nWrite tests.\n' });
+    await expectGroupKeepsIdentity(root, { 'CLAUDE.md': '# More rules\nWrite tests.\n' }, isPractice);
     expect((await scan({ repoPath: root })).filesScanned).toHaveLength(2);
-    expect(fresh.filter((i) => i.id.startsWith('agent-practice-'))).toEqual([]);
   });
 
-  it('a grouped finding that grows (one more unpinned action) is not new either: it is info and unscored', async () => {
+  it('a grouped finding that grows (one more unpinned action): info and unscored, so not new either', async () => {
     const root = repoFrom({ 'AGENTS.md': '# Rules\n', '.github/workflows/ci.yml': workflow('a/one@v1') });
-    const fresh = await newAfter(root, { '.github/workflows/ci.yml': workflow('a/one@v1', 'c/three@v3') });
-    expect(grouped(fresh)).toEqual([]);
+    await expectGroupKeepsIdentity(root, { '.github/workflows/ci.yml': workflow('a/one@v1', 'c/three@v3') }, isPin);
     const report = await scan({ repoPath: root });
     const pin = report.issues.find((i) => i.id.startsWith('action-pin-'))!;
     expect(pin.severity).toBe('info');
