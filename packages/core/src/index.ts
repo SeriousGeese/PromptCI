@@ -6,10 +6,10 @@ export { detectProjectType, detectProjectTypeFromContent } from './project-type.
 export { detectDuplicates, detectDuplicateHeadings, normalizeSection } from './duplicates.js';
 export { detectConflicts, detectVersionConflicts, detectCompetingTechConflicts } from './conflicts.js';
 export { detectDeadReferences } from './dead-references.js';
-export { detectAgentPractices } from './agent-practices.js';
+export { detectAgentPractices, MISSING_PRACTICES_ISSUE_ID } from './agent-practices.js';
 export { parseSuppressions, buildValidationIssues, applySuppressions } from './suppression.js';
 export type { SuppressionAnnotation } from './suppression.js';
-export { computeHealthScore, selectTopFixes } from './health-score.js';
+export { computeHealthScore, selectTopFixes, isScored, UNSCORED_TAG } from './health-score.js';
 export { generateMarkdownReport, generateJsonReport, writeReport, readHistoryIndex, archiveExistingReport, historyIndexPath, scoreLabel } from './report.js';
 export type { WriteReportOptions, HistoryEntry } from './report.js';
 export { generateSarifReport } from './sarif.js';
