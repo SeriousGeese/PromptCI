@@ -103,9 +103,16 @@ describe('isMechanicalRename', () => {
   it.each([
     ['bulid', 'build', 'a transposition'],
     ['typecheeck', 'typecheck', 'a doubled letter in a long name'],
-    ['test:e3e', 'test:e2e', 'a mid-name digit in one segment'],
     ['type-check', 'typecheck', 'a separator difference'],
+    ['type_check', 'type:check', 'a separator difference without / or .'],
     ['Build', 'build', 'a case difference'],
+    ['buidl', 'build', 'a transposition at the end of the word (pcic-1ik0.11)'],
+    ['comit', 'commit', 'one letter of a double dropped'],
+    ['buld', 'build', 'a letter dropped inside the word'],
+    ['bild', 'build', 'a letter dropped inside the word'],
+    ['buildd', 'build', 'a doubled character'],
+    ['deploy-stagign', 'deploy-staging', 'a transposition in one hyphen-separated word'],
+    ['release:pacth', 'release:patch', 'a transposition in one colon-separated word'],
   ])('accepts %s -> %s (%s)', (missing, candidate) => {
     expect(isMechanicalRename(missing, candidate)).toBe(true);
   });
@@ -120,6 +127,38 @@ describe('isMechanicalRename', () => {
     ['test:py2', 'test:py3', 'a trailing-digit target suffix'],
     ['build', 'build:web', 'a different number of segments'],
     ['test:unit', 'lint:unit', 'a difference in the scoping segment, short'],
+    // pcic-1ik0.11: a whole word replaced by a different word, even when the
+    // name is long enough that two edits used to count as a typo.
+    ['major-release', 'minor-release', 'a different word in a hyphen-separated name'],
+    ['release:major', 'release:minor', 'a different word in a colon-separated name'],
+    ['test:unit', 'test:e2e', 'a different word in the last segment'],
+    ['majorrelease', 'minorrelease', 'two substitutions inside one long word'],
+    ['deploy-staging', 'deploy-stating', 'one substituted letter in a long word'],
+    // Review of pcic-1ik0.11: an added or dropped letter that is not a double.
+    ['serve', 'server', 'a letter added at the end'],
+    ['review', 'preview', 'a letter added at the start'],
+    ['rebuild', 'prebuild', 'a lifecycle hook, not a typo'],
+    ['build', 'builds', 'a plural'],
+    ['buil', 'build', 'a letter dropped at the end'],
+    ['a:', 'b:', 'an empty word on both sides'],
+    ['x-', 'x-y', 'an empty word on one side'],
+    // PR #208 review: a digit swap between two real scripts is a different
+    // command, not a typo, however many digits change.
+    ['test:e3e', 'test:e2e', 'a mid-name digit'],
+    ['32bit', '64bit', 'two digits swapped'],
+    ['a1b2', 'a3b4', 'two digits swapped in different places'],
+    ['render:2d', 'render:3d', 'a dimension'],
+    ['deploy:k3s', 'deploy:k8s', 'a different distribution'],
+    ['build:1x', 'build:2x', 'a scale factor'],
+    ['deploy:v1beta', 'deploy:v2beta', 'an API version'],
+    ['build:32bit', 'build:64bit', 'a target width'],
+    // PR #208 review: rows that pin the headline conditions.
+    ['bulid:tset', 'build:test', 'two words differ, each by a transposition'],
+    ['buidl-prdo', 'build-prod', 'two hyphen-separated words differ'],
+    ['build:node18-alpine', 'build:node20-alpine', 'a version inside a hyphenated word'],
+    ['db-rst', 'db-rest', 'a letter added inside a word under 5 characters'],
+    ['test.unit', 'test/unit', 'a separator change to /, which reads as several scripts'],
+    ['test-unit', 'test.unit', 'a separator change involving .'],
   ])('refuses %s -> %s (%s)', (missing, candidate) => {
     expect(isMechanicalRename(missing, candidate)).toBe(false);
   });
@@ -193,14 +232,44 @@ describe('command_validity: mistyped script with one close match', () => {
     expect(await applyFixRecipe(issues[0]!, repo)).toEqual([]);
   });
 
-  it('keeps test:e3e -> test:e2e auto-applicable', async () => {
+  // PR #208 review (decision for the owner to confirm): a digit swap is a
+  // different command, never a typo, so test:e3e -> test:e2e is advisory now.
+  it.each([
+    ['test:e3e', 'test:e2e'],
+    ['32bit', '64bit'],
+    ['render:2d', 'render:3d'],
+    ['deploy:k3s', 'deploy:k8s'],
+  ])('keeps %s -> %s advisory, naming the candidate', async (missing, defined) => {
+    const text = `# Agents\n\n\`\`\`bash\nnpm run ${missing}\n\`\`\`\n`;
     const repo = repoWith({
-      'package.json': JSON.stringify({ name: 'app', scripts: { 'test:e2e': 'playwright test' } }),
-      'AGENTS.md': '# Agents\n\n```bash\npnpm test:e3e\n```\n',
+      'package.json': JSON.stringify({ name: 'app', scripts: { [defined]: 'x', build: 'tsc' } }),
+      'AGENTS.md': text,
     });
     const issues = commandIssues(await issuesIn(repo));
+    expect(issues).toHaveLength(1);
+    expect(issues[0]!.autoApplySafe).toBeUndefined();
+    expect(issues[0]!.fixEdits).toBeUndefined();
+    expect(issues[0]!.recommendation).toContain(`The manifest defines "${defined}"`);
+    expect(await applyAll(repo, issues, 'AGENTS.md')).toBe(text);
+  });
+
+  it('does not rewrite test.unit to test/unit (the rewrite would read as two scripts)', async () => {
+    const text = '# Agents\n\n```bash\nnpm run test.unit\n```\n';
+    const repo = repoWith({ 'package.json': JSON.stringify({ name: 'app', scripts: { 'test/unit': 'x' } }), 'AGENTS.md': text });
+    const issues = commandIssues(await issuesIn(repo));
+    for (const issue of issues) expect(issue.fixEdits).toBeUndefined();
+    expect(await applyAll(repo, issues, 'AGENTS.md')).toBe(text);
+  });
+
+  it('keeps buidl -> build auto-applicable beside release scripts (pcic-1ik0.11)', async () => {
+    const repo = repoWith({
+      'package.json': JSON.stringify({ name: 'app', scripts: { build: 'tsc', 'minor-release': 'x', 'release:minor': 'y' } }),
+      'AGENTS.md': '# Agents\n\n```bash\nnpm run buidl\n```\n',
+    });
+    const issues = commandIssues(await issuesIn(repo));
+    expect(issues).toHaveLength(1);
     expect(issues[0]!.autoApplySafe).toBe(true);
-    expect(await applyAll(repo, issues, 'AGENTS.md')).toContain('pnpm test:e2e');
+    expect(await applyAll(repo, issues, 'AGENTS.md')).toContain('npm run build\n');
   });
 
   /**
@@ -221,6 +290,9 @@ describe('command_validity: mistyped script with one close match', () => {
     ['lint', 'dist'],
     ['build:v1', 'build:v2'],
     ['test:py2', 'test:py3'],
+    // pcic-1ik0.11: erikvullings/mithril-materialized, CLAUDE.md line 69.
+    ['major-release', 'minor-release'],
+    ['release:major', 'release:minor'],
   ])('stays advisory for %s when the manifest only defines the sibling %s', async (missing, defined) => {
     const repo = repoWith({
       'package.json': JSON.stringify({ name: 'app', scripts: { [defined]: 'echo hi' } }),

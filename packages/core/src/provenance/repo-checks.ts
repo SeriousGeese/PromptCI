@@ -518,7 +518,6 @@ export const REPO_CHECKS_PROVENANCE: readonly CheckProvenance[] = [
       { name: 'MAX_WORKSPACE_MANIFESTS', value: 200, unit: 'package.json files', where: 'workspace-manifests.ts:MAX_WORKSPACE_MANIFESTS', source: 'unverified' },
       { name: 'CLOSE_MATCH_MAX_DISTANCE', value: 2, unit: 'edits', where: 'close-match.ts:CLOSE_MATCH_MAX_DISTANCE', source: 'unverified' },
       { name: 'CLOSE_MATCH_MIN_LENGTH', value: 4, unit: 'characters', where: 'close-match.ts:CLOSE_MATCH_MIN_LENGTH', source: 'unverified' },
-      { name: 'MECHANICAL_TWO_EDIT_MIN_LENGTH', value: 8, unit: 'characters', where: 'close-match.ts:MECHANICAL_TWO_EDIT_MIN_LENGTH', source: 'unverified' },
       { name: 'MECHANICAL_SEGMENT_MIN_LENGTH', value: 5, unit: 'characters', where: 'close-match.ts:MECHANICAL_SEGMENT_MIN_LENGTH', source: 'unverified' },
     ],
     lastVerified: VERIFIED,

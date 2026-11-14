@@ -167,12 +167,16 @@ script name are a real sibling script: `test:api` → `test:app`, `test:unit` �
 rewrite would silently run the wrong command. A rewrite is applied only when all of the
 following hold (`packages/core/src/close-match.ts`):
 
-- it is a pure case or separator difference (`type-check` → `typecheck`); **or**
-- both names have the same number of `:`-separated segments with the difference confined to
-  one of them, within one edit (two only for names of 8+ characters), the differing segments
-  are not a trailing-digit variant of each other (`v1`/`v2`, `py2`/`py3`), and — for a
-  differing segment under 5 characters — the change is a transposition or a mid-name digit
-  swap rather than a substituted letter.
+- the close match contains no `/` (a rewrite to `test/unit` reads as two scripts); **and**
+- it is a pure case or separator difference among `-`, `_` and `:` (`type-check` →
+  `typecheck`), with no `.` or `/` in either name; **or**
+- both names split into the same words on `-`, `_`, `:`, `.` and `/`, with the same
+  separators, exactly one word differs, the two words are not a trailing-digit variant of each
+  other (`v1`/`v2`, `py2`/`py3`), and the change is an adjacent transposition (`bulid`) or, in
+  a word of 5 or more characters, one letter added or dropped inside the word (`bild`) or a
+  doubled letter added or dropped anywhere (`comit`, `buildd`). A substituted letter or digit
+  (`major`/`minor`, `2d`/`3d`, `k3s`/`k8s`), a letter added or dropped at either end of a word
+  (`serve`/`server`), and any two edits are never applied.
 
 A candidate that fails those tests is still named, cautiously, in the finding's
 `recommendation`; it is simply never applied for you.
