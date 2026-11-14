@@ -1,0 +1,10 @@
+{
+  "name": "fixture-script-name-closers",
+  "private": true,
+  "scripts": {
+    "build": "node ./build.mjs",
+    "build-frontend": "node ./build-frontend.mjs",
+    "build:renderer": "node ./build-renderer.mjs",
+    "typecheck": "tsc --noEmit"
+  }
+}

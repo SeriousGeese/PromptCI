@@ -13,6 +13,23 @@ import { applyFixRecipe, isRepairable } from '../src/fix-engine.js';
 import type { PromptCiIssue } from '../src/types.js';
 import { makeTempRepo, writeFile } from './ai-config-helpers.js';
 import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const FIXTURE = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  '../../../examples/fixture-script-name-closers',
+);
+
+describe('fixture-script-name-closers (pcic-1ik0.12)', () => {
+  it('reports only the quoted typo, under its bare name, with no edit', async () => {
+    const issues = await commandIssues(FIXTURE);
+    expect(issues).toHaveLength(1);
+    expect(issues[0]!.category).toBe('command_validity');
+    expect(issues[0]!.summary).toContain('npm script "build-frontedn" does not appear');
+    expect(issues[0]!.fixEdits).toBeUndefined();
+    expect(issues[0]!.autoApplySafe).toBeUndefined();
+  });
+});
 
 const tempRepos: string[] = [];
 afterEach(() => {
@@ -56,29 +73,65 @@ describe('a closing quote, backtick or bracket is not part of a script name (pci
     expect(await commandIssues(repo)).toEqual([]);
   });
 
-  it('still reports a missing script that carries a closing quote, and its fix keeps the quote', async () => {
-    const repo = repoWith({
-      'package.json': MANIFEST,
-      'AGENTS.md': '# Agents\n\nBuild: `beforeBuildCommand: "npm run build && npm run build-frontedn"`\n',
-    });
+  it('still reports a missing script that carries a closing quote, under its bare name, and never rewrites it', async () => {
+    const text = '# Agents\n\nBuild: `beforeBuildCommand: "npm run build && npm run build-frontedn"`\n';
+    const repo = repoWith({ 'package.json': MANIFEST, 'AGENTS.md': text });
     const issues = (await commandIssues(repo)).filter((i) => i.category === 'command_validity');
     expect(issues).toHaveLength(1);
     expect(issues[0]!.summary).toContain('npm script "build-frontedn" does not appear');
-    // Every edit offered changes letters, never punctuation alone, and the
-    // quote that closes the config value survives.
-    for (const edit of issues[0]!.fixEdits ?? []) {
-      expect(edit.find).toBe('npm run build-frontedn');
-      expect(edit.replace).toBe('npm run build-frontend');
-    }
-    for (const issue of issues.filter(isRepairable)) {
-      for (const change of await applyFixRecipe(issue, repo)) {
-        fs.writeFileSync(change.filePath, change.newContent, 'utf-8');
-      }
-    }
+    // Named as the close match, but the token as written carried a quote, so
+    // the finding is advisory.
+    expect(issues[0]!.recommendation).toContain('build-frontend');
+    expect(issues[0]!.fixEdits).toBeUndefined();
+    expect(issues[0]!.autoApplySafe).toBeUndefined();
+    expect(issues.filter(isRepairable)).toEqual([]);
+    expect(fs.readFileSync(path.join(repo, 'AGENTS.md'), 'utf-8')).toBe(text);
+  });
+
+  it('keeps the edit for the same typo with no punctuation around it (the guard is what blocks the quoted cases)', async () => {
+    const repo = repoWith({ 'package.json': MANIFEST, 'AGENTS.md': '# Agents\n\n```bash\nnpm run build-frontedn\n```\n' });
+    const issues = (await commandIssues(repo)).filter((i) => i.category === 'command_validity');
+    expect(issues).toHaveLength(1);
     expect(issues[0]!.autoApplySafe).toBe(true);
-    expect(fs.readFileSync(path.join(repo, 'AGENTS.md'), 'utf-8')).toBe(
-      '# Agents\n\nBuild: `beforeBuildCommand: "npm run build && npm run build-frontend"`\n',
-    );
+    for (const change of await applyFixRecipe(issues[0]!, repo)) fs.writeFileSync(change.filePath, change.newContent, 'utf-8');
+    expect(fs.readFileSync(path.join(repo, 'AGENTS.md'), 'utf-8')).toBe('# Agents\n\n```bash\nnpm run build-frontend\n```\n');
+  });
+
+  /**
+   * PR #209 review (BLOCKING 1): stripping only the trailing closer turned a
+   * quoted typo into `"build-frontedn`, which the recipe then rewrote to
+   * `npm run build-frontend"`, dropping the opening quote and keeping the
+   * closing one, with autoApplySafe. A name that was quoted or bracketed is
+   * reported but never rewritten.
+   */
+  const QUOTED_MANIFEST = JSON.stringify({
+    name: 'app',
+    scripts: { 'build-frontend': 'x', typecheck: 'tsc', test: 'vitest', build: 'tsc' },
+  });
+  it.each([
+    ['a double-quoted typo in a bash fence', '```bash\nnpm run "build-frontedn"\n```'],
+    ['a single-quoted typo with arguments', "```bash\nnpm run 'typechekc' -- --watch\n```"],
+    ['a double-quoted separator variant in a code span', 'Check with `npm run "type-check"`.'],
+    ['pnpm with a quoted typo', '```bash\npnpm "build-frontedn"\n```'],
+    ['yarn run with a quoted typo', '```bash\nyarn run "build-frontedn"\n```'],
+    ['a parenthesised typo', '```bash\nnpm run (build-frontedn)\n```'],
+  ])('offers no edit for %s', async (_label, body) => {
+    const repo = repoWith({ 'package.json': QUOTED_MANIFEST, 'AGENTS.md': `# Agents\n\n${body}\n` });
+    const before = fs.readFileSync(path.join(repo, 'AGENTS.md'), 'utf-8');
+    const issues = (await commandIssues(repo)).filter((i) => i.category === 'command_validity');
+    for (const issue of issues) {
+      expect(issue.fixEdits).toBeUndefined();
+      expect(issue.autoApplySafe).toBeUndefined();
+      expect(await applyFixRecipe(issue, repo)).toEqual([]);
+    }
+    expect(fs.readFileSync(path.join(repo, 'AGENTS.md'), 'utf-8')).toBe(before);
+  });
+
+  it('reports nothing for a quoted script name that exists (a matched leading quote is stripped too)', async () => {
+    for (const body of ['```bash\nnpm run "build-frontend"\n```', "```bash\nnpm run 'typecheck' -- --watch\n```", '`pnpm "build-frontend"`']) {
+      const repo = repoWith({ 'package.json': QUOTED_MANIFEST, 'AGENTS.md': `# Agents\n\n${body}\n` });
+      expect(await commandIssues(repo), body).toEqual([]);
+    }
   });
 
   it('never offers an edit for a quoted script name, which only punctuation would "fix"', async () => {

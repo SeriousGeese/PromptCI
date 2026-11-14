@@ -1061,10 +1061,25 @@ function findMissingScript(
 /** Closing quotes, backticks and brackets trailing a token (pcic-1ik0.12). */
 const TRAILING_CLOSERS_RE = /["'`)\]}]+$/;
 
-/** True when two script names differ only by quotes, backticks and brackets. */
-function differsOnlyByClosers(a: string, b: string): boolean {
-  const strip = (s: string): string => s.replace(/["'`()[\]{}]/g, '');
-  return a !== b && strip(a) === strip(b);
+/** The opener that a closer pairs with. */
+const OPENER_FOR: Readonly<Record<string, string>> = { '"': '"', "'": "'", ')': '(', ']': '[', '}': '{' };
+
+/** Any quote, backtick or bracket. */
+const PUNCTUATION_RE = /["'`()[\]{}]/;
+
+/**
+ * pcic-1ik0.12: the script name inside a token, with trailing closers removed
+ * and, when the last removed closer pairs with the token's first character, that
+ * opener too (`"build"`, `'typecheck'`, `(build)` are `build` / `typecheck`).
+ * `punctuated` says whether anything was removed: the token as written is then
+ * not the bare name, so no rewrite built from the bare name may touch it.
+ */
+function scriptNameOf(token: string): { name: string; punctuated: boolean } {
+  let name = token.replace(TRAILING_CLOSERS_RE, '');
+  const closers = token.slice(name.length);
+  const opener = closers ? OPENER_FOR[closers[closers.length - 1]!] : undefined;
+  if (opener && name.startsWith(opener)) name = name.slice(1);
+  return { name, punctuated: name !== token };
 }
 
 const BUILTINS_BY_TOOL: Record<'pnpm' | 'npm' | 'yarn' | 'bun', Set<string>> = {
@@ -1119,8 +1134,9 @@ function validatePackageManagerScript(
   // (`beforeBuildCommand: "npm run build:renderer && npm run build-frontend"`)
   // leaves the closing quote, backtick or bracket on the last token. It closes
   // the surrounding text, so it is not part of the script name: judged with it,
-  // an existing script reads as missing, and the "fix" deletes the quote.
-  const scriptName = parts[nameIdx]?.replace(TRAILING_CLOSERS_RE, '');
+  // an existing script reads as missing, and the "fix" deletes the quote. A
+  // matched opening quote or bracket goes too (`npm run "build"`).
+  const { name: scriptName, punctuated } = scriptNameOf(parts[nameIdx] ?? '');
   if (!scriptName || scriptName.startsWith('-')) return null;
 
   // pcic-qc33: `pnpm build*` means every script that starts with `build`, and
@@ -1157,8 +1173,10 @@ function validatePackageManagerScript(
           replace: prefix ? `${prefix} ${candidate}` : candidate,
           missing,
           candidate,
-          // pcic-1ik0.12: an edit that only moves punctuation is never a fix.
-          mechanical: mechanical && !differsOnlyByClosers(missing, candidate),
+          // pcic-1ik0.12 (PR #209 review): the edit is built from the bare
+          // name, so it is never mechanical when the token as written carried
+          // a quote or bracket, or when either name still holds one.
+          mechanical: mechanical && !punctuated && !PUNCTUATION_RE.test(missing + candidate),
           viaRoot,
         })
     : undefined;
