@@ -527,6 +527,26 @@ describe('structure: broken link whose basename is unique in the tree', () => {
       expect(after).toBe(`# Agents\n\n${body}\n`);
     });
 
+    it('does not let `<!--` inside a code span or a fence swallow the rest of the file', async () => {
+      for (const prefix of ['Comments start with `<!--`.\n\n', '```html\n<!-- a comment in an example\n```\n\n']) {
+        const body = `${prefix}See ${LINK}.`;
+        const { issue, after } = await linkCase(body);
+        expect(issue.autoApplySafe, prefix).toBe(true);
+        expect(after, prefix).toBe(`# Agents\n\n${body.replace('](./docs/runbook.md)', MOVED)}\n`);
+      }
+      // A script rename after the same text is still repaired.
+      const original = '# Agents\n\nComments start with `<!--`.\n\n```bash\nnpm run bulid\n```\n';
+      const repo = repoWith({ 'package.json': MANIFEST, 'AGENTS.md': original });
+      const issues = commandIssues(await issuesIn(repo));
+      expect(await applyAll(repo, issues, 'AGENTS.md')).toBe(original.replace('bulid', 'build'));
+    });
+
+    it('still hides a real comment that follows such text', async () => {
+      const { issue, after } = await linkCase(`Comments start with \`<!--\`.\n\n<!-- old: ${LINK} -->`);
+      expect(issue.autoApplySafe).toBeUndefined();
+      expect(after).toContain(`<!-- old: ${LINK} -->`);
+    });
+
     it('still rewrites a link after a comment has closed, and a normal line', async () => {
       const body = `<!-- note -->\nSee ${LINK}.`;
       const { issue, after } = await linkCase(body);
@@ -567,6 +587,17 @@ describe('structure: broken link whose basename is unique in the tree', () => {
       const [issue] = brokenRefIssues(await issuesIn(repo));
       expect(issue!.autoApplySafe).toBeUndefined();
       expect(issue!.summary).not.toContain('may be what was meant');
+    });
+
+    it('treats docs/spec as documentation, not a fixture tree', async () => {
+      const repo = repoWith({
+        'package.json': MANIFEST,
+        'AGENTS.md': '# Agents\n\nSee [protocol](./protocol.md).\n',
+        'docs/spec/protocol.md': '# Protocol\n',
+      });
+      const issues = brokenRefIssues(await issuesIn(repo));
+      expect(issues[0]!.summary).toContain('"docs/spec/protocol.md"');
+      expect(await applyAll(repo, issues, 'AGENTS.md')).toBe('# Agents\n\nSee [protocol](./docs/spec/protocol.md).\n');
     });
 
     it('rewrites to the real file when a fixture copy also exists', async () => {
