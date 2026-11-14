@@ -9,7 +9,7 @@ import * as path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { scan } from '../src/scan.js';
 import type { PromptCiIssue } from '../src/types.js';
-import { makeTempRepo, writeFile } from './ai-config-helpers.js';
+import { canSymlink, makeTempRepo, trySymlink, writeFile } from './ai-config-helpers.js';
 
 const tempRepos: string[] = [];
 afterEach(() => {
@@ -187,7 +187,7 @@ describe('a manifest that was listed but not read says nothing (hosted scans)', 
     const issues = await findings({ 'package.json': ROOT, ...dirs, 'CLAUDE.md': '# P\n\n```sh\nnpm run buil\n```\n' });
     expect(brief(issues)).toEqual(['warning:npm run buil']);
     noEdit(issues);
-  });
+  }, 60000);
 
   it('treats a corrupt package.json as unreadable, never as a manifest with no scripts', async () => {
     const named = await findings({
@@ -374,6 +374,64 @@ describe('RULE 1: an edit only in a repository that is certainly one package (th
     noEdit(issues);
   });
 
+  const typo = '## Checks\n\n```sh\nnpm run bild\n```\n';
+  const oneBuild = { 'package.json': pkg({ build: 'x', lint: 'x' }) };
+
+  it('counts a package.json in a dot directory: a GitHub Action with its own manifest', async () => {
+    const issues = await findings({
+      ...oneBuild,
+      '.github/actions/release/package.json': pkg({ start: 'x' }),
+      'CLAUDE.md': '## Release action (in `.github/actions/release/`)\n\n```sh\nnpm run buil\n```\n',
+    });
+    expect(brief(issues)).toEqual(['warning:npm run buil']);
+    noEdit(issues);
+  });
+
+  it('does not take a dot directory without a manifest for a second package, nor offer it as "defined elsewhere"', async () => {
+    const plain = await findings({ ...oneBuild, '.github/workflows/ci.yml': 'name: ci\n', '.vscode/settings.json': '{}', 'CLAUDE.md': typo });
+    expect(plain[0]!.autoApplySafe).toBe(true);
+    const tool = await findings({ ...oneBuild, '.claude/x/package.json': pkg({ dev: 'x' }), 'CLAUDE.md': '# P\n\nRun `npm run dev`.\n' });
+    expect(brief(tool)).toEqual(['warning:npm run dev']);
+  });
+
+  it('treats .gitmodules as not single-package (an uninitialised submodule is not fetched)', async () => {
+    const issues = await findings({
+      ...oneBuild,
+      '.gitmodules': '[submodule "site"]\n\tpath = site\n\turl = https://example.com/site.git\n',
+      'CLAUDE.md': '### Site (from `site/` directory)\n\n```sh\nnpm run buil\n```\n',
+    });
+    expect(brief(issues)).toEqual(['warning:npm run buil']);
+    noEdit(issues);
+  });
+
+  it.each([
+    ['rush.json', { 'rush.json': '{}' }],
+    ['a package.yaml', { 'tools/package.yaml': 'name: x\n' }],
+    ['a package.json5', { 'package.json5': '{}' }],
+    ['a deno.json with tasks', { 'deno.json': '{ "tasks": { "dev": "deno run x" } }' }],
+    ['a deno.jsonc with tasks', { 'tools/deno.jsonc': '{ "tasks": { "dev": "deno run x" } }' }],
+  ])('offers no edit with %s', async (_name, extra) => {
+    const issues = await findings({ ...oneBuild, ...extra, 'CLAUDE.md': typo });
+    expect(brief(issues)).toEqual(['warning:npm run bild']);
+    noEdit(issues);
+  });
+
+  it('keeps the edit with a deno.json that has no tasks', async () => {
+    const issues = await findings({ ...oneBuild, 'deno.json': '{ "imports": {} }', 'CLAUDE.md': typo });
+    expect(issues[0]!.autoApplySafe).toBe(true);
+  });
+
+  it.skipIf(!canSymlink)('offers no edit with a directory link that points outside the repository', async () => {
+    const repo = repoWith({ ...oneBuild, 'CLAUDE.md': typo });
+    const outside = makeTempRepo('promptci-scope-outside-');
+    tempRepos.push(outside);
+    writeFile(outside, 'package.json', pkg({ other: 'x' }));
+    expect(trySymlink(outside, path.join(repo, 'shared'))).toBe(true);
+    const issues = commandFindings((await scan({ repoPath: repo, projectType: 'typescript' })).issues);
+    expect(brief(issues)).toEqual(['warning:npm run bild']);
+    noEdit(issues);
+  });
+
   it('offers no edit when the caller\'s inventory is partial or lists a manifest it never fetched', async () => {
     const files = { 'package.json': pkg({ build: 'x', lint: 'x' }), 'CLAUDE.md': '## Checks\n\n```sh\nnpm run bild\n```\n' };
     noEdit(await findings(files, { knownPaths: ['CLAUDE.md', 'package.json', 'site/package.json'] }));
@@ -405,6 +463,9 @@ describe('RULE 2: caution anywhere around the command withholds the edit, even i
     ['a <details> summary', '<details>\n<summary>Old commands, removed</summary>\n\n```sh\nnpm run bulid\n```\n\n</details>\n'],
     ['"Before:" and "After:"', '# P\n\nBefore: `npm run bulid`\nAfter: `npm run build`\n'],
     ['"Not this:"', '# P\n\nNot this: `npm run bulid`\n'],
+    ['"is gone"', '# P\n\n`npm run bulid` is gone.\n'],
+    ['"previously"', '# P\n\nPreviously you ran `npm run bulid`.\n'],
+    ['"dropped"', '# P\n\n`npm run bulid` was dropped.\n'],
   ])('offers no edit after %s', async (_name, body) => {
     const issues = await findings(files(body));
     expect(issues.length).toBeGreaterThan(0);

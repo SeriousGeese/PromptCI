@@ -288,19 +288,26 @@ type PackageIndex = {
   unfetched: string[];
   /** The walk did not see the whole tree (directory cap, depth cap, an unreadable directory or manifest). */
   incomplete: boolean;
+  /**
+   * Evidence of a layout the walk cannot read as one package: another manifest format
+   * (package.yaml, package.json5, rush.json, a deno.json with tasks) or a link that
+   * leaves the repository. The repository is then not certainly a single package.
+   */
+  foreign: boolean;
 };
 const packageIndexCache = new WeakMap<RepoTree, PackageIndex>();
 
 /**
- * Scripts of every package.json under the root outside node_modules and dot
- * directories. Breadth-first and sorted, so the same repository always yields
- * the same index; and it says when it is not the whole picture, so that a
- * caller can tell "defined nowhere" from "not seen".
+ * Scripts of every package.json under the root outside `.git` and `node_modules`
+ * (dot directories are walked: `.github/actions/release/package.json` is a package).
+ * Breadth-first and sorted, so the same repository always yields the same index;
+ * and it says when it is not the whole picture, so that a caller can tell "defined
+ * nowhere" from "not seen".
  */
 function packageIndex(tree: RepoTree): PackageIndex {
   const cached = packageIndexCache.get(tree);
   if (cached) return cached;
-  const index: PackageIndex = { scripts: new Map(), unfetched: [], incomplete: false };
+  const index: PackageIndex = { scripts: new Map(), unfetched: [], incomplete: false, foreign: false };
   const queue: Array<{ dir: string; depth: number }> = [{ dir: '', depth: 0 }];
   for (let next = 0; next < queue.length; next++) {
     if (next >= MAX_MANIFEST_DIRS) {
@@ -319,10 +326,24 @@ function packageIndex(tree: RepoTree): PackageIndex {
       else if (pkg === 'unreadable' || pkg === 'corrupt') index.incomplete = true;
       else if (pkg) index.scripts.set(dir || '.', pkg.scripts);
     }
+    if (names.some((n) => FOREIGN_MANIFESTS.has(n))) index.foreign = true;
+    for (const deno of ['deno.json', 'deno.jsonc']) {
+      if (!names.includes(deno)) continue;
+      const text = tree.readText(path.join(abs, deno), { maxBytes: MAX_MANIFEST_BYTES });
+      // Tasks are deno's scripts. A file that cannot be read may hold them.
+      if (text.state !== 'found' || /"tasks"\s*:/.test(text.content)) index.foreign = true;
+    }
     for (const name of names) {
       const entry = listing.get(name)!;
-      if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
-      if (name === 'node_modules' || name.startsWith('.')) continue;
+      if (entry.isSymbolicLink()) {
+        // A link that leaves the repository points at content this scan never reads.
+        const target = tree.lookup(path.join(abs, name)).state;
+        if (target === 'outside') index.foreign = true;
+        else if (target === 'unreadable') index.incomplete = true;
+        continue;
+      }
+      if (!entry.isDirectory()) continue;
+      if (name === 'node_modules' || name === '.git') continue;
       // A directory below the depth bound could hold a manifest nobody read.
       if (depth >= MAX_MANIFEST_DEPTH) {
         index.incomplete = true;
@@ -339,12 +360,16 @@ function packageIndex(tree: RepoTree): PackageIndex {
 function packagesDefining(context: RepoContext, tree: RepoTree, script: string): string[] {
   const dirs = new Set<string>();
   for (const ws of context.workspaces ?? []) if (ws.dir !== '.' && hasScript(ws.scripts, script)) dirs.add(ws.dir);
-  for (const [dir, scripts] of packageIndex(tree).scripts) if (dir !== '.' && hasScript(scripts, script)) dirs.add(dir);
+  for (const [dir, scripts] of packageIndex(tree).scripts) {
+    if (dir !== '.' && !dir.split('/').some((segment) => segment.startsWith('.')) && hasScript(scripts, script)) dirs.add(dir);
+  }
   return [...dirs].sort();
 }
 
 /** Files at the repository root that declare a multi-package layout. */
-const WORKSPACE_FILES = ['pnpm-workspace.yaml', 'lerna.json', 'nx.json', 'turbo.json'];
+const WORKSPACE_FILES = ['pnpm-workspace.yaml', 'lerna.json', 'nx.json', 'turbo.json', 'rush.json', '.gitmodules'];
+/** Manifests of other package managers: a repository holding one is not certainly a single npm package. */
+const FOREIGN_MANIFESTS: ReadonlySet<string> = new Set(['package.yaml', 'package.json5', 'rush.json']);
 const singlePackageCache = new WeakMap<RepoTree, boolean>();
 
 /**
@@ -362,6 +387,7 @@ function singlePackageRepo(context: RepoContext, tree: RepoTree): boolean {
   const index = packageIndex(tree);
   let single =
     !index.incomplete &&
+    !index.foreign &&
     index.unfetched.length === 0 &&
     index.scripts.size === 1 &&
     index.scripts.has('.') &&

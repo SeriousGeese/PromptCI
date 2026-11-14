@@ -115,7 +115,7 @@ const ROOT_RE =
 const NEGATION_RE = /\b(?:not|never|without|instead\s+of|rather\s+than|other\s+than|except|unlike)\b|n't\b/i;
 /** Words and marks that say a command is shown as something not to do. Applied to text with straight quotes. */
 const CAUTION_RE =
-  /\b(?:don'?t|do\s+not|doesn'?t|never|avoid|wrong|bad|incorrect|invalid|broken|deprecated|outdated|obsolete|legacy|old|removed|renamed|anti-?pattern|typo|mistakes?|warning|should\s+not|shouldn'?t|must\s+not|can'?t|cannot|fails?|failing|instead\s+of|no\s+longer|not\s+(?:this|that|like\s+this|recommended|to))\b|[❌✗✘✖⚠\u{1f6ab}⛔]|~~|<\/?(?:del|s|strike)>|\bbefore\s*:/iu;
+  /\b(?:don'?t|do\s+not|doesn'?t|never|avoid|wrong|bad|incorrect|invalid|broken|deprecated|outdated|obsolete|legacy|old|removed|renamed|anti-?pattern|typo|mistakes?|warning|should\s+not|shouldn'?t|must\s+not|can'?t|cannot|fails?|failing|instead\s+of|no\s+longer|gone|previously|dropped|not\s+(?:this|that|like\s+this|recommended|to))\b|[❌✗✘✖⚠\u{1f6ab}⛔]|~~|<\/?(?:del|s|strike)>|\bbefore\s*:/iu;
 
 /** Up to `max` contiguous non-blank, non-heading, non-fence lines ending at line `from` (1-based). */
 function paragraphEndingAt(s: LineStructure, from: number, max: number): string[] {
