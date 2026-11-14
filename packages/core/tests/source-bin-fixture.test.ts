@@ -1,7 +1,8 @@
 /**
  * #161: a tracked `bin/` holding a hand-written entry script is source, not
  * build output. The security pack must not report it as an unignored build
- * directory, and so must not propose adding `bin/` to .gitignore.
+ * directory, and so must not propose adding `bin/` to .gitignore, even when
+ * a .NET or JVM build file sits at the root as well.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -14,21 +15,44 @@ import { scan } from '../src/scan.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURE = path.resolve(__dirname, '../../../examples/fixture-source-bin');
 
+const unignored = async (repoPath: string) =>
+  (await scan({ repoPath })).issues.find((i) => i.id === 'security-pack-unignored-dirs');
+
+function copyFixture(): string {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'promptci-source-bin-'));
+  fs.cpSync(FIXTURE, root, { recursive: true });
+  return root;
+}
+
 describe('fixture-source-bin (#161)', () => {
-  it('reports no unignored build directory for a source bin/', async () => {
-    expect(fs.existsSync(path.join(FIXTURE, 'bin', 'cli.mjs'))).toBe(true);
-    const report = await scan({ repoPath: FIXTURE });
-    expect(report.issues.find((i) => i.id === 'security-pack-unignored-dirs')).toBeUndefined();
+  it('reports no unignored build directory for a source bin/ beside pom.xml and Directory.Build.props', async () => {
+    for (const marker of ['pom.xml', 'Directory.Build.props', 'bin/cli.mjs', 'bin/fixture-tool']) {
+      expect(fs.existsSync(path.join(FIXTURE, marker)), marker).toBe(true);
+    }
+    expect(await unignored(FIXTURE)).toBeUndefined();
   });
 
-  it('reports the same bin/ once a .NET project file sits next to it', async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'promptci-dotnet-bin-'));
+  it('still clean with only the extensionless shebang script left (no package.json bin target)', async () => {
+    const root = copyFixture();
     try {
-      fs.cpSync(FIXTURE, root, { recursive: true });
-      fs.writeFileSync(path.join(root, 'App.csproj'), '<Project Sdk="Microsoft.NET.Sdk" />\n');
-      const report = await scan({ repoPath: root });
-      const issue = report.issues.find((i) => i.id === 'security-pack-unignored-dirs');
+      fs.rmSync(path.join(root, 'bin', 'cli.mjs'));
+      fs.writeFileSync(path.join(root, 'package.json'), '{"name":"fixture-source-bin","private":true}\n');
+      expect(await unignored(root)).toBeUndefined();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('reports bin/ once it holds only .NET build output', async () => {
+    const root = copyFixture();
+    try {
+      fs.rmSync(path.join(root, 'bin'), { recursive: true });
+      fs.writeFileSync(path.join(root, 'package.json'), '{"name":"fixture-source-bin","private":true}\n');
+      fs.mkdirSync(path.join(root, 'bin', 'Debug'), { recursive: true });
+      fs.writeFileSync(path.join(root, 'bin', 'Debug', 'App.dll'), 'MZ');
+      const issue = await unignored(root);
       expect(issue?.evidence).toEqual(['Directory "bin" exists but is not ignored in .gitignore.']);
+      expect(issue?.autoApplySafe).toBe(true);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }

@@ -131,12 +131,63 @@ const isJvmBuildFile = (name: string) =>
  * scripts (a package.json `bin` target, `bin/install-wp-tests.sh`): ignoring
  * it would silently keep the next script added there out of git. `obj` is
  * .NET's intermediate output. Each is reported only next to a root build file
- * of an ecosystem that writes it.
+ * of an ecosystem that writes it, and `bin` not even then when it is plainly
+ * source: the root package.json names it as a `bin` target, or it holds a
+ * file that looks hand-written (a script extension or a `#!` line). A repo can
+ * carry a pom.xml or Directory.Build.props and a Node CLI side by side.
  */
-const ECOSYSTEM_OUTPUT_DIRS: Record<string, (rootNames: string[]) => boolean> = {
-  bin: (names) => names.some((n) => isDotnetBuildFile(n) || isJvmBuildFile(n)),
-  obj: (names) => names.some(isDotnetBuildFile),
+type Tree = ReturnType<typeof treeFor>;
+const ECOSYSTEM_OUTPUT_DIRS: Record<string, (tree: Tree, rootNames: string[]) => boolean> = {
+  bin: (tree, names) =>
+    names.some((n) => isDotnetBuildFile(n) || isJvmBuildFile(n)) &&
+    !packageJsonNamesBinDir(tree) &&
+    !holdsHandWrittenScript(tree, 'bin'),
+  obj: (_tree, names) => names.some(isDotnetBuildFile),
 };
+
+/** True when the root package.json's `bin` field (string or map) or `directories.bin` points into `bin/`. */
+function packageJsonNamesBinDir(tree: Tree): boolean {
+  const read = tree.readText('package.json', { maxBytes: 1_000_000 });
+  if (read.state !== 'found') return false;
+  let pkg: unknown;
+  try {
+    pkg = JSON.parse(read.content);
+  } catch {
+    return false;
+  }
+  if (typeof pkg !== 'object' || pkg === null) return false;
+  const { bin, directories } = pkg as { bin?: unknown; directories?: { bin?: unknown } };
+  const targets: unknown[] = typeof bin === 'string' ? [bin] : typeof bin === 'object' && bin !== null ? Object.values(bin) : [];
+  if (directories && typeof directories === 'object') targets.push(directories.bin);
+  return targets.some(
+    (t) => typeof t === 'string' && /^bin(?:\/|$)/.test(t.replace(/\\/g, '/').replace(/^(?:\.\/)+/, '')),
+  );
+}
+
+/** Extensions of hand-written scripts, never of .NET or JVM build output. */
+const SCRIPT_EXTENSION_RE = /\.(?:sh|bash|zsh|fish|js|mjs|cjs|ts|mts|cts|py|rb|pl|php|ps1|cmd|bat)$/i;
+
+/**
+ * True when the directory's own files include one that looks hand-written: a
+ * script extension, or an extensionless file starting with `#!`. An
+ * extensionless file whose content cannot be read (a hosted scan that listed
+ * but did not fetch it) counts too, since a wrong `bin/` line in .gitignore is
+ * the costlier mistake.
+ */
+function holdsHandWrittenScript(tree: Tree, dir: string): boolean {
+  const entries = tree.entries(dir);
+  if (typeof entries === 'string') return false;
+  for (const entry of entries.values()) {
+    if (entry.isDirectory()) continue;
+    if (SCRIPT_EXTENSION_RE.test(entry.name)) return true;
+    if (entry.name.includes('.')) continue;
+    // A script is small; a larger extensionless file is a compiled binary.
+    const head = tree.readText(`${dir}/${entry.name}`, { maxBytes: 256 * 1024 });
+    if (head.state === 'too-large') continue;
+    if (head.state !== 'found' || head.content.startsWith('#!')) return true;
+  }
+  return false;
+}
 
 function issueId(checkId: string): string {
   const hash = crypto.createHash('sha1').update(checkId).digest('hex').slice(0, 12);
@@ -398,7 +449,7 @@ export function detectSecurityPack(context: RepoContext): PromptCiIssue[] {
     if (!tree.isDir(d)) return false;
     // #161: `bin`/`obj` are build output only where the build that writes them lives.
     const gate = ECOSYSTEM_OUTPUT_DIRS[d];
-    if (gate && !gate(rootNames)) return false;
+    if (gate && !gate(tree, rootNames)) return false;
     return !gitignoreLines.some((line) => gitignoreLineMatchesTarget(line, d));
   });
 

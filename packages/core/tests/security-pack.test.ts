@@ -397,6 +397,31 @@ describe('detectSecurityPack', () => {
       }
     });
 
+    it.each([
+      ['a pom.xml', { 'pom.xml': '<project/>' }],
+      ['a .csproj', { 'App.csproj': '<Project />' }],
+      ['Directory.Build.props', { 'Directory.Build.props': '<Project />' }],
+    ])('does NOT report a bin/ that package.json names as a bin target, even beside %s', (_label, marker) => {
+      expect(unignored({ ...marker, 'package.json': '{"bin":{"x":"./bin/cli.js"}}', 'bin/cli': 'binary-looking' })).toBeUndefined();
+      expect(unignored({ ...marker, 'package.json': '{"bin":"bin/x"}', 'bin/x': 'MZ' })).toBeUndefined();
+    });
+
+    it.each([
+      ['a shebang script', { 'bin/tool': '#!/usr/bin/env node\nconsole.log(1)' }],
+      ['a script extension', { 'bin/build.sh': 'echo hi' }],
+      ['a Node entry point', { 'bin/cli.js': 'require("./x")' }],
+    ])('does NOT report a bin/ holding %s beside a .NET or JVM build file', (_label, files) => {
+      for (const marker of ['pom.xml', 'Directory.Build.props']) {
+        expect(unignored({ [marker]: '<x/>', ...files }), marker).toBeUndefined();
+      }
+    });
+
+    it('still reports a bin/ of build output (subdirectories, .dll) beside a .NET project file', () => {
+      const issue = unignored({ 'App.csproj': '<Project />', 'bin/Debug/net8.0/App.dll': 'MZ', 'bin/App.pdb': 'x' });
+      expect(issue?.evidence).toEqual(['Directory "bin" exists but is not ignored in .gitignore.']);
+      expect(issue?.autoApplySafe).toBe(true);
+    });
+
     it('reports dist/ beside a source bin/ and proposes ignoring only dist/', () => {
       const issue = unignored({ 'package.json': '{"name":"x","bin":"bin/cli.mjs"}', 'bin/cli.mjs': '', 'dist/': '' });
       expect(issue?.evidence).toEqual(['Directory "dist" exists but is not ignored in .gitignore.']);
