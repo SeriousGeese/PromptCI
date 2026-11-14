@@ -1,0 +1,8 @@
+{
+  "name": "site",
+  "private": true,
+  "scripts": {
+    "dev": "echo site dev",
+    "lint": "echo site lint"
+  }
+}

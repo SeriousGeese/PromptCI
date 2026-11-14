@@ -28,6 +28,8 @@ vi.mock('node:fs', () => ({
   readFileSync: vi.fn(),
   readdirSync: vi.fn(),
   readlinkSync: vi.fn(),
+  // The size cap on a manifest read (pcic-1ik0.2) stats the file first.
+  statSync: vi.fn(() => ({ isFile: () => true, size: 100 })),
 }));
 
 const mockReadFile = (fs.readFileSync as Mock);
