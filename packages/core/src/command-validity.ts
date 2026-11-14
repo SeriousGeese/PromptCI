@@ -9,6 +9,7 @@ import { makefileDefines, readMakefile } from './makefile.js';
 import type { MakefileFacts } from './makefile.js';
 import { RepoTree, incompleteCheckIssue, isAbsoluteAnywhere, treeFor } from './repo-tree.js';
 import { closestUniqueMatch, isMechanicalRename } from './close-match.js';
+import { htmlCommentLines } from './sample-text.js';
 import type { Lookup, UncheckedRef } from './repo-tree.js';
 
 /**
@@ -1247,6 +1248,7 @@ function computeCommandAnalysis(context: RepoContext): CommandAnalysis {
     // pcic-oonz: the file's own lines, to confirm a rewrite's `find` text is
     // unambiguous there before the finding claims to be auto-applicable.
     const contentLines = file.content.split(/\r?\n/);
+    const commentLines = htmlCommentLines(file.content);
     const evaluated = new Set<string>();
     const fileDir = path.relative(context.repoRoot, path.dirname(file.path)).replace(/\\/g, '/') || '.';
     evaluatedScripts.set(file.path, evaluated);
@@ -1294,8 +1296,13 @@ function computeCommandAnalysis(context: RepoContext): CommandAnalysis {
       // (`isMechanicalRename`; `test:api` vs `test:app` is not), and the text
       // to replace appears exactly once on the line, so the edit cannot land on
       // another command that shares it.
+      // A command in an HTML comment is text no reader sees (pcic-1ik0.4 review):
+      // reported, never rewritten. Fenced and indented commands are the normal
+      // home of a command, so they stay rewritable.
       const fix =
-        rewrite?.mechanical && countOnLine(contentLines[cmd.line - 1] ?? '', rewrite.find) === 1
+        rewrite?.mechanical &&
+        countOnLine(contentLines[cmd.line - 1] ?? '', rewrite.find) === 1 &&
+        commentLines[cmd.line - 1] !== true
           ? rewrite
           : undefined;
       // A candidate too close to a different script to apply is still worth
