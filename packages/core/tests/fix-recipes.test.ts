@@ -307,6 +307,52 @@ describe('command_validity: mistyped script with one close match', () => {
 
 // ── Recipe 2: a link whose target moved ──────────────────────────────────────
 
+describe('command_validity: no rewrite where the surroundings change what the command means (pcic-1ik0.2)', () => {
+  const advisory = async (agents: string, extra: Record<string, string> = {}): Promise<PromptCiIssue> => {
+    const repo = repoWith({ 'package.json': MANIFEST, 'AGENTS.md': agents, ...extra });
+    const issues = commandIssues(await issuesIn(repo));
+    expect(issues).toHaveLength(1);
+    expect(issues[0]!.autoApplySafe).toBeUndefined();
+    expect(issues[0]!.fixEdits).toBeUndefined();
+    expect(isRepairable(issues[0]!)).toBe(false);
+    expect(await applyFixRecipe(issues[0]!, repo)).toEqual([]);
+    return issues[0]!;
+  };
+
+  it('inside an HTML comment', async () => {
+    const issue = await advisory('# Agents\n\n<!-- run `npm run bulid` once -->\n');
+    expect(issue.recommendation).toContain('inside an HTML comment');
+    await advisory('# Agents\n\n<!--\nrun npm run bulid\n-->\n');
+  });
+
+  it('inside an indented block', async () => {
+    const issue = await advisory('# Agents\n\nRun it:\n\n    run npm run bulid\n');
+    expect(issue.recommendation).toContain('indented block');
+  });
+
+  it('after a cd, inside a fence or inline', async () => {
+    const issue = await advisory('# Agents\n\n```bash\ncd site && npm run bulid\n```\n', { 'site/package.json': MANIFEST });
+    expect(issue.recommendation).toContain('another directory');
+    await advisory('# Agents\n\nRun `cd site && npm run bulid` first.\n', { 'site/package.json': MANIFEST });
+  });
+
+  it('with a directory flag', async () => {
+    await advisory('# Agents\n\n```bash\nnpm run --prefix site bulid\n```\n', { 'site/package.json': MANIFEST });
+  });
+
+  it('near text that names the directory it runs from', async () => {
+    const issue = await advisory('# Agents\n\n## Site (from `site/` directory)\n\n```bash\nnpm run bulid\n```\n', {
+      'site/package.json': JSON.stringify({ name: 'site', scripts: { dev: 'x' } }),
+    });
+    expect(issue.recommendation).toContain('names a directory');
+  });
+
+  it('still rewrites a plain command in a fence and in prose', async () => {
+    const repo = repoWith({ 'package.json': MANIFEST, 'AGENTS.md': '# Agents\n\n```bash\nnpm run bulid\n```\n' });
+    expect(commandIssues(await issuesIn(repo))[0]!.autoApplySafe).toBe(true);
+  });
+});
+
 describe('structure: broken link whose basename is unique in the tree', () => {
   it('re-points the link at the file, relative to the linking file', async () => {
     const repo = repoWith({

@@ -35,6 +35,39 @@ import type { Lookup, UncheckedRef } from './repo-tree.js';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+/** 1-based line numbers inside an HTML comment (`<!-- ... -->`), including the lines the delimiters sit on. */
+function commentLines(content: string): Set<number> {
+  const inside = new Set<number>();
+  for (const m of content.matchAll(/<!--[\s\S]*?(?:-->|$)/g)) {
+    const first = content.slice(0, m.index).split('\n').length;
+    const last = first + (m[0].match(/\n/g)?.length ?? 0);
+    for (let line = first; line <= last; line++) inside.add(line);
+  }
+  return inside;
+}
+
+/**
+ * pcic-1ik0.2: why an otherwise mechanical script rewrite must not be applied
+ * unseen, in words that complete "this command is ..."; `undefined` when
+ * nothing about where the command sits changes what it means.
+ */
+function editBlocker(
+  cmd: ExtractedCommand,
+  lines: readonly string[],
+  comments: ReadonlySet<number>,
+  fileDir: string,
+  tree: RepoTree,
+): string | undefined {
+  if (comments.has(cmd.line)) return 'inside an HTML comment';
+  if (!cmd.fenced && /^(?: {4}|\t)/.test(lines[cmd.line - 1] ?? '')) return 'in an indented block';
+  if (typeof cmd.cwd === 'string' && cmd.cwd !== '.' && cmd.cwd !== '') return 'run from another directory';
+  if (/\s(?:--cwd|--dir|--prefix|-C)(?:\s|=)/.test(cmd.text)) return 'run from another directory';
+  if (textNamedDirs(lines, cmd.line, fileDir.startsWith('..') ? '.' : fileDir, tree).length > 0) {
+    return 'near text that names a directory it may run from';
+  }
+  return undefined;
+}
+
 /** Occurrences of a plain substring in one line of text (pcic-oonz). */
 function countOnLine(line: string, needle: string): number {
   if (!needle) return 0;
@@ -263,7 +296,7 @@ function packagesDefining(context: RepoContext, tree: RepoTree, script: string):
 const HEADING_RE = /^\s{0,3}#{1,6}\s/;
 /** A backticked token, or a bare token ending in `/`: the two ways prose names a directory. */
 const DIR_TOKEN_RE =
-  /`([^`\s]+)`|(?<![\w./@-])((?:\.{1,2}\/)?[\w@.-]+(?:\/[\w@.-]+)*\/)|\bcd\s+(?:\.\/)?([\w@.-]+(?:\/[\w@.-]+)*)/g;
+  /`([^`\s]+)`|(?<![\w./@-])((?:\.{1,2}\/)?[\w@.-]+(?:\/[\w@.-]+)*\/)(?![\w@.*?[{-])|\bcd\s+(?:\.\/)?([\w@.-]+(?:\/[\w@.-]+)*)/g;
 const NOT_A_DIR_RE = /[*?<>{}[\]$~%\\]/;
 const MAX_HINT_LINES = 80;
 const MAX_HINT_DIRS = 24;
@@ -1294,17 +1327,27 @@ function computeCommandAnalysis(context: RepoContext): CommandAnalysis {
       // (`isMechanicalRename`; `test:api` vs `test:app` is not), and the text
       // to replace appears exactly once on the line, so the edit cannot land on
       // another command that shares it.
-      const fix =
-        rewrite?.mechanical && countOnLine(contentLines[cmd.line - 1] ?? '', rewrite.find) === 1
-          ? rewrite
-          : undefined;
+      //
+      // Only where the edit cannot change what the sentence means: an edit is
+      // applied unseen in a fix PR on someone else's repository, so a command in
+      // an HTML comment or an indented code block, one run from another directory
+      // (`cd site && ...`, `--cwd`, "from the `site/` directory"), is named in the
+      // recommendation and never edited (pcic-1ik0.2).
+      const mechanical =
+        rewrite?.mechanical === true && countOnLine(contentLines[cmd.line - 1] ?? '', rewrite.find) === 1;
+      const editContext = mechanical
+        ? editBlocker(cmd, contentLines, commentLines(file.content), fileDir, tree)
+        : undefined;
+      const fix = mechanical && editContext === undefined ? rewrite : undefined;
       // A candidate too close to a different script to apply is still worth
       // naming — cautiously, and in the recommendation rather than the summary,
       // so nothing reads as a verdict.
       const hint =
         rewrite && !fix
           ? ` The manifest defines "${rewrite.candidate}", which is close to "${rewrite.missing}"; ` +
-            'it may be what was meant, but it is near enough to be a different script, so check before changing it.'
+            (editContext
+              ? `it may be what was meant, but this command is ${editContext}, so it was left unedited; check before changing it.`
+              : 'it may be what was meant, but it is near enough to be a different script, so check before changing it.')
           : '';
 
       if (elsewhere) {
