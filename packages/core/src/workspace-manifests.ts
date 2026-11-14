@@ -115,11 +115,9 @@ function stringKeys(value: unknown): string[] {
 
 function stringRecord(value: unknown): Record<string, string> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return {};
-  const out: Record<string, string> = {};
-  for (const [key, v] of Object.entries(value)) {
-    if (typeof v === 'string') out[key] = v;
-  }
-  return out;
+  // fromEntries defines own properties: assigning `out['__proto__'] = v` would
+  // set the prototype instead and drop a script of that name.
+  return Object.fromEntries(Object.entries(value).filter((entry): entry is [string, string] => typeof entry[1] === 'string'));
 }
 
 /** Bin names a manifest exposes: a string `bin` is named after the (unscoped) package. */
