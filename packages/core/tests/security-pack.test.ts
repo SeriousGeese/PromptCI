@@ -468,6 +468,12 @@ describe('detectSecurityPack', () => {
       ['an extensionless script without a shebang', { 'bin/setup': 'mvn -q install\n' }],
       ['a text file deep under build output', { 'bin/Debug/net8.0/App.dll': 'MZ', 'bin/Debug/net8.0/appsettings.json': '{}' }],
       ['an extensionless file that cannot be read', { 'bin/run': '' }],
+      ['an extensionless text file that starts with MZ', { 'bin/env': 'MZ_HOME=/opt/mz\n' }],
+      ['a tree deeper than the walk reads', { 'bin/a/b/c/d/e/f/g/h/i/App.class': 'x' }],
+      [
+        'more files than the walk reads, with a script after them',
+        { ...Object.fromEntries(Array.from({ length: 2000 }, (_, i) => [`bin/C${i}.class`, 'x'])), 'bin/zz-run.sh': 'echo' },
+      ],
     ])('does NOT report a bin/ holding %s beside a JVM build file (#206)', (_label, files) => {
       const tree = repo({ '.gitignore': '.promptci/', 'pom.xml': '<project/>', ...files });
       if ('bin/run' in files) {

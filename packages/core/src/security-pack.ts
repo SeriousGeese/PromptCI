@@ -181,7 +181,7 @@ function packageJsonNamesBinDir(tree: Tree): boolean {
 const COMPILER_OUTPUT_RE =
   /\.(?:class|jar|war|ear|dll|exe|pdb|mdb|winmd|so|dylib|deps\.json|runtimeconfig\.json|runtimeconfig\.dev\.json|dll\.config|exe\.config)$/i;
 
-/** Bounds on the walk under `bin/`; past either, the files already seen decide. */
+/** Bounds on the walk under `bin/`; past either, its contents are unknown, so it counts as source. */
 const BIN_WALK_MAX_DEPTH = 8;
 const BIN_WALK_MAX_FILES = 2000;
 
@@ -192,11 +192,12 @@ const BIN_WALK_MAX_FILES = 2000;
  * `bin/tool.groovy`, `bin/app.properties` and an extensionless `bin/setup` were
  * all reported as safe to ignore. Now a file must look compiled: an extension in
  * {@link COMPILER_OUTPUT_RE}, or an extensionless file that is binary (a NUL
- * byte, an `MZ` or ELF header) or too large to be a script. Dotfiles
- * (`.gitkeep`) carry no evidence either way. A directory or extensionless file
- * that cannot be listed or read (a hosted scan that listed but did not fetch
- * it) counts as source, since a wrong `bin/` line in .gitignore is the costlier
- * mistake. An empty directory holds nothing hand-written.
+ * byte or an ELF header) or too large to be a script. Dotfiles (`.gitkeep`)
+ * carry no evidence either way. A directory or extensionless file that cannot
+ * be listed or read (a hosted scan that listed but did not fetch it), and a
+ * tree past the walk's bounds, count as source, since a wrong `bin/` line in
+ * .gitignore is the costlier mistake. An empty directory holds nothing
+ * hand-written.
  */
 function holdsSourceFiles(tree: Tree, dir: string): boolean {
   let seen = 0;
@@ -204,21 +205,20 @@ function holdsSourceFiles(tree: Tree, dir: string): boolean {
     const entries = tree.entries(rel);
     if (typeof entries === 'string') return true;
     for (const entry of entries.values()) {
-      if (seen >= BIN_WALK_MAX_FILES) return false;
       const child = `${rel}/${entry.name}`;
       if (entry.isDirectory()) {
-        if (depth >= BIN_WALK_MAX_DEPTH) continue;
+        if (depth >= BIN_WALK_MAX_DEPTH) return true;
         if (walk(child, depth + 1)) return true;
         continue;
       }
       if (entry.name.startsWith('.')) continue;
-      seen++;
+      if (++seen > BIN_WALK_MAX_FILES) return true;
       if (COMPILER_OUTPUT_RE.test(entry.name)) continue;
       if (entry.name.includes('.')) return true;
       const head = tree.readText(child, { maxBytes: 256 * 1024 });
       if (head.state === 'too-large') continue;
       if (head.state !== 'found') return true;
-      const binary = head.content.includes('\u0000') || head.content.startsWith('MZ') || head.content.startsWith('\u007fELF');
+      const binary = head.content.includes('\u0000') || head.content.startsWith('\u007fELF');
       if (!binary) return true;
     }
     return false;
