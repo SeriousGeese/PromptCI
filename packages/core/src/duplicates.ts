@@ -401,6 +401,17 @@ type MirrorGroups = {
   comparable: Map<string, number>;
 };
 
+/**
+ * Id of a mirror-group finding: sha1 of `mirror:` plus the group's
+ * repo-relative file paths in canonical order, joined by `|`. It depends only
+ * on which files form the group, so it is the same in every checkout and does
+ * not change when the copied sections inside the files do.
+ */
+function mirrorIssueId(relativePaths: string[]): string {
+  const hash = crypto.createHash('sha1').update(`mirror:${relativePaths.join('|')}`).digest('hex').slice(0, 12);
+  return `duplicate-${hash}`;
+}
+
 /** The canonical file of a group: AGENTS.md when present, else the first path. */
 function canonicalFirst(files: string[]): string[] {
   const sorted = [...files].sort();
@@ -512,7 +523,12 @@ function mirrorIssue(
   const sectionsOf = (keys: string[]) => keys.map((k) => sectionByKey.get(k)!);
   const all = groupClusters.flatMap(sectionsOf);
   const label = new Map<string, string>();
-  for (const s of all) label.set(s.filePath, s.relativePath ?? path.basename(s.filePath));
+  const idPath = new Map<string, string>();
+  for (const s of all) {
+    label.set(s.filePath, s.relativePath ?? path.basename(s.filePath));
+    // A section's id path is its FILE's repo-relative path (finding-id.ts).
+    idPath.set(s.filePath, sectionIdPath(s));
+  }
   const names = files.map((f) => label.get(f) ?? path.basename(f));
   const canonicalName = names[0]!;
 
@@ -533,8 +549,7 @@ function mirrorIssue(
   const headings = [...new Set(groupClusters.map((keys) => sectionsOf(keys)[0]!.heading ?? '(untitled)'))];
 
   return {
-    // Repo-relative paths (finding-id.ts), so the id is the same in every checkout.
-    id: clusterIssueId(['mirror', ...files.map((f) => sectionIdPath(all.find((s) => s.filePath === f)!))]),
+    id: mirrorIssueId(files.map((f) => idPath.get(f) ?? f)),
     severity: 'warning',
     category: 'duplicate',
     title: `Possible mirrored instruction files: ${names.join(', ')}`,

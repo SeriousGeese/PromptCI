@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -1018,7 +1019,9 @@ describe('detectDuplicates — mirrored instruction files', () => {
     const issue = mirror[0]!;
     expect(issue.title).toBe('Possible mirrored instruction files: AGENTS.md, CLAUDE.md, GEMINI.md');
     expect(issue.severity).toBe('warning');
-    expect(issue.id).toMatch(/^duplicate-[0-9a-f]{12}$/);
+    // sha1("mirror:" + repo-relative paths in canonical order), nothing section-derived.
+    const expectedId = crypto.createHash('sha1').update('mirror:AGENTS.md|CLAUDE.md|GEMINI.md').digest('hex').slice(0, 12);
+    expect(issue.id).toBe(`duplicate-${expectedId}`);
     expect(issue.filePaths.map((p) => path.basename(p))).toEqual(['AGENTS.md', 'CLAUDE.md', 'GEMINI.md']);
     expect(issue.evidence.slice(0, 3)).toEqual([
       'AGENTS.md: 4 of 5 sections also appear in another listed file',
@@ -1053,6 +1056,18 @@ describe('detectDuplicates — mirrored instruction files', () => {
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  it('keeps the group id when the copied sections change', () => {
+    const files = (topics: string[]) => [
+      makeFile('/repo/AGENTS.md', sectionsFor('/repo/AGENTS.md', topics)),
+      makeFile('/repo/CLAUDE.md', sectionsFor('/repo/CLAUDE.md', topics)),
+    ];
+    const before = detectDuplicates(files(['caching', 'logging', 'routing']));
+    const after = detectDuplicates(files(['billing', 'search']));
+    expect(before).toHaveLength(1);
+    expect(after).toHaveLength(1);
+    expect(after[0]!.id).toBe(before[0]!.id);
   });
 
   it('two files that share one section of several stay a per-section finding', () => {
