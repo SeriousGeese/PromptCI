@@ -202,11 +202,9 @@ function packageManagerFromLockfiles(lockfiles: string[]): PackageManagerName {
 
 function stringRecord(value: unknown): Record<string, string> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return {};
-  const out: Record<string, string> = {};
-  for (const [key, v] of Object.entries(value)) {
-    if (typeof v === 'string') out[key] = v;
-  }
-  return out;
+  // fromEntries defines own properties: assigning `out['__proto__'] = v` would
+  // set the prototype instead and drop an entry of that name.
+  return Object.fromEntries(Object.entries(value).filter((entry): entry is [string, string] => typeof entry[1] === 'string'));
 }
 
 export function parsePackageJsonFacts(raw: string | undefined, lockfiles: string[]): PackageJsonFacts {
