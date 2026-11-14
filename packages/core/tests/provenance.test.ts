@@ -59,6 +59,13 @@ describe('provenanceStatus', () => {
     expect(provenanceStatus(record({ refuted: true, sources: [source({ stance: 'contradicts' })] }))).toBe('refuted');
     expect(provenanceStatus(record({ kind: 'repo-fact', appliesTo: 'all', sources: [] }))).toBe('repo-fact');
   });
+
+  it('never reports sourced for a record that lacks the evidence its kind needs, flag or no flag', () => {
+    expect(provenanceStatus(record({ sources: [source({ stance: 'context' })] }))).toBe('unverified');
+    expect(provenanceStatus(record({ sources: [source({ stance: 'contradicts' })] }))).toBe('unverified');
+    expect(provenanceStatus(record({ kind: 'opinion' }))).toBe('unverified');
+    expect(provenanceStatus(record({ kind: 'opinion', sources: [], evals: ['evals/x.md'] }))).toBe('sourced');
+  });
 });
 
 describe('provenanceStructureProblems: what counts as sourced', () => {

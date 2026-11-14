@@ -29,7 +29,11 @@ export function provenanceStatus(record: CheckProvenance): ProvenanceStatus {
   if (record.kind === 'repo-fact') return 'repo-fact';
   if (record.refuted) return 'refuted';
   if (record.unverified) return 'unverified';
-  return 'sourced';
+  // Not flagged: sourced only when the evidence its kind needs is there. A record
+  // that forgot its flag is reported as unverified here and fails the structure rules.
+  const evals = record.evals?.length ?? 0;
+  const supported = record.kind === 'tool-fact' ? record.sources.some((s) => s.stance === 'supports') || evals > 0 : evals > 0;
+  return supported ? 'sourced' : 'unverified';
 }
 
 /**
