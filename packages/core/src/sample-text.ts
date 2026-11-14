@@ -14,15 +14,31 @@
  * wrong automatic one lands in a stranger's repository.
  */
 
-/** `[start, end)` character ranges of every HTML comment; an unterminated one runs to the end. */
+import { scanFencedLines } from './markdown-fences.js';
+
+/**
+ * `[start, end)` character ranges of every HTML comment; an unterminated one runs
+ * to the end. A `<!--` inside a fenced block or an inline code span is text ABOUT
+ * comments ("Comments start with `<!--`."), not a comment, and opens nothing.
+ */
 export function htmlCommentRanges(content: string): Array<[number, number]> {
+  const fence = scanFencedLines(content);
   const ranges: Array<[number, number]> = [];
-  for (let at = content.indexOf('<!--'); at !== -1; ) {
-    const close = content.indexOf('-->', at + 4);
-    const end = close === -1 ? content.length : close + 3;
-    ranges.push([at, end]);
-    at = content.indexOf('<!--', end);
-  }
+  let lineStart = 0;
+  let resumeAt = 0;
+  content.split('\n').forEach((line, i) => {
+    if (fence[i]?.inFence !== true) {
+      for (let at = line.indexOf('<!--'); at !== -1; at = line.indexOf('<!--', at + 4)) {
+        const opener = lineStart + at;
+        if (opener < resumeAt) continue; // inside the comment already open
+        if ((line.slice(0, at).match(/`/g)?.length ?? 0) % 2 === 1) continue; // inside a code span
+        const close = content.indexOf('-->', opener + 4);
+        resumeAt = close === -1 ? content.length : close + 3;
+        ranges.push([opener, resumeAt]);
+      }
+    }
+    lineStart += line.length + 1;
+  });
   return ranges;
 }
 
