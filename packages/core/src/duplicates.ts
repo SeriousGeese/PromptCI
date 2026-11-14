@@ -111,6 +111,41 @@ function isBoilerplateHeading(heading: string | undefined): boolean {
   return false;
 }
 
+/**
+ * The ONE definition of "the same text" for an UNATTENDED consolidation edit,
+ * shared by per-section duplicate findings, mirrored-file findings and the
+ * import recipe (pcic-1ik0.5, pcic-1ik0.10). Two sections are the same text
+ * only when they are byte-identical after normalising exactly these, and
+ * nothing else:
+ *
+ * - line endings (CRLF and CR become LF);
+ * - trailing whitespace at the end of each line;
+ * - a leading byte-order mark;
+ * - leading and trailing blank lines of the section.
+ *
+ * No interior whitespace is collapsed, no indentation is trimmed, no reflow is
+ * treated as equal and no Markdown is modelled: a nested list, `<pre>` or
+ * inline-code spacing, a reflowed paragraph, tabs versus spaces, or a
+ * different Unicode normalisation all count as different, and the finding is
+ * then advisory. That costs a few auto-fixes and removes the whole class of
+ * "equal after normalising, different in meaning" wrong edits.
+ */
+export function sameSectionText(section: Pick<InstructionSection, 'text'>): string {
+  const lines = section.text
+    .replace(/^\uFEFF/, '')
+    .replace(/\r\n?/g, '\n')
+    .split('\n')
+    .map((line) => line.replace(/[ \t\f\v]+$/, ''));
+  while (lines.length > 0 && lines[0] === '') lines.shift();
+  while (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
+  return lines.join('\n');
+}
+
+/** True when every section in the list has the same text (see {@link sameSectionText}). */
+function allSameText(sections: Array<Pick<InstructionSection, 'text'>>): boolean {
+  return new Set(sections.map(sameSectionText)).size === 1;
+}
+
 function normalizedHeading(heading: string | undefined): string {
   return heading?.toLowerCase().replace(/\s+/g, ' ').trim() ?? '';
 }
@@ -333,9 +368,16 @@ export function detectDuplicates(files: InstructionFile[]): PromptCiIssue[] {
       : `Possible duplicate: ${headingLabel}`;
 
     const duplicateTokens = sections.slice(1).reduce((sum, s) => sum + Math.round(s.text.length / 4), 0);
-    const summary = fileCount > 2
-      ? `This section appears highly similar in ${fileCount} files. Consider consolidating into one canonical location.`
-      : 'These sections appear highly similar. Consider consolidating them into one canonical location.';
+    // Copies that are similar but not the same text (near-duplicates) must not
+    // be consolidated unattended: the pointer would replace the text that
+    // differs, and with it the evidence of a conflict. Same text = equal after
+    // collapsing whitespace and line endings (pcic-1ik0.5, PromptCI#160).
+    const identical = allSameText(sections);
+    const summary =
+      (fileCount > 2
+        ? `This section appears highly similar in ${fileCount} files. Consider consolidating into one canonical location.`
+        : 'These sections appear highly similar. Consider consolidating them into one canonical location.') +
+      (identical ? '' : ' The copies are not identical: they differ in places, so compare them before consolidating.');
 
     issues.push({
       id: clusterIssueId(keys),
@@ -356,13 +398,17 @@ export function detectDuplicates(files: InstructionFile[]): PromptCiIssue[] {
         `Duplicated size: ~${duplicateTokens} tokens`,
       ],
       recommendation:
-        `Consolidate these sections into one canonical location (e.g. AGENTS.md) and use forwarding pointers to save ~${duplicateTokens} tokens per session. If both are intentional, add a comment clarifying the distinction.`,
+        (identical
+          ? ''
+          : 'The copies differ: decide which text is right before consolidating, since a pointer would discard the other. Then ') +
+        `${identical ? 'Consolidate' : 'consolidate'} these sections into one canonical location (e.g. AGENTS.md) and use forwarding pointers to save ~${duplicateTokens} tokens per session. If both are intentional, add a comment clarifying the distinction.`,
       // `applyFixRecipe` can consolidate a duplicate that spans MULTIPLE files
-      // (pick a canonical file, replace the copies with a forwarding pointer).
-      // A cluster confined to one file has no other file to point at, so it
-      // stays advisory. Same-file duplicate *headings* are handled by the other
-      // detectors below and are never auto-applied.
-      autoApplySafe: fileCount >= 2,
+      // (pick a canonical file, replace the copies with a forwarding pointer),
+      // but only copies that are the same text: a near-duplicate stays
+      // advisory. A cluster confined to one file has no other file to point
+      // at, so it stays advisory too. Same-file duplicate *headings* are
+      // handled by the other detectors below and are never auto-applied.
+      autoApplySafe: fileCount >= 2 && identical,
       confidence,
     });
   }
@@ -591,10 +637,8 @@ function mirrorIssue(
 
   // Copies that have DRIFTED (near-duplicates, not the same text) must not be
   // replaced unattended: the pointer would delete the text that differs, and
-  // with it the evidence of a conflict. Same text = equal after collapsing
-  // whitespace and line endings.
-  const sameText = (s: InstructionSection) => s.text.replace(/\s+/g, ' ').trim();
-  const drifted = groupClusters.filter((keys) => new Set(sectionsOf(keys).map(sameText)).size > 1).map(heading);
+  // with it the evidence of a conflict. Same rule as per-section findings.
+  const drifted = groupClusters.filter((keys) => !allSameText(sectionsOf(keys))).map(heading);
   const counts = files
     .map((f, i) => `${names[i]} ${shared(f)} of ${Math.max(shared(f), mirrors.comparable.get(f) ?? 0)}`)
     .join(', ');
