@@ -5,12 +5,15 @@
  * exact matches or near-duplicates (Jaccard ≥ 0.8).
  *
  * When the same section appears in N files, ONE issue is emitted listing
- * all N files — not N*(N-1)/2 pairwise issues.
+ * all N files — not N*(N-1)/2 pairwise issues. When whole files mirror each
+ * other (most sections match), ONE warning is emitted for the group of files
+ * in place of the per-section findings between them (pcic-1ik0.5).
  *
  * Wording is intentionally cautious — all findings are heuristic.
  */
 
 import * as crypto from 'node:crypto';
+import * as path from 'node:path';
 import type { InstructionFile, InstructionSection, PromptCiIssue } from './types.js';
 import { snippet } from './evidence.js';
 import { fileIdPath, sectionIdPath } from './finding-id.js';
@@ -290,11 +293,26 @@ export function detectDuplicates(files: InstructionFile[]): PromptCiIssue[] {
     }
   }
 
+  // pcic-1ik0.5: clusters entirely inside a group of mirrored files are
+  // reported once for the group (below), not once per section.
+  const mirrors = findMirrorGroups(files, edges, sectionByKey);
+  const absorbed = new Map<number, string[][]>(); // mirror group index → its clusters
+  for (const [, keys] of clusters) {
+    if (keys.length < 2) continue;
+    const group = mirrorGroupOf(keys.map((k) => sectionByKey.get(k)!.filePath), mirrors);
+    if (group === undefined) continue;
+    const list = absorbed.get(group) ?? [];
+    list.push(keys);
+    absorbed.set(group, list);
+  }
+  const absorbedKeys = new Set([...absorbed.values()].flat(2));
+
   // Emit one issue per cluster
   const issues: PromptCiIssue[] = [];
 
   for (const [root, keys] of clusters) {
     if (keys.length < 2) continue;
+    if (absorbedKeys.has(keys[0]!)) continue;
 
     const sections = keys.map((k) => sectionByKey.get(k)!);
     const severity = clusterSeverity.get(root) ?? 'warning';
@@ -360,7 +378,277 @@ export function detectDuplicates(files: InstructionFile[]): PromptCiIssue[] {
     });
   }
 
+  for (const [group, groupClusters] of [...absorbed].sort((a, b) => a[0] - b[0])) {
+    issues.push(mirrorIssue(mirrors.groups[group]!, groupClusters, sectionByKey, mirrors));
+  }
+
   return issues;
+}
+
+// ── Mirrored instruction files (pcic-1ik0.5) ─────────────────────────────────
+
+/**
+ * Two files mirror each other when their matching sections (exact, or at the
+ * near-duplicate threshold) make up at least MIRROR_SHARE of BOTH files'
+ * comparable sections, or at least MIRROR_COPY_SHARE of EITHER file's (one
+ * file is mostly a copy of parts of the other, e.g. an AGENTS.md cut down
+ * from a longer CLAUDE.md). Below both, the shared sections stay ordinary
+ * per-section findings: two files that merely repeat a few sections are not
+ * copies of each other.
+ */
+const MIRROR_SHARE = 0.5;
+const MIRROR_COPY_SHARE = 0.8;
+/**
+ * A pair needs at least this many matching sections, unless each file is a
+ * single section and the two match (a whole one-section file copied).
+ */
+const MIRROR_MIN_SHARED = 2;
+
+type MirrorGroups = {
+  /** Each group's file paths, sorted with the canonical file first. */
+  groups: string[][];
+  groupOfFile: Map<string, number>;
+  /** Per file: its comparable section count (the share's denominator). */
+  comparable: Map<string, number>;
+};
+
+/**
+ * Id of a mirror-group finding: sha1 of `mirror:` plus the group's
+ * repo-relative file paths in canonical order, joined by `|`. It depends only
+ * on which files form the group, so it is the same in every checkout and does
+ * not change when the copied sections inside the files do.
+ */
+function mirrorIssueId(relativePaths: string[]): string {
+  const hash = crypto.createHash('sha1').update(`mirror:${relativePaths.join('|')}`).digest('hex').slice(0, 12);
+  return `duplicate-${hash}`;
+}
+
+/** The canonical file of a group: AGENTS.md when present, else the first path. */
+function canonicalFirst(files: string[]): string[] {
+  const sorted = [...files].sort();
+  const agents = sorted.find((f) => path.basename(f).toLowerCase() === 'agents.md');
+  return agents ? [agents, ...sorted.filter((f) => f !== agents)] : sorted;
+}
+
+/**
+ * Groups of instruction files that mirror one another: every pair linked in a
+ * group shares at least MIRROR_SHARE of each file's comparable sections.
+ * Repositories keep AGENTS.md, CLAUDE.md and GEMINI.md (or per-tool rule
+ * files) identical on purpose, or generate them; reported per section, one
+ * mirror was dozens of high-severity findings.
+ */
+function findMirrorGroups(
+  files: InstructionFile[],
+  edges: Array<{ keyA: string; keyB: string; severity: PromptCiIssue['severity'] }>,
+  sectionByKey: Map<string, InstructionSection>,
+): MirrorGroups {
+  // The share's denominator: EVERY section of the file that has body text,
+  // short ones included. Counting only the sections long enough to compare
+  // made two files whose one long section matched read as "1 of 1" mirrors
+  // however many short sections each had of its own.
+  const comparableKeys = new Map<string, Set<string>>();
+  for (const file of files) {
+    for (const s of file.sections) {
+      if (!hasBody(s)) continue;
+      const set = comparableKeys.get(s.filePath) ?? new Set<string>();
+      set.add(`${sectionIdPath(s)}:${s.startLine}`);
+      comparableKeys.set(s.filePath, set);
+    }
+  }
+
+  // For each ordered file pair, the sections of the first that match the second.
+  const matched = new Map<string, Map<string, Set<string>>>();
+  const exactPairs = new Set<string>();
+  const note = (from: string, to: string, key: string) => {
+    const byTarget = matched.get(from) ?? new Map<string, Set<string>>();
+    const keys = byTarget.get(to) ?? new Set<string>();
+    keys.add(key);
+    byTarget.set(to, keys);
+    matched.set(from, byTarget);
+  };
+  for (const edge of edges) {
+    if (edge.severity !== 'high' && edge.severity !== 'warning') continue; // borderline matches do not count
+    const a = sectionByKey.get(edge.keyA)!.filePath;
+    const b = sectionByKey.get(edge.keyB)!.filePath;
+    if (a === b) continue;
+    note(a, b, edge.keyA);
+    note(b, a, edge.keyB);
+    if (edge.severity === 'high') exactPairs.add([a, b].sort().join('\u0000'));
+  }
+
+  const denominator = (file: string, keys: Set<string>) =>
+    new Set([...(comparableKeys.get(file) ?? []), ...keys]).size;
+
+  const parent = new Map<string, string>();
+  const mirrored = new Set<string>();
+  const mirrorPairs = new Set<string>();
+  for (const [a, byTarget] of matched) {
+    for (const [b, aKeys] of byTarget) {
+      if (a >= b) continue; // each unordered pair once
+      const bKeys = matched.get(b)?.get(a) ?? new Set<string>();
+      const aShare = aKeys.size / denominator(a, aKeys);
+      const bShare = bKeys.size / denominator(b, bKeys);
+      // A one-section file counts only as an EXACT copy: near-identical
+      // single-section files (sibling slash commands sharing a template)
+      // are separate files on purpose.
+      const wholeFiles = aShare === 1 && bShare === 1 && exactPairs.has([a, b].sort().join('\u0000'));
+      if (Math.min(aKeys.size, bKeys.size) < MIRROR_MIN_SHARED && !wholeFiles) continue;
+      if (Math.min(aShare, bShare) < MIRROR_SHARE && Math.max(aShare, bShare) < MIRROR_COPY_SHARE) continue;
+      union(parent, a, b);
+      mirrored.add(a);
+      mirrored.add(b);
+      mirrorPairs.add(pairKey(a, b));
+    }
+  }
+
+  const members = new Map<string, string[]>();
+  for (const file of mirrored) {
+    const root = find(parent, file);
+    members.set(root, [...(members.get(root) ?? []), file]);
+  }
+  // Every pair in a group must itself be a mirror pair. Connected components
+  // alone would chain A~B and B~C into one group although A and C share
+  // nothing, and the consolidation fix would then point C's own text at A.
+  const groups = [...members.values()]
+    .flatMap((component) => splitIntoCliques(component, (x, y) => mirrorPairs.has(pairKey(x, y))))
+    .map(canonicalFirst)
+    .sort((x, y) => x[0]!.localeCompare(y[0]!));
+
+  const comparable = new Map<string, number>();
+  const groupOfFile = new Map<string, number>();
+  groups.forEach((files, i) => {
+    for (const file of files) {
+      groupOfFile.set(file, i);
+      comparable.set(file, comparableKeys.get(file)?.size ?? 0);
+    }
+  });
+  return { groups, groupOfFile, comparable };
+}
+
+const pairKey = (a: string, b: string) => (a < b ? `${a}\u0000${b}` : `${b}\u0000${a}`);
+
+/**
+ * Split a connected set of files into groups in which every two files are
+ * linked, deterministically: seed each group with the canonical remaining file
+ * (AGENTS.md first, else the first path), add each other remaining file, in
+ * path order, that is linked to every member so far, and repeat with what is
+ * left. Groups of one file are dropped.
+ */
+function splitIntoCliques(files: string[], linked: (a: string, b: string) => boolean): string[][] {
+  const groups: string[][] = [];
+  let remaining = canonicalFirst(files);
+  while (remaining.length > 1) {
+    const group = [remaining[0]!];
+    for (const file of remaining.slice(1)) {
+      if (group.every((member) => linked(member, file))) group.push(file);
+    }
+    if (group.length > 1) groups.push(group);
+    remaining = canonicalFirst(remaining.filter((f) => !group.includes(f)));
+  }
+  return groups;
+}
+
+/** True when a section has text beyond its heading line. */
+function hasBody(section: InstructionSection): boolean {
+  const body = section.text.replace(/^\s*#{1,6}\s+[^\n]*\n?/, '');
+  return normalizeSection(body).length > 0;
+}
+
+/** The mirror group holding every one of these files (at least two distinct), if any. */
+function mirrorGroupOf(files: string[], mirrors: MirrorGroups): number | undefined {
+  const distinct = [...new Set(files)];
+  if (distinct.length < 2) return undefined;
+  const group = mirrors.groupOfFile.get(distinct[0]!);
+  if (group === undefined) return undefined;
+  return distinct.every((f) => mirrors.groupOfFile.get(f) === group) ? group : undefined;
+}
+
+/** ONE warning for a group of mirrored files, replacing its per-section duplicate findings. */
+function mirrorIssue(
+  files: string[],
+  groupClusters: string[][],
+  sectionByKey: Map<string, InstructionSection>,
+  mirrors: MirrorGroups,
+): PromptCiIssue {
+  const canonical = files[0]!;
+  const sectionsOf = (keys: string[]) => keys.map((k) => sectionByKey.get(k)!);
+  const all = groupClusters.flatMap(sectionsOf);
+  const label = new Map<string, string>();
+  const idPath = new Map<string, string>();
+  for (const s of all) {
+    label.set(s.filePath, s.relativePath ?? path.basename(s.filePath));
+    // A section's id path is its FILE's repo-relative path (finding-id.ts).
+    idPath.set(s.filePath, sectionIdPath(s));
+  }
+  const names = files.map((f) => label.get(f) ?? path.basename(f));
+  const canonicalName = names[0]!;
+
+  // Tokens a session pays for the copies: every section of a cluster but one
+  // (the canonical file's, when it holds one).
+  let duplicateTokens = 0;
+  for (const keys of groupClusters) {
+    const sections = sectionsOf(keys);
+    const keep = sections.find((s) => s.filePath === canonical) ?? sections[0]!;
+    duplicateTokens += sections.filter((s) => s !== keep).reduce((sum, s) => sum + Math.round(s.text.length / 4), 0);
+  }
+
+  const shared = (file: string) => new Set(all.filter((s) => s.filePath === file).map((s) => s.startLine)).size;
+  const order = new Map(files.map((f, i) => [f, i]));
+  const locations = [...all]
+    .sort((a, b) => order.get(a.filePath)! - order.get(b.filePath)! || a.startLine - b.startLine)
+    .map((s) => ({ filePath: s.filePath, startLine: s.startLine, endLine: s.endLine }));
+  const heading = (keys: string[]) => sectionsOf(keys)[0]!.heading ?? '(untitled)';
+  const headings = [...new Set(groupClusters.map(heading))];
+
+  // Copies that have DRIFTED (near-duplicates, not the same text) must not be
+  // replaced unattended: the pointer would delete the text that differs, and
+  // with it the evidence of a conflict. Same text = equal after collapsing
+  // whitespace and line endings.
+  const sameText = (s: InstructionSection) => s.text.replace(/\s+/g, ' ').trim();
+  const drifted = groupClusters.filter((keys) => new Set(sectionsOf(keys).map(sameText)).size > 1).map(heading);
+  const counts = files
+    .map((f, i) => `${names[i]} ${shared(f)} of ${Math.max(shared(f), mirrors.comparable.get(f) ?? 0)}`)
+    .join(', ');
+
+  return {
+    id: mirrorIssueId(files.map((f) => idPath.get(f) ?? f)),
+    severity: 'warning',
+    category: 'duplicate',
+    title: `Possible mirrored instruction files: ${names.join(', ')}`,
+    summary:
+      `These ${files.length} instruction files appear to be copies of one another: ${groupClusters.length} ` +
+      'section(s) have the same or nearly the same text in more than one of them, covering most of at least one ' +
+      `file (shared sections per file: ${counts}). That is common when copies are kept in step for tools that ` +
+      'read different files, or generated. Reported once for the group rather than once per section. Every tool ' +
+      `that loads more than one of them pays about ${duplicateTokens} extra tokens per session, and copies tend ` +
+      'to drift apart.' +
+      (drifted.length > 0
+        ? ` The copies already differ in ${drifted.length} section(s): ${snippet(drifted.join(', '), 200)}.`
+        : ''),
+    filePaths: files,
+    locations,
+    // The member files and shared headings. Counts and sizes live in the
+    // summary; identity is `fingerprintKey`, so neither moves the fingerprint.
+    evidence: [...names.map((n) => `Mirrored file: ${n}`), `Shared sections: ${snippet(headings.join(', '), 200)}`],
+    recommendation:
+      (drifted.length > 0
+        ? `Reconcile the sections that differ (${snippet(drifted.join(', '), 120)}) first: decide which text is ` +
+          'right, since a pointer would discard the other. Then consider '
+        : 'Consider ') +
+      `keeping one canonical file (here ${canonicalName}) and replacing the others with a short pointer ` +
+      `such as "Follow ${path.basename(canonicalName)}", or a symlink where the tool follows one. If a generator ` +
+      'writes these files, configure it to write the pointer instead. Keep only genuinely tool-specific guidance ' +
+      'in the other files.',
+    // The consolidation recipe replaces each copied section outside the
+    // canonical (first-listed) file with a pointer to it. Only safe when every
+    // copy is the same text; otherwise advisory.
+    autoApplySafe: drifted.length === 0,
+    // One identity per mirror group, keyed on its canonical file: editing a
+    // copied section, or the group gaining or losing a member, is the same
+    // finding (baseline, trend, SARIF), not "resolved + new".
+    fingerprintKey: `duplicate-mirror:${idPath.get(canonical) ?? canonical}`,
+    confidence: 0.8,
+  };
 }
 
 // ── BUG-004: Same-heading duplicate within a single file ─────────────────────
