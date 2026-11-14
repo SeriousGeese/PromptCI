@@ -148,6 +148,8 @@ type TrendIssueLike = {
   title?: string;
   filePaths?: string[];
   evidence?: string[];
+  /** A grouped finding's stable identity (see `PromptCiIssue.fingerprintKey`). */
+  fingerprintKey?: string;
 };
 
 /**
@@ -167,6 +169,9 @@ function trendIssueKey(issue: TrendIssueLike, repoPath?: string): string {
       title: issue.title ?? '',
       filePaths: issue.filePaths ?? [],
       evidence: issue.evidence ?? [],
+      // Carried through so a grouped finding whose list changed is the same
+      // issue in the trend too, as it is in the baseline and SARIF.
+      ...(typeof issue.fingerprintKey === 'string' ? { fingerprintKey: issue.fingerprintKey } : {}),
     },
     repoPath,
   );

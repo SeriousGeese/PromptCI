@@ -302,8 +302,7 @@ function missingPracticesIssue(missing: PracticeCheck[], fileCount: number, file
       'does not count toward the health score.',
     filePaths,
     locations: [],
-    // One line per missing practice, in a fixed order, so the baseline
-    // fingerprint changes only when the set of missing practices does.
+    // One line per missing practice, in a fixed order.
     evidence: [
       `Searched ${fileCount} instruction file(s).`,
       ...labels.map((label) => `Not found: ${label}`),
@@ -313,6 +312,10 @@ function missingPracticesIssue(missing: PracticeCheck[], fileCount: number, file
       missing.map((check) => check.recommendation.replace(/^Add (?:an explicit |a )?rule such as: /, '')).join(' '),
     fixRecipe: missing.map((check) => check.fixRecipe).filter(Boolean).join('\n'),
     confidence: Math.min(...missing.map((check) => check.confidence)),
+    // One identity per repository: adding a rule, or another instruction
+    // file, changes the evidence and file list but is the same finding
+    // getting better, not "resolved + new" (baseline, review-diff, SARIF).
+    fingerprintKey: 'agent-practice:missing-practices',
     tags: [UNSCORED_TAG],
   };
 }

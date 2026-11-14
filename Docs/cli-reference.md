@@ -305,6 +305,35 @@ git add .promptci/baseline.json && git commit -m "chore: add promptci baseline"
 promptci scan --fail-on-new warning   # in CI: fail only on findings added since
 ```
 
+### Unscored findings
+
+Two checks fire on nearly every repository, so they are reported but do not count toward the
+health score: the repository-level agent-practice finding (common practices no instruction file
+mentions) and the per-workflow unpinned GitHub Actions finding. Both are `info` and carry the
+`unscored` tag; `@promptci/core` exports `UNSCORED_TAG` and `isScored(issue)` for consumers that
+re-score or filter findings, and `computeHealthScore` skips them. Third-party unpinned actions
+are `info` like GitHub's own, so `--fail-on warning` does not fail on them.
+
+### Grouped findings and fingerprints
+
+A finding is matched to the baseline by its fingerprint: category, title, file paths and
+evidence, never the id or line numbers. Two grouped findings use a fixed identity instead,
+because their evidence is a list that changes as the repository improves: the agent-practice
+finding (one per repository, listing the practices not found) and the action-pin finding (one per
+workflow file, listing its unpinned actions). They carry a `fingerprintKey`, and their
+fingerprint hashes only the category and that key. Pinning one action, adding one rule or adding
+an instruction file keeps them baselined, and so does a grouped finding that grows (one more
+unpinned action): both are `info` and do not count toward the health score. A workflow that gets
+its first unpinned action is a new finding. `review-diff --fail-on-regression`, the scan trend
+(`trend.newIssueIds`, `trend.resolvedIssueIds` and their counts) and SARIF `partialFingerprints`
+use the same fingerprint. `fingerprintKey` is an optional field on `PromptCiIssue` and is written
+to `report.json` with the rest of the finding.
+
+Upgrading from 0.3.0: a baseline (or previous `report.json`) written by 0.3.0 has these findings
+under their old, per-practice and per-action form, so the first scan with the new version shows
+the two grouped findings as new once, and the old ones as resolved. They are `info`, so only
+`--fail-on-new info` trips on it; refresh the baseline with `--update-baseline`.
+
 ## SARIF
 
 `promptci scan --format sarif` writes `.promptci/report.sarif` (override the path with
@@ -352,7 +381,8 @@ assigned rule id distinct from `category` — noted here as a possible follow-up
 change.
 
 Each finding's `partialFingerprints["promptci/v1"]` is PromptCI's own stable identity key (the
-same category+title+filePaths+evidence fingerprint `--baseline` already uses) — it is a hint for
+same category+title+filePaths+evidence fingerprint `--baseline` already uses, or category plus
+`fingerprintKey` for the two grouped findings described under Baselines) — it is a hint for
 GitHub's own cross-run matching, not the `primaryLocationLineHash` GitHub computes and uses
 itself. Within a single run, multiple findings can legitimately share the same `promptci/v1`
 value (the fingerprint excludes line numbers, so e.g. two instances of the same duplicate check
