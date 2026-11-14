@@ -1058,6 +1058,15 @@ function findMissingScript(
   return null;
 }
 
+/** Closing quotes, backticks and brackets trailing a token (pcic-1ik0.12). */
+const TRAILING_CLOSERS_RE = /["'`)\]}]+$/;
+
+/** True when two script names differ only by quotes, backticks and brackets. */
+function differsOnlyByClosers(a: string, b: string): boolean {
+  const strip = (s: string): string => s.replace(/["'`()[\]{}]/g, '');
+  return a !== b && strip(a) === strip(b);
+}
+
 const BUILTINS_BY_TOOL: Record<'pnpm' | 'npm' | 'yarn' | 'bun', Set<string>> = {
   pnpm: PNPM_BUILTINS,
   npm: NPM_BUILTINS,
@@ -1106,7 +1115,12 @@ function validatePackageManagerScript(
     }
   }
 
-  const scriptName = parts[nameIdx];
+  // pcic-1ik0.12: a command quoted inside prose or config text
+  // (`beforeBuildCommand: "npm run build:renderer && npm run build-frontend"`)
+  // leaves the closing quote, backtick or bracket on the last token. It closes
+  // the surrounding text, so it is not part of the script name: judged with it,
+  // an existing script reads as missing, and the "fix" deletes the quote.
+  const scriptName = parts[nameIdx]?.replace(TRAILING_CLOSERS_RE, '');
   if (!scriptName || scriptName.startsWith('-')) return null;
 
   // pcic-qc33: `pnpm build*` means every script that starts with `build`, and
@@ -1143,7 +1157,8 @@ function validatePackageManagerScript(
           replace: prefix ? `${prefix} ${candidate}` : candidate,
           missing,
           candidate,
-          mechanical,
+          // pcic-1ik0.12: an edit that only moves punctuation is never a fix.
+          mechanical: mechanical && !differsOnlyByClosers(missing, candidate),
           viaRoot,
         })
     : undefined;
