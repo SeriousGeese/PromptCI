@@ -3,15 +3,27 @@ name: Provenance
 # The expiry check for the check provenance records (pcic-kvv3.4). It reads the
 # clock, so it lives here and not in `pnpm test`: it must go red when a record
 # ages out, but must not break pull requests or the rebuild of an old release.
-# Weekly, so the 30-day early warning shows up as annotations on a green run
-# long before the 90-day failure.
+#
+# Weekly, so a record is flagged long before the 90-day failure. An annotation on
+# a green scheduled run reaches nobody, so the run also opens (or updates) ONE
+# issue labelled `provenance` while anything is due within 30 days, and closes it
+# when nothing is. GitHub disables scheduled workflows after 60 days without
+# repository activity: a push that touches the records runs the check too, and a
+# disabled schedule can be re-enabled from the Actions tab.
 on:
   schedule:
     - cron: '17 6 * * 1'
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'packages/core/src/provenance/**'
+      - 'scripts/check-provenance.mjs'
+      - '.github/workflows/provenance.yml'
 
 permissions:
   contents: read
+  issues: write
 
 jobs:
   provenance:
@@ -36,4 +48,27 @@ jobs:
         run: pnpm --filter @promptci/core build
 
       - name: Check provenance
-        run: pnpm provenance:check
+        id: check
+        run: node scripts/check-provenance.mjs --report provenance-report.md
+        continue-on-error: true
+
+      - name: Open, update or close the reminder issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          existing=$(gh issue list --repo "$REPO" --state open --label provenance --json number --jq '.[0].number // empty')
+          if [ -f provenance-report.md ]; then
+            if [ -n "$existing" ]; then
+              gh issue edit "$existing" --repo "$REPO" --body-file provenance-report.md
+            else
+              gh label create provenance --repo "$REPO" --color 5319e7 --description "Check provenance records that need re-verifying" 2>/dev/null || true
+              gh issue create --repo "$REPO" --title "Provenance: check records need re-verifying" --label provenance --body-file provenance-report.md
+            fi
+          elif [ -n "$existing" ]; then
+            gh issue close "$existing" --repo "$REPO" --comment "Nothing is due within 30 days."
+          fi
+
+      - name: Fail when the check failed
+        if: steps.check.outcome == 'failure'
+        run: exit 1

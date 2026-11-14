@@ -40,15 +40,18 @@ the URL the page finally resolves to, not a redirecting one.
 `provenanceStatus(record)` says what a record stands on:
 
 - **`repo-fact`**: a statement about the scanned repository. Needs no source and never expires.
-- **`sourced`**: a tool-fact with at least one source whose stance is `supports` (or an eval). A page
-  that only `contradicts` or gives `context` does not make it sourced.
+- **`sourced`**: a tool-fact with at least one source whose stance is `supports` (or an eval) and no
+  source that contradicts it. A page that only `contradicts` or gives `context` does not make it
+  sourced.
+- **`contested`**: a page supports part of the claim and another page contradicts it, for a tool the
+  record names. It is never shown as sourced. Split the claim per tool, or fix the check.
 - **`unverified`**: nothing supports the claim. A result, not a failure: the check rests on judgement
   and says so. An opinion is `unverified` unless an eval supports it: documentation is related
-  reading, not an eval. An unverified record may keep `context` sources (and, for an opinion, any
-  related documentation).
-- **`refuted`**: the only on-point source contradicts the claim, so the check is probably wrong. A
-  refuted check is reviewed by a person; it is never retired automatically, and each one has an
-  issue in the detector repository.
+  reading, not an eval, so its pages have stance `context` (or `contradicts`), never `supports`.
+- **`refuted`**: the only on-point source contradicts the claim, so the check is probably wrong.
+
+A `contested` or `refuted` check is reviewed by a person; it is never retired automatically, and each
+one has an issue in the detector repository.
 
 Stances are judged against `appliesTo`: a page about the Claude API says nothing about Cursor.
 
@@ -65,8 +68,15 @@ Two sets of rules, run in different places on purpose:
   with it. It runs as `pnpm provenance:check` (`scripts/check-provenance.mjs`) from
   `.github/workflows/provenance.yml`, weekly and on demand. It **fails** when a `tool-fact` or
   `opinion` (of any status) has a `lastVerified` more than 90 days old, naming the check and the
-  sources to re-read, and **warns** (an annotation on a green run) for every record within 30 days
-  of expiring. `PROVENANCE_TODAY=2027-02-01 pnpm provenance:check` shows what a given day would say.
+  sources to re-read, and **warns** for every record within 30 days of expiring. An annotation on a
+  green scheduled run reaches nobody, so the workflow also opens (or updates) one issue labelled
+  `provenance` while anything is due, and closes it when nothing is. The workflow also runs when the
+  records change, because GitHub disables a scheduled workflow after 60 days without repository
+  activity; if that happens, re-enable it from the Actions tab.
+  `PROVENANCE_TODAY=2027-02-01 pnpm provenance:check` shows what a given day would say.
+- **Thresholds name real code**: every threshold's `where` (`file.ts:IDENTIFIER`) must name a file
+  under `packages/core/src` and an identifier that appears in it, so a rename or a removed constant
+  fails the test instead of leaving the record pointing at nothing.
 
 ## Re-verifying
 

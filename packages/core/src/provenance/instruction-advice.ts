@@ -79,8 +79,8 @@ export const INSTRUCTION_ADVICE_PROVENANCE: readonly CheckProvenance[] = [
       heuristic('fileHigh', 20000, 'characters per instruction file', 'context-bloat.ts:DEFAULTS.fileHigh'),
       heuristic('totalWarning', 30000, 'characters across all instruction files', 'context-bloat.ts:DEFAULTS.totalWarning'),
       heuristic('totalHigh', 60000, 'characters across all instruction files', 'context-bloat.ts:DEFAULTS.totalHigh'),
-      heuristic('contextBudget high multiplier', 2, 'times the configured contextBudget', 'detectors.ts:DETECTORS context-bloat entry'),
-      heuristic('fileContextBudget high multiplier', 2.5, 'times the configured fileContextBudget', 'detectors.ts:DETECTORS context-bloat entry'),
+      heuristic('contextBudget high multiplier', 2, 'times the configured contextBudget', 'detectors.ts:DETECTORS'),
+      heuristic('fileContextBudget high multiplier', 2.5, 'times the configured fileContextBudget', 'detectors.ts:DETECTORS'),
     ],
     caveat:
       'geminicli.com carries a banner (read 2026-11-14): Gemini CLI was replaced by Antigravity CLI on June 18th, 2026 for unpaid-tier and Google One users, and it has not been optimized for Gemini 4 Argon; a claim about gemini-cli may not hold for the replacement.',
@@ -125,7 +125,7 @@ export const INSTRUCTION_ADVICE_PROVENANCE: readonly CheckProvenance[] = [
       'A README that makes up most of the scanned instruction text is carried into agent context on every turn although it is written for people, so AI-specific guidance is cheaper in a smaller canonical file such as AGENTS.md.',
     appliesTo: 'all',
     sources: [
-      src('agentsMd', 'supports', 'Describes AGENTS.md as a README for agents and says the extra detail agents need, such as build steps and conventions, would clutter a README written for humans.'),
+      src('agentsMd', 'context', 'Describes AGENTS.md as a README for agents and says the extra detail agents need, such as build steps and conventions, would clutter a README written for humans.'),
       src('ccMemory', 'context', 'Lists the files Claude Code loads at start (CLAUDE.md, AGENTS.md, rules, auto memory) and mentions README only as an @README import example, so a README is not shown to be loaded on every turn; this is inferred from the page listing, not stated.'),
     ],
     thresholds: [
@@ -198,7 +198,7 @@ export const INSTRUCTION_ADVICE_PROVENANCE: readonly CheckProvenance[] = [
         'contradicts',
         'Says to place static content such as system instructions and context at the beginning of the prompt and cache it, and makes cache hits depend on identical prefix text and not on its size, so a large stable table does not reduce cache hits; it only costs tokens.',
       ),
-      src('ccMemory', 'supports', 'Advises moving entries that matter for only part of the codebase out of CLAUDE.md into skills or path-scoped rules because longer files consume more context.'),
+      src('ccMemory', 'context', 'Advises moving entries that matter for only part of the codebase out of CLAUDE.md into skills or path-scoped rules because longer files consume more context.'),
     ],
     thresholds: [heuristic('maxTableRows', 15, 'table rows', 'prompt-cache.ts:detectPromptCacheFriendliness (maxTableRows > 15)')],
     lastVerified: V13,
@@ -216,7 +216,7 @@ export const INSTRUCTION_ADVICE_PROVENANCE: readonly CheckProvenance[] = [
     sources: [
       src(
         'apiPrompt',
-        'supports',
+        'context',
         'Advises telling Claude what to do instead of what not to do, but only in an output-formatting example (do not use markdown versus flowing prose), and its own sample prompt for limiting over-engineering is written as prohibitions.',
       ),
       src('ccBest', 'context', 'Its recommended sample CLAUDE.md contains prohibitions (never throw raw strings, do not copy legacy patterns), so the page does not treat a prohibition as a defect.'),
@@ -266,10 +266,10 @@ export const INSTRUCTION_ADVICE_PROVENANCE: readonly CheckProvenance[] = [
       'Broad exhortations such as write clean code or follow best practices give an agent no constraint to act on, whereas concrete commands and checkable rules are followed more consistently.',
     appliesTo: 'all',
     sources: [
-      src('ccMemory', 'supports', 'Says the more specific and concise the instructions the more consistently Claude follows them and contrasts Use 2-space indentation with Format code properly.'),
-      src('apiPrompt', 'supports', 'Says Claude responds well to clear explicit instructions and gives a test of whether a colleague with no context would be confused.'),
-      src('anthContext', 'supports', 'Names vague high-level guidance that fails to give concrete signals as one of two failure modes for prompt altitude.'),
-      src('cursor', 'supports', 'Says rules should be focused, actionable and scoped and should avoid vague guidance.'),
+      src('ccMemory', 'context', 'Says the more specific and concise the instructions the more consistently Claude follows them and contrasts Use 2-space indentation with Format code properly.'),
+      src('apiPrompt', 'context', 'Says Claude responds well to clear explicit instructions and gives a test of whether a colleague with no context would be confused.'),
+      src('anthContext', 'context', 'Names vague high-level guidance that fails to give concrete signals as one of two failure modes for prompt altitude.'),
+      src('cursor', 'context', 'Says rules should be focused, actionable and scoped and should avoid vague guidance.'),
       src('windsurf', 'context', 'Devin Local docs, not Windsurf docs: Advises skipping generic rules such as write good code.'),
     ],
     thresholds: [heuristic('MAX_LINE_LENGTH_TO_FLAG', 120, 'characters in the matching line', 'vague-guidance.ts:MAX_LINE_LENGTH_TO_FLAG')],
@@ -299,10 +299,10 @@ export const INSTRUCTION_ADVICE_PROVENANCE: readonly CheckProvenance[] = [
     sources: [
       src(
         'ccBest',
-        'supports',
+        'context',
         'Says to give Claude a check it can run and that the single most useful CLAUDE.md line is the command that runs it, while noting that a line such as Always typecheck before you finish works most of the time and not every time and that a Stop hook enforces it.',
       ),
-      src('ghRepo', 'supports', 'The onboarding prompt asks for build, test and lint steps with verified commands and the checks run before check-in.'),
+      src('ghRepo', 'context', 'The onboarding prompt asks for build, test and lint steps with verified commands and the checks run before check-in.'),
     ],
     lastVerified: V13,
   },
@@ -317,7 +317,7 @@ export const INSTRUCTION_ADVICE_PROVENANCE: readonly CheckProvenance[] = [
     sources: [
       src(
         'apiPrompt',
-        'supports',
+        'context',
         'Its sample prompts say never to speculate about code that was not opened and to read the file before answering, and to inform the user rather than work around incorrect tests; they are suggested prompts and not measured results.',
       ),
       src('ccBest', 'context', 'Attributes a Claude that said it was done when it was not mainly to having no way to check its own work, and not to a missing instruction to report honestly.'),
@@ -346,7 +346,7 @@ export const INSTRUCTION_ADVICE_PROVENANCE: readonly CheckProvenance[] = [
     sources: [
       src(
         'apiPrompt',
-        'supports',
+        'context',
         'Its Overeagerness section says Claude Opus 4.5 and 4.6 tend to over-engineer with extra files and abstractions and gives a sample prompt to make only directly requested changes; the section names those two models.',
       ),
       src(
@@ -379,7 +379,7 @@ export const INSTRUCTION_ADVICE_PROVENANCE: readonly CheckProvenance[] = [
     sources: [
       src(
         'ccBest',
-        'supports',
+        'context',
         'Recommends having Claude interview you and write a SPEC.md before building from it in a fresh session, which is plan-before-implementing guidance, but gives no measurement of how much effort it saves.',
       ),
     ],
@@ -395,7 +395,7 @@ export const INSTRUCTION_ADVICE_PROVENANCE: readonly CheckProvenance[] = [
     appliesTo: ['claude-code', 'cursor', 'windsurf', 'copilot', 'gemini-cli'],
     sources: [
       src('ccMemory', 'supports', 'Says Claude Code reads AGENTS.md by default only when there is no CLAUDE.md or CLAUDE.local.md in the working directory or above it, so a CLAUDE.md without the rules hides AGENTS.md.'),
-      src('gemini', 'supports', 'Shows AGENTS.md only as a context.fileName configuration example and does not say it is read by default.'),
+      src('gemini', 'context', 'Shows AGENTS.md only as a context.fileName configuration example and does not say it is read by default, so it neither supports nor contradicts the claim.'),
       src('cursor', 'contradicts', 'Says AGENTS.md in the project root or subdirectories is read as an alternative to .cursor/rules, so Cursor does see rules that exist only in AGENTS.md.'),
       src('windsurf', 'context', 'Devin Local docs, not Windsurf docs: Says AGENTS.md, AGENTS.local.md and AGENT.md are read as always-on rules at the workspace root and in directories down to the working directory, so Windsurf sees rules that exist only in AGENTS.md.'),
       src('ghRepo', 'contradicts', 'Says Copilot uses the nearest AGENTS.md in the directory tree and alternatively a root CLAUDE.md or GEMINI.md besides copilot-instructions.md, so Copilot sees rules that exist only in those files.'),
@@ -470,9 +470,9 @@ export const INSTRUCTION_ADVICE_PROVENANCE: readonly CheckProvenance[] = [
     claim: 'Instruction files that omit install, build and test commands, or the environment variables a project needs, leave an agent unable to set up and verify the project reliably.',
     appliesTo: 'all',
     sources: [
-      src('ccBest', 'supports', 'Lists the exact test, typecheck and lint commands as what CLAUDE.md should hold and its sample file notes that integration tests need DATABASE_URL set, see .env.example.'),
-      src('agentsMd', 'supports', 'Suggests covering build and test commands in AGENTS.md.'),
-      src('ghRepo', 'supports', 'The onboarding prompt asks for build, test and lint steps with verified commands and runtime versions.'),
+      src('ccBest', 'context', 'Lists the exact test, typecheck and lint commands as what CLAUDE.md should hold and its sample file notes that integration tests need DATABASE_URL set, see .env.example.'),
+      src('agentsMd', 'context', 'Suggests covering build and test commands in AGENTS.md.'),
+      src('ghRepo', 'context', 'The onboarding prompt asks for build, test and lint steps with verified commands and runtime versions.'),
     ],
     thresholds: [
       heuristic('distinct environment variable names before flagging', 3, 'names', 'missing-context.ts:checkEnvVarList (envVarNames.size < 3)'),
@@ -492,7 +492,7 @@ export const INSTRUCTION_ADVICE_PROVENANCE: readonly CheckProvenance[] = [
     sources: [
       src(
         'ccBest',
-        'supports',
+        'context',
         'Says CLAUDE.md should hold the exact test, typecheck and lint commands, but its stop-doing table also says describing architecture and file layout in CLAUDE.md is advice to drop because Claude reads the repo itself, which is in tension with the recommendation to add common project patterns.',
       ),
       src('ccMemory', 'context', 'Says the /doctor checkup cuts directory layouts, dependency lists and architecture overviews that Claude can derive from the codebase and keeps pitfalls, rationale and conventions that differ from tool defaults.'),
@@ -509,7 +509,7 @@ export const INSTRUCTION_ADVICE_PROVENANCE: readonly CheckProvenance[] = [
     claim:
       'Instruction files that never mention authentication, secrets or input validation, or that describe credential storage without scopes, validation, expiry or rotation, leave agents without the security rules they need.',
     appliesTo: 'all',
-    sources: [src('agentsMd', 'supports', 'Lists security considerations among the content AGENTS.md can cover; the page says nothing about token scopes, expiry or rotation.')],
+    sources: [src('agentsMd', 'context', 'Lists security considerations among the content AGENTS.md can cover; the page says nothing about token scopes, expiry or rotation.')],
     lastVerified: V13,
   },
   {
@@ -579,7 +579,7 @@ export const INSTRUCTION_ADVICE_PROVENANCE: readonly CheckProvenance[] = [
     sources: [
       src(
         'ccMemory',
-        'supports',
+        'context',
         'Says Claude Code skips an AGENTS.md it has already loaded so an imported or symlinked copy is not read twice, that a SessionStart hook printing AGENTS.md adds a second copy to the context, and that contradictory instructions across files may be resolved arbitrarily.',
       ),
       src(
@@ -620,7 +620,7 @@ export const INSTRUCTION_ADVICE_PROVENANCE: readonly CheckProvenance[] = [
     claim: 'When several instruction files each declare themselves the canonical source of truth, agents cannot tell which one takes precedence.',
     appliesTo: 'all',
     sources: [
-      src('ccMemory', 'supports', 'Says that when two instructions contradict each other Claude may pick one arbitrarily and that conflicting files should be removed or reconciled.'),
+      src('ccMemory', 'context', 'Says that when two instructions contradict each other Claude may pick one arbitrarily and that conflicting files should be removed or reconciled.'),
       src('agentsMd', 'context', 'Says agents read the nearest AGENTS.md so the closest one takes precedence and explicit chat prompts override everything, which sets precedence by location and not by a canonical declaration inside a file.'),
       src('codex', 'context', 'Says files closer to the current directory override earlier guidance and an AGENTS.override.md replaces AGENTS.md in the same directory, so precedence is positional.'),
     ],
@@ -636,7 +636,7 @@ export const INSTRUCTION_ADVICE_PROVENANCE: readonly CheckProvenance[] = [
       'A section of more than 50 lines in a tool-specific instruction file that matches a section of AGENTS.md duplicates behaviour that a pointer could share, costing tokens every session and inviting drift.',
     appliesTo: 'all',
     sources: [
-      src('ccMemory', 'supports', 'Documents keeping AGENTS.md as the one shared file and importing it with @AGENTS.md or symlinking so the content is read once, not twice.'),
+      src('ccMemory', 'context', 'Documents keeping AGENTS.md as the one shared file and importing it with @AGENTS.md or symlinking so the content is read once, not twice.'),
       src(
         'ccMemory',
         'contradicts',

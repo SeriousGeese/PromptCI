@@ -38,10 +38,11 @@ export type SourceStance = 'supports' | 'contradicts' | 'context';
 /**
  * What a record stands on, derived from its fields (see `provenanceStatus`):
  * `repo-fact` (needs nothing), `sourced` (a supporting page, or an eval),
- * `unverified` (nothing supports it; it rests on judgement) or `refuted` (the
- * only on-point source says the opposite: the check is probably wrong).
+ * `unverified` (nothing supports it; it rests on judgement), `contested` (one
+ * page supports part of it and another contradicts it) or `refuted` (the only
+ * on-point source says the opposite: the check is probably wrong).
  */
-export type ProvenanceStatus = 'repo-fact' | 'sourced' | 'unverified' | 'refuted';
+export type ProvenanceStatus = 'repo-fact' | 'sourced' | 'unverified' | 'contested' | 'refuted';
 
 export type ProvenanceSource = {
   /** A page that was actually read; never reconstructed from memory. */

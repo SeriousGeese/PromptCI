@@ -617,7 +617,7 @@ export const TOOL_CONFIG_PROVENANCE: readonly CheckProvenance[] = [
     sources: [
       cite(
         PAGES.skillsOverview,
-        'supports',
+        'context',
         'Tells reviewers to look for unexpected network calls and file access, and says skills that fetch external URLs pose particular risk and can be compromised if their dependencies change; it names no specific pipe-to-shell or encoding pattern.',
       ),
     ],

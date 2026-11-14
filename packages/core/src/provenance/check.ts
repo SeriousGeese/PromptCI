@@ -33,7 +33,9 @@ export function provenanceStatus(record: CheckProvenance): ProvenanceStatus {
   // that forgot its flag is reported as unverified here and fails the structure rules.
   const evals = record.evals?.length ?? 0;
   const supported = record.kind === 'tool-fact' ? record.sources.some((s) => s.stance === 'supports') || evals > 0 : evals > 0;
-  return supported ? 'sourced' : 'unverified';
+  if (!supported) return 'unverified';
+  // A page that contradicts the claim for a tool it names outweighs one that supports another part of it.
+  return record.sources.some((s) => s.stance === 'contradicts') ? 'contested' : 'sourced';
 }
 
 /**
@@ -76,8 +78,12 @@ export function provenanceStructureProblems(records: readonly CheckProvenance[])
 
     if (record.unverified) {
       if (evals > 0) problems.push(`${record.id}: marked unverified but lists ${evals} eval(s); drop the flag`);
-      // A tool-fact that a page supports is sourced. An opinion has no page that can
-      // support it, so related documentation of any stance may stay next to the flag.
+      // A tool-fact that a page supports is sourced. An opinion has no page that can support
+      // it (only an eval can), so its related documentation is `context`, and a page that
+      // contradicts it may stay.
+      if (record.kind === 'opinion' && supports > 0) {
+        problems.push(`${record.id}: an unverified opinion lists ${supports} source(s) with stance supports; documentation is related reading, set them to context`);
+      }
       if (record.kind === 'tool-fact' && (supports > 0 || contradicts > 0)) {
         problems.push(
           `${record.id}: marked unverified but lists ${supports} supporting and ${contradicts} contradicting source(s); ` +
@@ -127,7 +133,7 @@ export function provenanceDateProblems(records: readonly CheckProvenance[], toda
     }
     if (record.kind === 'repo-fact' || verifiedDays === undefined) continue;
     if (verifiedDays > PROVENANCE_MAX_AGE_DAYS) {
-      const reread = record.sources.length > 0 ? record.sources.map((s) => s.url).join(', ') : 'no sources recorded';
+      const reread = record.sources.length > 0 ? [...new Set(record.sources.map((s) => s.url))].join(', ') : 'no sources recorded';
       problems.push(
         `${record.id}: lastVerified ${record.lastVerified.date} is ${verifiedDays} days old (limit ${PROVENANCE_MAX_AGE_DAYS}); re-read: ${reread}`,
       );

@@ -7,6 +7,9 @@
  * release would fail with it.
  */
 
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { DETECTORS } from '../src/detectors.js';
 import {
@@ -60,6 +63,12 @@ describe('provenanceStatus', () => {
     expect(provenanceStatus(record({ kind: 'repo-fact', appliesTo: 'all', sources: [] }))).toBe('repo-fact');
   });
 
+  it('is contested when a page supports part of the claim and another contradicts it', () => {
+    const both = record({ sources: [source(), source({ stance: 'contradicts', url: 'https://example.com/b' })] });
+    expect(provenanceStatus(both)).toBe('contested');
+    expect(provenanceStructureProblems([both])).toEqual([]);
+  });
+
   it('never reports sourced for a record that lacks the evidence its kind needs, flag or no flag', () => {
     expect(provenanceStatus(record({ sources: [source({ stance: 'context' })] }))).toBe('unverified');
     expect(provenanceStatus(record({ sources: [source({ stance: 'contradicts' })] }))).toBe('unverified');
@@ -89,7 +98,9 @@ describe('provenanceStructureProblems: what counts as sourced', () => {
   });
 
   it('lets an unverified opinion keep related documentation, but not an unverified tool-fact', () => {
-    expect(provenanceStructureProblems([record({ kind: 'opinion', unverified: true, sources: [source(), source({ stance: 'context', url: 'https://e.com/c' })] })])).toEqual([]);
+    expect(provenanceStructureProblems([record({ kind: 'opinion', unverified: true, sources: [source({ stance: 'context' }), source({ stance: 'contradicts', url: 'https://e.com/c' })] })])).toEqual([]);
+    // A page that "supports" an opinion would show a supporting link under an unverified badge.
+    expect(provenanceStructureProblems([record({ kind: 'opinion', unverified: true, sources: [source()] })])).toHaveLength(1);
     expect(provenanceStructureProblems([record({ unverified: true, sources: [source({ stance: 'context' })] })])).toEqual([]);
     expect(provenanceStructureProblems([record({ unverified: true })])).toHaveLength(1);
     expect(provenanceStructureProblems([record({ unverified: true, sources: [source({ stance: 'contradicts' })] })])).toHaveLength(1);
@@ -209,6 +220,37 @@ describe('the registry', () => {
       return keys.filter((k, i) => keys.indexOf(k) !== i).map((k) => `${r.id}: ${k}`);
     });
     expect(dupes).toEqual([]);
+  });
+
+  it('names, for every threshold, a file and an identifier that exist (so a rename cannot leave a record pointing at nothing)', () => {
+    const srcDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../src');
+    const files = new Map<string, string>();
+    const walk = (dir: string): void => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (entry.isDirectory()) walk(path.join(dir, entry.name));
+        else if (entry.name.endsWith('.ts')) files.set(entry.name, fs.readFileSync(path.join(dir, entry.name), 'utf8'));
+      }
+    };
+    walk(srcDir);
+    const dangling: string[] = [];
+    for (const r of CHECK_PROVENANCE) {
+      for (const t of r.thresholds ?? []) {
+        const m = /^([\w./-]+\.ts):([\w.]+)(?: \(.*\))?$/.exec(t.where);
+        if (!m) {
+          dangling.push(`${r.id}: "${t.where}" is not file.ts:identifier (optionally followed by a note in parentheses)`);
+          continue;
+        }
+        const text = files.get(path.basename(m[1]!));
+        if (text === undefined) {
+          dangling.push(`${r.id}: ${m[1]} does not exist under packages/core/src`);
+          continue;
+        }
+        for (const identifier of m[2]!.split('.')) {
+          if (!new RegExp(`\\b${identifier}\\b`).test(text)) dangling.push(`${r.id}: ${identifier} does not appear in ${m[1]}`);
+        }
+      }
+    }
+    expect(dangling).toEqual([]);
   });
 
   it('carries the Gemini CLI replacement notice on every record about gemini-cli', () => {

@@ -513,8 +513,9 @@ export const REPO_CHECKS_PROVENANCE: readonly CheckProvenance[] = [
     thresholds: [
       { name: 'MAX_MANIFEST_DIRS', value: 400, unit: 'directories', where: 'command-validity.ts:MAX_MANIFEST_DIRS', source: 'unverified' },
       { name: 'MAX_MANIFEST_DEPTH', value: 5, unit: 'directory levels', where: 'command-validity.ts:MAX_MANIFEST_DEPTH', source: 'unverified' },
-      { name: 'MAX_MANIFEST_BYTES', value: 524288, unit: 'bytes per package.json', where: 'command-validity.ts:MAX_MANIFEST_BYTES', source: 'unverified' },
-      { name: 'MAX_TOKENS', value: 24, unit: 'directory names read from the text around a command', where: 'command-context.ts:MAX_TOKENS', source: 'unverified' },
+      { name: 'MAX_HINT_LINES', value: 80, unit: 'lines above a command', where: 'command-validity.ts:MAX_HINT_LINES', source: 'unverified' },
+      { name: 'MAX_HINT_DIRS', value: 24, unit: 'directories', where: 'command-validity.ts:MAX_HINT_DIRS', source: 'unverified' },
+      { name: 'MAX_HINT_LINES_AFTER_HEADING', value: 10, unit: 'lines', where: 'command-validity.ts:MAX_HINT_LINES_AFTER_HEADING', source: 'unverified' },
       { name: 'MAX_WORKSPACE_MANIFESTS', value: 200, unit: 'package.json files', where: 'workspace-manifests.ts:MAX_WORKSPACE_MANIFESTS', source: 'unverified' },
       { name: 'CLOSE_MATCH_MAX_DISTANCE', value: 2, unit: 'edits', where: 'close-match.ts:CLOSE_MATCH_MAX_DISTANCE', source: 'unverified' },
       { name: 'CLOSE_MATCH_MIN_LENGTH', value: 4, unit: 'characters', where: 'close-match.ts:CLOSE_MATCH_MIN_LENGTH', source: 'unverified' },
@@ -889,7 +890,7 @@ export const REPO_CHECKS_PROVENANCE: readonly CheckProvenance[] = [
     claim:
       'A repository that uses environment variables should tell the agent in its instructions never to print, log or commit secrets, API keys or credentials.',
     appliesTo: 'all',
-    sources: [OWASP_SECRETS],
+    sources: [{ ...OWASP_SECRETS, stance: 'context' }],
     lastVerified: VERIFIED,
   },
   {
@@ -912,7 +913,7 @@ export const REPO_CHECKS_PROVENANCE: readonly CheckProvenance[] = [
     claim:
       'A repository with file upload code should document allowed file types, a size limit and validation steps for user-provided files in its instructions.',
     appliesTo: 'all',
-    sources: [OWASP_UPLOAD],
+    sources: [{ ...OWASP_UPLOAD, stance: 'context' }],
     lastVerified: VERIFIED,
   },
   {
@@ -1033,7 +1034,7 @@ export const REPO_CHECKS_PROVENANCE: readonly CheckProvenance[] = [
     claim:
       'Instructions for a repository that uses a framework should name its verification commands so an agent runs them before declaring work complete.',
     appliesTo: ['claude-code'],
-    sources: [CLAUDE_BEST_PRACTICES],
+    sources: [{ ...CLAUDE_BEST_PRACTICES, stance: 'context' }],
     lastVerified: VERIFIED,
   },
 ];
