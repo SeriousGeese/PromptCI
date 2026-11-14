@@ -189,6 +189,24 @@ describe('a manifest that was listed but not read says nothing (hosted scans)', 
     noEdit(issues);
   });
 
+  it('treats a corrupt package.json as unreadable, never as a manifest with no scripts', async () => {
+    const named = await findings({
+      'package.json': ROOT,
+      'site/package.json': '{ "scripts": { "dev": ',
+      'CLAUDE.md': '## Site (from `site/`)\n\n```sh\nnpm run dev\n```\n',
+    });
+    expect(named.every((i) => !i.summary.includes('does not appear'))).toBe(true);
+    expect(named.some((i) => i.title.includes('incomplete'))).toBe(true);
+
+    const unnamed = await findings({
+      'package.json': ROOT,
+      'tools/package.json': '[1, 2]',
+      'CLAUDE.md': '# P\n\n```sh\nnpm run buil\n```\n',
+    });
+    expect(brief(unnamed)).toEqual(['warning:npm run buil']);
+    noEdit(unnamed);
+  });
+
   it('reads no manifest over the size cap: the check is reported incomplete, never guessed', async () => {
     const padding = 'a'.repeat(600 * 1024);
     const issues = await findings({

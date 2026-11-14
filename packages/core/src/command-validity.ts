@@ -181,9 +181,9 @@ function missingUnless(found: Lookup, message: string): Verdict {
 }
 
 /**
- * The name and scripts of a package.json; `null` when there is none to read
- * (or it does not parse); `unreadable` when a directory on the way could not
- * be listed, so whether it exists is unknown; `unfetched` when a caller's
+ * The name and scripts of a package.json; `null` when there is none to read;
+ * `unreadable` when the manifest is corrupt or a directory on the way could not
+ * be listed, so whether the script exists is unknown; `unfetched` when a caller's
  * inventory says the manifest is there but its bytes were never fetched
  * (pcic-csf) — nothing failed, so callers stay silent rather than warn.
  */
@@ -212,7 +212,8 @@ function readPackageScripts(
   try {
     const raw = read.content;
     const parsed = JSON.parse(raw) as Record<string, unknown>;
-    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return null;
+    // A manifest that is not a JSON object is corrupt, not absent: say it could not be read.
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return 'unreadable';
     const scripts = typeof parsed.scripts === 'object' && parsed.scripts !== null && !Array.isArray(parsed.scripts)
       ? Object.fromEntries(
           Object.entries(parsed.scripts).filter((entry): entry is [string, string] => typeof entry[1] === 'string'),
@@ -223,7 +224,8 @@ function readPackageScripts(
       scripts,
     };
   } catch {
-    return null;
+    // Corrupt JSON is not "no scripts": whether the script exists is unknown.
+    return 'unreadable';
   }
 }
 
