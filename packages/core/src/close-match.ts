@@ -84,18 +84,6 @@ function isAdjacentTransposition(a: string, b: string): boolean {
   return diff.length === 2 && diff[1] === diff[0]! + 1 && a[diff[0]!] === b[diff[1]!] && a[diff[1]!] === b[diff[0]!];
 }
 
-/** True when `a` and `b` differ only by substituting digits for digits, position for position. */
-function isDigitForDigitSubstitution(a: string, b: string): boolean {
-  if (a.length !== b.length) return false;
-  let changed = false;
-  for (let i = 0; i < a.length; i++) {
-    if (a[i] === b[i]) continue;
-    if (!/^\d$/.test(a[i]!) || !/^\d$/.test(b[i]!)) return false;
-    changed = true;
-  }
-  return changed;
-}
-
 /**
  * pcic-oonz: whether replacing `missing` with `candidate` is a MECHANICAL
  * rename — a misspelling of one name — rather than a plausible reference to a
@@ -108,8 +96,13 @@ function isDigitForDigitSubstitution(a: string, b: string): boolean {
  * `test` → `best`, `build:v1` → `build:v2` are each a unique nearest
  * neighbour, and each rewrite is wrong. So:
  *
- *  1. A pure case / separator difference (`type-check` → `typecheck`) is always
- *     mechanical: the two names denote the same thing in different styles.
+ *  0. A candidate containing `/` is never mechanical: the rewritten command
+ *     reads as slash shorthand for several scripts, so the fix would not
+ *     converge (PR #208 review).
+ *  1. A pure case / separator difference among `- _ :` (`type-check` →
+ *     `typecheck`) is mechanical: the two names denote the same thing in
+ *     different styles. A `.` or `/` on either side takes the name out of this
+ *     rule (`test.unit` → `test/unit` is not one script restyled).
  *  2. Otherwise both names are split into words on `- _ : . /`, and must have
  *     the same separators in the same places, with the difference confined to
  *     exactly one word. A command that gains, loses or re-scopes a word is a
@@ -118,16 +111,16 @@ function isDigitForDigitSubstitution(a: string, b: string): boolean {
  *     `py2` → `py3`, `1` → `2` select a version or a target, and the digit is
  *     the whole point of the name.
  *  4. The differing word must be a plausible slip of the fingers on the SAME
- *     word: an adjacent transposition (`bulid`/`build`), a digit swapped for a
- *     digit (`e3e`/`e2e`), or — in a word of at least
- *     {@link MECHANICAL_SEGMENT_MIN_LENGTH} characters — one letter dropped or
- *     added inside the word, or one letter doubled or undoubled anywhere
- *     (`bild`/`build`, `comit`/`commit`, `typecheeck`/`typecheck`). A
- *     substituted letter, a letter added or dropped at either end, or any two
- *     edits usually spells another real word (`api`/`app`, `unit`/`init`,
- *     `serve`/`server`, `review`/`preview`, `major`/`minor`, pcic-1ik0.11),
- *     and no
- *     deterministic rule can tell which was meant. (A dictionary would
+ *     word: an adjacent transposition (`bulid`/`build`), or — in a word of at
+ *     least {@link MECHANICAL_SEGMENT_MIN_LENGTH} characters — one letter
+ *     dropped or added inside the word, or one letter doubled or undoubled
+ *     anywhere (`bild`/`build`, `comit`/`commit`, `typecheeck`/`typecheck`).
+ *     A substituted letter or digit, a letter added or dropped at either end,
+ *     or any two edits usually spells another real name (`api`/`app`,
+ *     `unit`/`init`, `serve`/`server`, `review`/`preview`, `major`/`minor`,
+ *     pcic-1ik0.11; `render:2d`/`render:3d`, `deploy:k3s`/`deploy:k8s`,
+ *     `32bit`/`64bit`, PR #208 review), and no deterministic rule can tell
+ *     which was meant. (A dictionary would
  *     separate these more sharply; the repository has no dictionary and
  *     detectors make no network call, so the test is structural.)
  *
@@ -136,8 +129,10 @@ function isDigitForDigitSubstitution(a: string, b: string): boolean {
  */
 export function isMechanicalRename(missing: string, candidate: string): boolean {
   if (!missing || !candidate || missing === candidate) return false;
-  // 1. Same name, different convention.
-  if (normalizeName(missing) === normalizeName(candidate)) return true;
+  // 0. A rewrite to a `/` name is re-read as slash shorthand.
+  if (candidate.includes('/')) return false;
+  // 1. Same name, different convention (never across `.` or `/`).
+  if (normalizeName(missing) === normalizeName(candidate)) return !/[./]/.test(missing + candidate);
 
   // 2. One differing word; separators (odd indexes after the split) must match too.
   const from = missing.split(WORD_SEPARATORS);
@@ -154,7 +149,7 @@ export function isMechanicalRename(missing: string, candidate: string): boolean 
   if (stem(a) === stem(b)) return false;
 
   // 4. A slip of the fingers on the same word, never a different word.
-  if (isAdjacentTransposition(a, b) || isDigitForDigitSubstitution(a, b)) return true;
+  if (isAdjacentTransposition(a, b)) return true;
   if (Math.max(a.length, b.length) < MECHANICAL_SEGMENT_MIN_LENGTH) return false;
   return isInteriorOrDoubledInsertion(a, b) || isInteriorOrDoubledInsertion(b, a);
 }

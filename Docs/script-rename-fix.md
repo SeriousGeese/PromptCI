@@ -30,13 +30,15 @@ The edit is offered only when ALL of these hold:
 4. **The closest name is in the root manifest** and is the only name at that distance.
 5. **The difference is a slip of the fingers on the same word.** Both names split into the same
    words on `-`, `_`, `:`, `.` and `/`, and exactly one word differs, by an adjacent transposition
-   (`bulid`, `buidl`), a digit for a digit (`e3e`), or, in a word of five or more characters, one
-   letter dropped or added inside the word (`bild`) or a doubled letter added or dropped anywhere
-   (`buildd`, `comit`). A case or separator difference alone (`type-check`, `typecheck`) also
-   counts. A substituted letter, a letter added or dropped at either end of the word, and any two
-   edits usually spell a different word (`major-release` and `minor-release`, `test:unit` and
-   `test:init`, `serve` and `server`, `review` and `preview`), so those are never rewritten, and
-   neither is a trailing version digit (`build:v1`, `build:v2`).
+   (`bulid`, `buidl`), or, in a word of five or more characters, one letter dropped or added
+   inside the word (`bild`) or a doubled letter added or dropped anywhere (`buildd`, `comit`). A
+   case or separator difference alone among `-`, `_` and `:` (`type-check`, `typecheck`) also
+   counts. A substituted letter or digit, a letter added or dropped at either end of the word,
+   and any two edits usually spell a different name (`major-release` and `minor-release`,
+   `test:unit` and `test:init`, `serve` and `server`, `render:2d` and `render:3d`,
+   `deploy:k3s` and `deploy:k8s`), so those are never rewritten, and neither is a trailing
+   version digit (`build:v1`, `build:v2`) or a rewrite to a name containing `/`, which reads as
+   several scripts.
 
 Findings are judged separately and more loosely: the text around a command (its line, the sentence or
 list lead-in that introduces it, the comment lines above it, its heading) can name the directory it
