@@ -1,0 +1,7 @@
+{
+  "name": "tools",
+  "private": true,
+  "scripts": {
+    "seed": "echo tools seed"
+  }
+}

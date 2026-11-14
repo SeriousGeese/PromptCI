@@ -421,6 +421,189 @@ describe('manifest-missing-script judges each occurrence on its own', () => {
   });
 });
 
+const SCOPE_FIXTURE = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  '../../../examples/fixture-command-scope',
+);
+
+describe('a script defined in a package the text points at (pcic-1ik0.2, #157)', () => {
+  const root = pkg({ name: 'root', scripts: { check: 'echo' } });
+
+  it('reports nothing when the nearest heading names the directory that defines the script', async () => {
+    const issues = await scanRepo({
+      'package.json': root,
+      'site/package.json': pkg({ name: 'site', scripts: { dev: 'x', build: 'x', lint: 'x' } }),
+      'CLAUDE.md': [
+        '# Project',
+        '',
+        '### Site (from `site/` directory)',
+        '',
+        '- `npm run dev` -- Start dev server',
+        '- `npm run build` -- Production build',
+        '- `npm run lint` -- ESLint',
+        '',
+      ].join('\n'),
+    });
+    expect(scriptFindings(issues)).toEqual([]);
+  });
+
+  it('reports nothing when a sentence above a fenced block names the directory', async () => {
+    const issues = await scanRepo({
+      'package.json': root,
+      'packages/trading-signals-docs/package.json': pkg({ scripts: { 'test:e2e': 'x' } }),
+      '.claude/rules/docs-e2e.md': 'From `packages/trading-signals-docs/`:\n\n```sh\nnpm run test:e2e        # headless\n```\n',
+    });
+    expect(scriptFindings(issues)).toEqual([]);
+  });
+
+  it('reads a `cd <dir>` in an earlier step of the same section', async () => {
+    const issues = await scanRepo({
+      'package.json': root,
+      'site/package.json': pkg({ scripts: { dev: 'x' } }),
+      'CONTRIBUTING.md':
+        '## Setup\n\n3. Install site dependencies:\n   ```bash\n   cd site\n   npm install\n   ```\n4. Start the dev server:\n   ```bash\n   npm run dev\n   ```\n',
+    });
+    expect(scriptFindings(issues)).toEqual([]);
+  });
+
+  it('reads the sentence under a heading that itself holds the command', async () => {
+    const issues = await scanRepo({
+      'package.json': root,
+      'packages/docs/package.json': pkg({ scripts: { 'test:e2e': 'x' } }),
+      'CLAUDE.md': '## Run via `npm run test:e2e`\n\nFrom `packages/docs/`:\n\n```sh\nnpm run test:e2e\n```\n\n## Other\n',
+    });
+    expect(scriptFindings(issues)).toEqual([]);
+  });
+
+  it('does not read a directory named under the NEXT heading', async () => {
+    const issues = await scanRepo({
+      'package.json': root,
+      'site/package.json': pkg({ scripts: { dev: 'x' } }),
+      'CLAUDE.md': '## Start\n\nRun `npm run dev`.\n\n## Site\n\nThe `site/` directory holds the website.\n',
+    });
+    const findings = scriptFindings(issues);
+    expect(findings).toHaveLength(1);
+    expect(findings[0]!.severity).toBe('info');
+  });
+
+  it('resolves a directory named relative to the instruction file', async () => {
+    const issues = await scanRepo({
+      'package.json': root,
+      'app/web/package.json': pkg({ scripts: { dev: 'x' } }),
+      'app/CLAUDE.md': 'Web (from `web/`):\n\n```sh\nnpm run dev\n```\n',
+    });
+    expect(scriptFindings(issues)).toEqual([]);
+  });
+
+  it('downgrades to an info note that says where the script is when no directory is named', async () => {
+    const issues = await scanRepo({
+      'package.json': root,
+      'site/package.json': pkg({ scripts: { dev: 'x' } }),
+      'CLAUDE.md': '# Project\n\nStart it with `npm run dev`.\n',
+    });
+    const findings = scriptFindings(issues);
+    expect(findings).toHaveLength(1);
+    expect(findings[0]!.severity).toBe('info');
+    expect(findings[0]!.summary).toContain('site/package.json');
+    expect(findings[0]!.fixEdits).toBeUndefined();
+    expect(findings[0]!.autoApplySafe).toBeUndefined();
+  });
+
+  it('still notes it when the text names a directory that does not define the script', async () => {
+    const issues = await scanRepo({
+      'package.json': root,
+      'site/package.json': pkg({ scripts: { lint: 'x' } }),
+      'tools/package.json': pkg({ scripts: { seed: 'x' } }),
+      'CLAUDE.md': '# Project\n\nFrom `site/`: run `npm run seed`.\n',
+    });
+    const findings = scriptFindings(issues);
+    expect(findings).toHaveLength(1);
+    expect(findings[0]!.severity).toBe('info');
+    expect(findings[0]!.summary).toContain('tools/package.json');
+  });
+
+  it('keeps the warning for a script no package defines', async () => {
+    const issues = await scanRepo({
+      'package.json': root,
+      'site/package.json': pkg({ scripts: { dev: 'x' } }),
+      'CLAUDE.md': '### Site (from `site/` directory)\n\n- `npm run nonexistent`\n',
+    });
+    const findings = scriptFindings(issues);
+    expect(findings).toHaveLength(1);
+    expect(findings[0]!.severity).toBe('warning');
+  });
+
+  it('does not offer a typo rewrite for a name another package defines', async () => {
+    const issues = await scanRepo({
+      'package.json': pkg({ scripts: { build: 'x', test: 'x' } }),
+      'tools/package.json': pkg({ scripts: { buidl: 'x' } }),
+      'CLAUDE.md': '# Project\n\nUse `npm run buidl` for the toolchain.\n',
+    });
+    const findings = scriptFindings(issues);
+    expect(findings).toHaveLength(1);
+    expect(findings[0]!.fixEdits).toBeUndefined();
+  });
+
+  it('ignores package.json files under node_modules and dot directories', async () => {
+    const issues = await scanRepo({
+      'package.json': root,
+      'node_modules/dep/package.json': pkg({ scripts: { dev: 'x' } }),
+      '.cache/pkg/package.json': pkg({ scripts: { dev: 'x' } }),
+      'CLAUDE.md': '# Project\n\n- `npm run dev`\n',
+    });
+    const findings = scriptFindings(issues);
+    expect(findings).toHaveLength(1);
+    expect(findings[0]!.severity).toBe('warning');
+  });
+});
+
+describe('a glob or placeholder in a script token is not a typo (pcic-qc33, #156)', () => {
+  const manifest = pkg({
+    scripts: { build: 'x', 'build:web': 'x', 'build:api': 'x', 'test:unit': 'x', lint: 'x' },
+  });
+
+  it('reports nothing and offers no rewrite for `pnpm build*`', async () => {
+    const issues = await scanRepo({
+      'package.json': manifest,
+      'CLAUDE.md':
+        '- **Validation**: run the smallest meaningful checks (`pnpm type-check`, `pnpm lint`, targeted scripts) before handing work back. Reserve `pnpm build*` for user requests or when architectural changes demand it.\n',
+    });
+    const findings = scriptFindings(issues).filter((i) => i.summary.includes('build'));
+    expect(findings).toEqual([]);
+    expect(issues.some((i) => i.fixEdits?.some((e) => e.find.includes('*')))).toBe(false);
+  });
+
+  it.each(['`npm run test:*`', '`pnpm run "build:?"`', '`yarn build:[a-z]`', '`bun run build:{web,api}`', '`npm run build:<target>`'])(
+    'reports nothing for %s',
+    async (snippet) => {
+      const issues = await scanRepo({ 'package.json': manifest, 'CLAUDE.md': `# Project\n\nRun ${snippet} as needed.\n` });
+      expect(scriptFindings(issues)).toEqual([]);
+    },
+  );
+
+  it('still flags a plain missing script on the same line as a glob', async () => {
+    const issues = await scanRepo({
+      'package.json': manifest,
+      'CLAUDE.md': '# Project\n\nRun `pnpm build*` or `pnpm deploy-prod`.\n',
+    });
+    const findings = scriptFindings(issues);
+    expect(findings).toHaveLength(1);
+    expect(findings[0]!.summary).toContain('deploy-prod');
+  });
+});
+
+describe('fixture-command-scope', () => {
+  it('flags only the note and the deliberately broken command', async () => {
+    const findings = scriptFindings(await scanIssues(SCOPE_FIXTURE));
+    const bySeverity = findings.map((f) => `${f.severity}:${f.evidence[0]}`).sort();
+    expect(bySeverity).toEqual([
+      'info:Command: `npm run seed`',
+      'warning:Command: `npm run release:nightly`',
+    ]);
+    expect(findings.every((f) => f.fixEdits === undefined)).toBe(true);
+  });
+});
+
 describe('fixture-monorepo-scripts', () => {
   it('flags only the deliberately broken command, exactly once', async () => {
     const findings = scriptFindings(await scanIssues(FIXTURE));

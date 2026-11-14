@@ -195,6 +195,122 @@ function readPackageScripts(
   }
 }
 
+// ── Where a script lives outside the root manifest (pcic-1ik0.2) ───────────────
+
+/**
+ * What the text around a command can tell {@link findMissingScript} when the
+ * root manifest does not define the script it runs.
+ */
+type ScriptScope = {
+  /** Repo-relative directories the surrounding heading or sentences name; evaluated lazily. */
+  hintDirs?: () => readonly string[];
+  /** Called with the other package directories that define the script, when only those do. */
+  elsewhere?: (script: string, dirs: string[]) => void;
+};
+
+/** A script token that is a glob or placeholder (`build*`, `test:<name>`), never a misspelled name. */
+const SCRIPT_PATTERN_RE = /[*?<>{}[\]]/;
+
+/** Directories walked looking for package.json files, and how deep: bounded so a huge repo cannot stall a scan. */
+const MAX_MANIFEST_DIRS = 400;
+const MAX_MANIFEST_DEPTH = 5;
+
+type PackageIndex = Map<string, Record<string, string>>;
+const packageIndexCache = new WeakMap<RepoTree, PackageIndex>();
+
+/**
+ * Scripts of every package.json under the root outside node_modules and dot
+ * directories, by repo-relative POSIX directory. Breadth-first and sorted, so
+ * the same repository always yields the same index.
+ */
+function packageIndex(tree: RepoTree): PackageIndex {
+  const cached = packageIndexCache.get(tree);
+  if (cached) return cached;
+  const index: PackageIndex = new Map();
+  const queue: Array<{ dir: string; depth: number }> = [{ dir: '', depth: 0 }];
+  let visited = 0;
+  for (let next = 0; next < queue.length && visited < MAX_MANIFEST_DIRS; next++) {
+    const { dir, depth } = queue[next]!;
+    visited++;
+    const abs = dir ? path.join(tree.root, dir) : tree.root;
+    const listing = tree.entries(abs);
+    if (typeof listing === 'string') continue;
+    const names = [...listing.keys()].sort();
+    if (names.includes('package.json')) {
+      const pkg = readPackageScripts(tree, path.join(abs, 'package.json'));
+      if (pkg && pkg !== 'unreadable' && pkg !== 'unfetched') index.set(dir || '.', pkg.scripts);
+    }
+    if (depth >= MAX_MANIFEST_DEPTH) continue;
+    for (const name of names) {
+      const entry = listing.get(name)!;
+      if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
+      if (name === 'node_modules' || name.startsWith('.')) continue;
+      queue.push({ dir: dir ? `${dir}/${name}` : name, depth: depth + 1 });
+    }
+  }
+  packageIndexCache.set(tree, index);
+  return index;
+}
+
+/** Repo-relative directories (never the root) of the packages that define `script`, sorted. */
+function packagesDefining(context: RepoContext, tree: RepoTree, script: string): string[] {
+  const dirs = new Set<string>();
+  for (const ws of context.workspaces ?? []) if (ws.dir !== '.' && ws.scripts[script]) dirs.add(ws.dir);
+  for (const [dir, scripts] of packageIndex(tree)) if (dir !== '.' && scripts[script]) dirs.add(dir);
+  return [...dirs].sort();
+}
+
+const HEADING_RE = /^\s{0,3}#{1,6}\s/;
+/** A backticked token, or a bare token ending in `/`: the two ways prose names a directory. */
+const DIR_TOKEN_RE =
+  /`([^`\s]+)`|(?<![\w./@-])((?:\.{1,2}\/)?[\w@.-]+(?:\/[\w@.-]+)*\/)|\bcd\s+(?:\.\/)?([\w@.-]+(?:\/[\w@.-]+)*)/g;
+const NOT_A_DIR_RE = /[*?<>{}[\]$~%\\]/;
+const MAX_HINT_LINES = 80;
+const MAX_HINT_DIRS = 24;
+/** A command written in a heading is usually followed by the sentence that says where to run it. */
+const MAX_HINT_LINES_AFTER_HEADING = 10;
+
+/**
+ * Directories the text around a command names: every directory token on the
+ * command's own line and on the lines above it, back to the nearest heading
+ * (inclusive), plus a `cd <dir>` anywhere in that stretch. A command that sits
+ * in a heading also reads the lines below it up to the next heading. Only
+ * existing directories count, resolved from the repository root and, failing
+ * that, from the instruction file's own directory. Whether a named directory
+ * defines the script is the caller's check, so a stray mention can only ever
+ * silence a finding when that directory really holds the script.
+ */
+function textNamedDirs(lines: readonly string[], line: number, fileDir: string, tree: RepoTree): string[] {
+  const dirs: string[] = [];
+  const seen = new Set<string>();
+  const collect = (text: string): void => {
+    for (const m of text.matchAll(DIR_TOKEN_RE)) {
+      const token = (m[1] ?? m[2] ?? m[3] ?? '').replace(/^\.\//, '').replace(/\/+$/, '');
+      if (!token || token === '.' || NOT_A_DIR_RE.test(token)) continue;
+      for (const base of fileDir === '.' ? ['.'] : ['.', fileDir]) {
+        const abs = withinRoot(tree, tree.root, base === '.' ? token : `${base}/${token}`);
+        if (abs === null) continue;
+        const rel = path.relative(tree.root, abs).split(path.sep).join('/');
+        if (!rel || seen.has(rel)) continue;
+        const found = tree.lookup(abs);
+        if (found.state !== 'found' || !found.isDir) continue;
+        seen.add(rel);
+        dirs.push(rel);
+      }
+    }
+  };
+  for (let i = line - 1; i >= 0 && i >= line - 1 - MAX_HINT_LINES && dirs.length < MAX_HINT_DIRS; i--) {
+    const text = lines[i] ?? '';
+    collect(text);
+    if (HEADING_RE.test(text)) break;
+  }
+  if (HEADING_RE.test(lines[line - 1] ?? '')) {
+    const last = Math.min(lines.length, line + MAX_HINT_LINES_AFTER_HEADING);
+    for (let i = line; i < last && !HEADING_RE.test(lines[i] ?? ''); i++) collect(lines[i] ?? '');
+  }
+  return dirs;
+}
+
 function pnpmFilterValue(parts: string[]): string | undefined {
   for (let i = 1; i < parts.length; i++) {
     const part = parts[i]!;
@@ -627,6 +743,7 @@ function findMissingScript(
   lookup: ScriptLookup,
   onScript?: (name: string) => void,
   suggest?: (suggestion: ScriptSuggestion) => void,
+  scope?: ScriptScope,
 ): Verdict {
   const names = scriptName.includes('/')
     ? scriptName.split('/').map((s) => s.trim()).filter(Boolean)
@@ -742,7 +859,19 @@ function findMissingScript(
     if (context.packageJson.scripts[name]) continue;
     // pcic-x1vl: a selected workspace may define it in a directory that could not be read.
     if (inWorkspace === 'unknown') return UNJUDGED;
-    if (!scopedToWorkspaces) propose(name, Object.keys(context.packageJson.scripts));
+    if (!scopedToWorkspaces) {
+      // pcic-1ik0.2: the root manifest is not the only place a documented
+      // script can live. A directory the text names that defines it settles the
+      // command; a package elsewhere that defines it turns the finding into a
+      // note and withdraws the typo suggestion (the name is not misspelled).
+      for (const dir of scope?.hintDirs?.() ?? []) {
+        const pkg = readPackageScripts(tree, path.join(tree.root, dir, 'package.json'));
+        if (pkg && pkg !== 'unreadable' && pkg !== 'unfetched' && pkg.scripts[name]) return null;
+      }
+      const elsewhere = packagesDefining(context, tree, name);
+      if (elsewhere.length > 0) scope?.elsewhere?.(name, elsewhere);
+      else propose(name, Object.keys(context.packageJson.scripts));
+    }
     return `${tool} script "${name}" does not appear in package.json scripts`;
   }
   return null;
@@ -773,6 +902,7 @@ function validatePackageManagerScript(
   baseDir: string | null,
   onScript?: (name: string) => void,
   suggest?: (rewrite: ScriptRewrite) => void,
+  scope?: ScriptScope,
 ): Verdict {
   const subIdx = firstNonFlagArgIndex(parts);
   const sub = parts[subIdx];
@@ -797,6 +927,15 @@ function validatePackageManagerScript(
 
   const scriptName = parts[nameIdx];
   if (!scriptName || scriptName.startsWith('-')) return null;
+
+  // pcic-qc33: `pnpm build*` means every script that starts with `build`, and
+  // `npm run test:<name>` is a template. A pattern is never a misspelling, so
+  // there is nothing to report and nothing to rewrite. Recorded as judged so
+  // manifest-consistency does not read the same token as a missing script.
+  if (SCRIPT_PATTERN_RE.test(scriptName)) {
+    onScript?.(scriptName);
+    return null;
+  }
 
   if (tool === 'bun') {
     // `bun <x>` / `bun run <x>` also run files — a path is not a script name.
@@ -839,6 +978,7 @@ function validatePackageManagerScript(
     { allowBinary: !(explicitRun && (tool === 'npm' || tool === 'pnpm')), workspaceName },
     onScript,
     onSuggestion,
+    scope,
   );
 }
 
@@ -946,6 +1086,8 @@ function validateSegment(
      * whether to attach it to the finding.
      */
     suggestScript?: (rewrite: ScriptRewrite) => void;
+    /** pcic-1ik0.2: what the text around the command says about where its script lives. */
+    scope?: ScriptScope;
   } = {},
 ): Verdict {
   if (PLACEHOLDER_RE.test(seg)) return null;
@@ -964,7 +1106,7 @@ function validateSegment(
 
   // ── Package manager scripts ────────────────────────────────────────────────
   if (tool === 'pnpm' || tool === 'npm' || tool === 'yarn' || tool === 'bun') {
-    return validatePackageManagerScript(tool, parts, context, tree, cwd, baseDir, onScript, opts.suggestScript);
+    return validatePackageManagerScript(tool, parts, context, tree, cwd, baseDir, onScript, opts.suggestScript, opts.scope);
   }
 
   // ── File-executing commands ────────────────────────────────────────────────
@@ -1117,12 +1259,18 @@ function computeCommandAnalysis(context: RepoContext): CommandAnalysis {
       // unverifiable.
       const cwd = cmd.cwd === undefined ? '.' : cmd.cwd;
       let rewrite: ScriptRewrite | undefined;
+      let elsewhere: { script: string; dirs: string[] } | undefined;
       const error = validateSegment(cmd.text, context, cwd, (name) => evaluated.add(`${cmd.line}:${name}`), {
         fenced: cmd.fenced === true,
         makefileFor,
         fileDir: fileDir.startsWith('..') ? '.' : fileDir,
         tree,
         suggestScript: (r) => { rewrite = r; },
+        scope: {
+          // Only a command run from the repo root is placed by the text around it.
+          hintDirs: () => (cwd === '.' ? textNamedDirs(contentLines, cmd.line, fileDir.startsWith('..') ? '.' : fileDir, tree) : []),
+          elsewhere: (script, dirs) => { elsewhere = { script, dirs }; },
+        },
       });
       if (!error) continue;
       if (error === UNJUDGED) {
@@ -1158,6 +1306,31 @@ function computeCommandAnalysis(context: RepoContext): CommandAnalysis {
           ? ` The manifest defines "${rewrite.candidate}", which is close to "${rewrite.missing}"; ` +
             'it may be what was meant, but it is near enough to be a different script, so check before changing it.'
           : '';
+
+      if (elsewhere) {
+        // pcic-1ik0.2: the script exists, in a package the text does not point at.
+        const named = elsewhere.dirs.slice(0, 3).map((d) => `${d}/package.json`);
+        const more = elsewhere.dirs.length - named.length;
+        const where = `${named.join(', ')}${more > 0 ? ` and ${more} more` : ''}`;
+        const dir = elsewhere.dirs[0]!;
+        issues.push({
+          id: issueId(fileIdPath(file), cmd.text),
+          severity: 'info',
+          category: 'command_validity',
+          title: `Command may need a working directory: \`${cmd.text.split(/\s+/).slice(0, 3).join(' ')}\``,
+          summary:
+            `${error}, but ${where} defines "${elsewhere.script}". ` +
+            'Nothing near the command names that directory, so it may be meant to run from there.',
+          filePaths: [file.path],
+          locations: [{ filePath: file.path, startLine: cmd.line, endLine: cmd.line }],
+          evidence: [`Command: \`${cmd.text}\``, `In file: ${file.path}`, `Defined in: ${where}`],
+          recommendation:
+            `If the command runs from \`${dir}/\`, say so next to it (for example "from \`${dir}/\`", or \`cd ${dir} && ${cmd.text}\`) ` +
+            'so a reader or an agent runs it in the right place. If the script was renamed or removed, update the instruction file.',
+          confidence: 0.6,
+        });
+        continue;
+      }
 
       issues.push({
         id: issueId(fileIdPath(file), cmd.text),
