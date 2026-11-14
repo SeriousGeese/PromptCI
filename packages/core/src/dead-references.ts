@@ -1124,7 +1124,7 @@ function movedLinkEdit(
  * dependency, not where the real file moved to. Matched as whole path segments.
  */
 const NON_CANDIDATE_DIRS: ReadonlySet<string> = new Set([
-  'test', 'tests', '__tests__', 'spec', 'specs', 'fixtures', 'fixture', '__fixtures__', 'testdata',
+  'test', 'tests', '__tests__', 'fixtures', 'fixture', '__fixtures__', 'testdata',
   'example', 'examples', 'sample', 'samples', 'vendor', 'vendors', 'third_party', 'third-party', 'external',
 ]);
 

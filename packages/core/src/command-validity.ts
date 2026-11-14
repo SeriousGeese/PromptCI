@@ -10,6 +10,8 @@ import type { MakefileFacts } from './makefile.js';
 import { RepoTree, incompleteCheckIssue, isAbsoluteAnywhere, treeFor } from './repo-tree.js';
 import { closestUniqueMatch, isMechanicalRename } from './close-match.js';
 import { htmlCommentLines } from './sample-text.js';
+import { commandContext, directoryTokens, lineStructure } from './command-context.js';
+import type { CommandContext, LineStructure } from './command-context.js';
 import type { Lookup, UncheckedRef } from './repo-tree.js';
 
 /**
@@ -35,6 +37,43 @@ import type { Lookup, UncheckedRef } from './repo-tree.js';
  */
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+/**
+ * pcic-1ik0.2: why a script rewrite must NOT be applied unseen, as a clause that
+ * completes "it may be what was meant, but ...": `undefined` only when every
+ * condition for an unattended edit holds. An edit lands without a person looking,
+ * on a repository that is not ours: a missed fix costs nothing, a wrong one lands
+ * in a stranger's repo. Heuristics over prose do not converge, so the rule is
+ * default-deny and structural first:
+ *  - RULE 1: the repository is a single package (see {@link singlePackageRepo}), so
+ *    there is exactly one manifest the command can mean, whatever the prose says;
+ *    and the closest name is in that root manifest;
+ *  - RULE 2: nothing cautionary or negating frames the command, in a deliberately
+ *    wide scope (the whole heading chain, block, paragraph, enclosing list items,
+ *    table, blockquote and `<details>` summary, and a trailing comment);
+ *  - the command is not in a comment or an indented block, and runs from the root
+ *    with no `cd` before it in its block and no `--cwd`/`--prefix`/`-C`.
+ */
+function editBlocker(
+  cmd: ExtractedCommand,
+  lines: readonly string[],
+  inComment: boolean,
+  context: CommandContext,
+  earlierCd: boolean,
+  singlePackage: boolean,
+  viaRoot: boolean,
+): string | undefined {
+  if (inComment) return 'this command is inside an HTML comment';
+  if (!cmd.fenced && /^(?: {4}|\t)/.test(lines[cmd.line - 1] ?? '')) return 'this command is in an indented block';
+  if (typeof cmd.cwd === 'string' && cmd.cwd !== '.' && cmd.cwd !== '') return 'this command runs from another directory';
+  // `-C site`, `-Csite`, `--cwd site`, `--cwd=site`.
+  if (/\s(?:--cwd|--dir|--prefix)(?:\s|=)|\s-C/.test(cmd.text)) return 'this command runs from another directory';
+  if (earlierCd) return 'an earlier line of its block changes directory';
+  if (context.cautionary) return 'the text around this command reads as an example not to follow, or as a warning';
+  if (!singlePackage) return 'this repository has more than one package, which makes the manifest the command runs against uncertain';
+  if (!viaRoot) return 'the closest name is not in the root manifest';
+  return undefined;
+}
 
 /** Occurrences of a plain substring in one line of text (pcic-oonz). */
 function countOnLine(line: string, needle: string): number {
@@ -78,6 +117,8 @@ type ScriptSuggestion = {
    * recommendation for a human to confirm.
    */
   mechanical: boolean;
+  /** The candidate came from the ROOT manifest. Only then may an edit be offered (pcic-1ik0.2: default-deny). */
+  viaRoot: boolean;
 };
 
 /**
@@ -94,6 +135,8 @@ type ScriptRewrite = {
   candidate: string;
   /** See {@link ScriptSuggestion.mechanical}. */
   mechanical: boolean;
+  /** See {@link ScriptSuggestion.viaRoot}. */
+  viaRoot: boolean;
 };
 
 /** Separators in a documented path: `/` everywhere, `\` too where the platform treats it as one. */
@@ -153,16 +196,21 @@ function missingUnless(found: Lookup, message: string): Verdict {
 }
 
 /**
- * The name and scripts of a package.json; `null` when there is none to read
- * (or it does not parse); `unreadable` when a directory on the way could not
- * be listed, so whether it exists is unknown; `unfetched` when a caller's
- * inventory says the manifest is there but its bytes were never fetched
- * (pcic-csf) — nothing failed, so callers stay silent rather than warn.
+ * The name and scripts of a package.json; `null` when there is none to read;
+ * `unreadable` when a directory on the way could not be listed, so whether the
+ * script exists is unknown; `corrupt` when the manifest is not a JSON object (the
+ * detector says so in one info finding when it relied on that manifest, and
+ * checks nothing against it); `unfetched` when a caller's inventory says the
+ * manifest is there but its bytes were never fetched (pcic-csf) — nothing failed,
+ * so callers stay silent rather than warn.
  */
+/** A package.json larger than this is not read: a hostile or generated manifest must not stall a scan. */
+const MAX_MANIFEST_BYTES = 512 * 1024;
+
 function readPackageScripts(
   tree: RepoTree,
   packageJsonPath: string,
-): { name?: string; scripts: Record<string, string> } | null | 'unreadable' | 'unfetched' {
+): { name?: string; scripts: Record<string, string> } | null | 'unreadable' | 'unfetched' | 'corrupt' {
   // pcic-x1vl: looked up through the tree, so a manifest path that leaves the
   // root (`cd` through a link out of the tree) is never touched, and a
   // manifest committed as a link out of the tree is not read.
@@ -174,14 +222,17 @@ function readPackageScripts(
   // them missing is the false positive the inventory exists to remove. The two
   // "cannot read" answers stay apart: `unreadable` is a real failure the scan
   // should name, `unfetched` is nothing to name (see RepoTree.readText).
-  const read = tree.readText(packageJsonPath);
-  if (read.state === 'unreadable' || read.state === 'too-large') return 'unreadable';
-  if (read.state === 'unfetched') return 'unfetched';
+  const read = tree.readText(packageJsonPath, { maxBytes: MAX_MANIFEST_BYTES });
+  if (read.state === 'unreadable') return 'unreadable';
+  // Oversized is treated like listed-but-not-downloaded (pcic-1ik0.2): the scripts are unknown,
+  // not absent, and there is nothing a user could fix, so no finding and no warning.
+  if (read.state === 'unfetched' || read.state === 'too-large') return 'unfetched';
   if (read.state !== 'found') return null;
   try {
     const raw = read.content;
     const parsed = JSON.parse(raw) as Record<string, unknown>;
-    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return null;
+    // A manifest that is not a JSON object is corrupt, not absent.
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return 'corrupt';
     const scripts = typeof parsed.scripts === 'object' && parsed.scripts !== null && !Array.isArray(parsed.scripts)
       ? Object.fromEntries(
           Object.entries(parsed.scripts).filter((entry): entry is [string, string] => typeof entry[1] === 'string'),
@@ -192,7 +243,8 @@ function readPackageScripts(
       scripts,
     };
   } catch {
-    return null;
+    // Corrupt JSON is not "no scripts": whether the script exists is unknown.
+    return 'corrupt';
   }
 }
 
@@ -203,49 +255,100 @@ function readPackageScripts(
  * root manifest does not define the script it runs.
  */
 type ScriptScope = {
-  /** Repo-relative directories the surrounding heading or sentences name; evaluated lazily. */
+  /** Repo-relative directories the surrounding text names (existing directories only); evaluated lazily. */
   hintDirs?: () => readonly string[];
+  /** The text says the command runs at the repository root: no directory hint, no "defined elsewhere" note. */
+  explicitRoot?: boolean;
   /** Called with the other package directories that define the script, when only those do. */
   elsewhere?: (script: string, dirs: string[]) => void;
 };
 
-/** A script token that is a glob or placeholder (`build*`, `test:<name>`), never a misspelled name. */
-const SCRIPT_PATTERN_RE = /[*?<>{}[\]]/;
+/**
+ * A script token that is a glob or placeholder (`build*`, `test:<name>`,
+ * `$SCRIPT`, `${NAME}`, `%NAME%`), never a misspelled name.
+ */
+const SCRIPT_PATTERN_RE = /[*?<>{}[\]$`]|%\w+%/;
 
 /** Directories walked looking for package.json files, and how deep: bounded so a huge repo cannot stall a scan. */
-const MAX_MANIFEST_DIRS = 400;
-const MAX_MANIFEST_DEPTH = 5;
+const MAX_MANIFEST_DIRS = 2000;
+const MAX_MANIFEST_DEPTH = 12;
 
-type PackageIndex = Map<string, Record<string, string>>;
+/** Manifests a finding relied on (named by the text, or the directory a `cd` entered) that turned out to be corrupt. */
+const corruptUsed = new WeakMap<RepoTree, Set<string>>();
+function noteCorrupt(tree: RepoTree, manifest: string): void {
+  let set = corruptUsed.get(tree);
+  if (!set) corruptUsed.set(tree, (set = new Set()));
+  set.add(manifest);
+}
+
+type PackageIndex = {
+  /** Scripts by repo-relative POSIX directory, for every manifest that was read. */
+  scripts: Map<string, Record<string, string>>;
+  /** Manifests a caller's inventory lists but never fetched: they may define anything. */
+  unfetched: string[];
+  /** The walk did not see the whole tree (directory cap, depth cap, an unreadable directory or manifest). */
+  incomplete: boolean;
+  /**
+   * Evidence of a layout the walk cannot read as one package: another manifest format
+   * (package.yaml, package.json5, rush.json, a deno.json with tasks) or a link that
+   * leaves the repository. The repository is then not certainly a single package.
+   */
+  foreign: boolean;
+};
 const packageIndexCache = new WeakMap<RepoTree, PackageIndex>();
 
 /**
- * Scripts of every package.json under the root outside node_modules and dot
- * directories, by repo-relative POSIX directory. Breadth-first and sorted, so
- * the same repository always yields the same index.
+ * Scripts of every package.json under the root outside `.git` and `node_modules`
+ * (dot directories are walked: `.github/actions/release/package.json` is a package).
+ * Breadth-first and sorted, so the same repository always yields the same index;
+ * and it says when it is not the whole picture, so that a caller can tell "defined
+ * nowhere" from "not seen".
  */
 function packageIndex(tree: RepoTree): PackageIndex {
   const cached = packageIndexCache.get(tree);
   if (cached) return cached;
-  const index: PackageIndex = new Map();
+  const index: PackageIndex = { scripts: new Map(), unfetched: [], incomplete: false, foreign: false };
   const queue: Array<{ dir: string; depth: number }> = [{ dir: '', depth: 0 }];
-  let visited = 0;
-  for (let next = 0; next < queue.length && visited < MAX_MANIFEST_DIRS; next++) {
+  for (let next = 0; next < queue.length; next++) {
+    if (next >= MAX_MANIFEST_DIRS) {
+      index.incomplete = true;
+      break;
+    }
     const { dir, depth } = queue[next]!;
-    visited++;
     const abs = dir ? path.join(tree.root, dir) : tree.root;
     const listing = tree.entries(abs);
+    if (listing === 'unreadable') index.incomplete = true;
     if (typeof listing === 'string') continue;
     const names = [...listing.keys()].sort();
     if (names.includes('package.json')) {
       const pkg = readPackageScripts(tree, path.join(abs, 'package.json'));
-      if (pkg && pkg !== 'unreadable' && pkg !== 'unfetched') index.set(dir || '.', pkg.scripts);
+      if (pkg === 'unfetched') index.unfetched.push(dir || '.');
+      else if (pkg === 'unreadable' || pkg === 'corrupt') index.incomplete = true;
+      else if (pkg) index.scripts.set(dir || '.', pkg.scripts);
     }
-    if (depth >= MAX_MANIFEST_DEPTH) continue;
+    if (names.some((n) => FOREIGN_MANIFESTS.has(n))) index.foreign = true;
+    for (const deno of ['deno.json', 'deno.jsonc']) {
+      if (!names.includes(deno)) continue;
+      const text = tree.readText(path.join(abs, deno), { maxBytes: MAX_MANIFEST_BYTES });
+      // Tasks are deno's scripts. A file that cannot be read may hold them.
+      if (text.state !== 'found' || /"tasks"\s*:/.test(text.content)) index.foreign = true;
+    }
     for (const name of names) {
       const entry = listing.get(name)!;
-      if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
-      if (name === 'node_modules' || name.startsWith('.')) continue;
+      if (entry.isSymbolicLink()) {
+        // A link that leaves the repository points at content this scan never reads.
+        const target = tree.lookup(path.join(abs, name)).state;
+        if (target === 'outside') index.foreign = true;
+        else if (target === 'unreadable') index.incomplete = true;
+        continue;
+      }
+      if (!entry.isDirectory()) continue;
+      if (name === 'node_modules' || name === '.git') continue;
+      // A directory below the depth bound could hold a manifest nobody read.
+      if (depth >= MAX_MANIFEST_DEPTH) {
+        index.incomplete = true;
+        continue;
+      }
       queue.push({ dir: dir ? `${dir}/${name}` : name, depth: depth + 1 });
     }
   }
@@ -257,57 +360,70 @@ function packageIndex(tree: RepoTree): PackageIndex {
 function packagesDefining(context: RepoContext, tree: RepoTree, script: string): string[] {
   const dirs = new Set<string>();
   for (const ws of context.workspaces ?? []) if (ws.dir !== '.' && hasScript(ws.scripts, script)) dirs.add(ws.dir);
-  for (const [dir, scripts] of packageIndex(tree)) if (dir !== '.' && hasScript(scripts, script)) dirs.add(dir);
+  for (const [dir, scripts] of packageIndex(tree).scripts) {
+    if (dir !== '.' && !dir.split('/').some((segment) => segment.startsWith('.')) && hasScript(scripts, script)) dirs.add(dir);
+  }
   return [...dirs].sort();
 }
 
-const HEADING_RE = /^\s{0,3}#{1,6}\s/;
-/** A backticked token, or a bare token ending in `/`: the two ways prose names a directory. */
-const DIR_TOKEN_RE =
-  /`([^`\s]+)`|(?<![\w./@-])((?:\.{1,2}\/)?[\w@.-]+(?:\/[\w@.-]+)*\/)|\bcd\s+(?:\.\/)?([\w@.-]+(?:\/[\w@.-]+)*)/g;
-const NOT_A_DIR_RE = /[*?<>{}[\]$~%\\]/;
-const MAX_HINT_LINES = 80;
-const MAX_HINT_DIRS = 24;
-/** A command written in a heading is usually followed by the sentence that says where to run it. */
-const MAX_HINT_LINES_AFTER_HEADING = 10;
+/** Files at the repository root that declare a multi-package layout. */
+const WORKSPACE_FILES = ['pnpm-workspace.yaml', 'lerna.json', 'nx.json', 'turbo.json', 'rush.json', '.gitmodules'];
+/** Manifests of other package managers: a repository holding one is not certainly a single npm package. */
+const FOREIGN_MANIFESTS: ReadonlySet<string> = new Set(['package.yaml', 'package.json5', 'rush.json']);
+const singlePackageCache = new WeakMap<RepoTree, boolean>();
 
 /**
- * Directories the text around a command names: every directory token on the
- * command's own line and on the lines above it, back to the nearest heading
- * (inclusive), plus a `cd <dir>` anywhere in that stretch. A command that sits
- * in a heading also reads the lines below it up to the next heading. Only
- * existing directories count, resolved from the repository root and, failing
- * that, from the instruction file's own directory. Whether a named directory
- * defines the script is the caller's check, so a stray mention can only ever
- * silence a finding when that directory really holds the script.
+ * pcic-1ik0.2 (RULE 1, structural): true only when the repository is certainly ONE
+ * package: the inventory is complete and fully fetched (no unread manifest, no
+ * unlisted directory, no partial caller inventory), the root package.json is the
+ * only package.json, and nothing declares workspaces (`workspaces` field,
+ * pnpm-workspace.yaml, lerna.json, nx.json, turbo.json). The unattended typo edit
+ * is offered only then: in any other repository which manifest a command runs
+ * against depends on prose, and prose heuristics do not converge.
  */
-function textNamedDirs(lines: readonly string[], line: number, fileDir: string, tree: RepoTree): string[] {
+function singlePackageRepo(context: RepoContext, tree: RepoTree): boolean {
+  const cached = singlePackageCache.get(tree);
+  if (cached !== undefined) return cached;
+  const index = packageIndex(tree);
+  let single =
+    !index.incomplete &&
+    !index.foreign &&
+    index.unfetched.length === 0 &&
+    index.scripts.size === 1 &&
+    index.scripts.has('.') &&
+    (tree.inventory === undefined || tree.inventory.complete);
+  if (single && /"workspaces"\s*:/.test(context.packageJson.raw ?? '')) single = false;
+  if (single) {
+    for (const file of WORKSPACE_FILES) {
+      if (tree.lookup(path.join(tree.root, file)).state !== 'missing') single = false;
+    }
+  }
+  singlePackageCache.set(tree, single);
+  return single;
+}
+
+
+/**
+ * The existing directories among the tokens the text around a command names,
+ * as repo-relative POSIX paths: resolved from the repository root and, failing
+ * that, from the instruction file's own directory. Whether a named directory
+ * defines the script is the caller's check, so a stray mention can only silence
+ * a finding when that directory really holds the script.
+ */
+function resolveHintDirs(tokens: readonly string[], fileDir: string, tree: RepoTree): string[] {
   const dirs: string[] = [];
   const seen = new Set<string>();
-  const collect = (text: string): void => {
-    for (const m of text.matchAll(DIR_TOKEN_RE)) {
-      const token = (m[1] ?? m[2] ?? m[3] ?? '').replace(/^\.\//, '').replace(/\/+$/, '');
-      if (!token || token === '.' || NOT_A_DIR_RE.test(token)) continue;
-      for (const base of fileDir === '.' ? ['.'] : ['.', fileDir]) {
-        const abs = withinRoot(tree, tree.root, base === '.' ? token : `${base}/${token}`);
-        if (abs === null) continue;
-        const rel = path.relative(tree.root, abs).split(path.sep).join('/');
-        if (!rel || seen.has(rel)) continue;
-        const found = tree.lookup(abs);
-        if (found.state !== 'found' || !found.isDir) continue;
-        seen.add(rel);
-        dirs.push(rel);
-      }
+  for (const token of tokens) {
+    for (const base of fileDir === '.' ? ['.'] : ['.', fileDir]) {
+      const abs = withinRoot(tree, tree.root, base === '.' ? token : `${base}/${token}`);
+      if (abs === null) continue;
+      const rel = path.relative(tree.root, abs).split(path.sep).join('/');
+      if (!rel || seen.has(rel)) continue;
+      const found = tree.lookup(abs);
+      if (found.state !== 'found' || !found.isDir) continue;
+      seen.add(rel);
+      dirs.push(rel);
     }
-  };
-  for (let i = line - 1; i >= 0 && i >= line - 1 - MAX_HINT_LINES && dirs.length < MAX_HINT_DIRS; i--) {
-    const text = lines[i] ?? '';
-    collect(text);
-    if (HEADING_RE.test(text)) break;
-  }
-  if (HEADING_RE.test(lines[line - 1] ?? '')) {
-    const last = Math.min(lines.length, line + MAX_HINT_LINES_AFTER_HEADING);
-    for (let i = line; i < last && !HEADING_RE.test(lines[i] ?? ''); i++) collect(lines[i] ?? '');
   }
   return dirs;
 }
@@ -392,8 +508,8 @@ function workspaceHasScript(
   for (const candidate of candidates) {
     const pkg = readPackageScripts(tree, candidate);
     if (pkg === 'unreadable') unknown = true;
-    if (pkg === 'unfetched') silent = true;
-    if (!pkg || pkg === 'unreadable' || pkg === 'unfetched') continue;
+    if (pkg === 'unfetched' || pkg === 'corrupt') silent = true;
+    if (!pkg || pkg === 'unreadable' || pkg === 'unfetched' || pkg === 'corrupt') continue;
     const packageDir = path.dirname(candidate).replace(/\\/g, '/');
     const relDir = path.relative(context.repoRoot, packageDir).replace(/\\/g, '/');
     const selectorMatches =
@@ -501,6 +617,35 @@ function resolveCwd(current: string | null, target: string): string | null {
 }
 
 /**
+ * pcic-1ik0.2: what the earlier lines of the fenced block holding line `line` do to
+ * the working directory: whether any `cd`, `pushd` or `popd` came first, and the
+ * directory they leave (`null` when it cannot be known). The detector still judges
+ * each line from the root (CV6); this only feeds the text-names-a-directory logic
+ * and withholds edits.
+ */
+function earlierCd(s: LineStructure, line: number): { any: boolean; dir: string | null } {
+  const open = s.opener.get(line);
+  let dir: string | null = '.';
+  let any = false;
+  if (open === undefined) return { any, dir };
+  for (let n = open + 1; n < line; n++) {
+    const text = (s.lines[n - 1] ?? '').trim().replace(/^\$\s*/, '');
+    if (!text || text.startsWith('#')) continue;
+    for (const segment of splitOnAmpersand(text)) {
+      const change = /^(?:cd|pushd)\s+(.+)$/.exec(segment);
+      if (change) {
+        any = true;
+        dir = resolveCwd(dir, change[1]!.trim());
+      } else if (/^(?:cd|pushd|popd)$/.test(segment) || segment.startsWith('popd ')) {
+        any = true;
+        dir = null;
+      }
+    }
+  }
+  return { any, dir };
+}
+
+/**
  * Splits a command string on `&&`, `||`, `;`, and newlines, yielding
  * individual segments. This allows a single `run:` block or backtick
  * expression like `pnpm lint && pnpm test` — or `pnpm lint; pnpm bogus`, or
@@ -514,8 +659,16 @@ function resolveCwd(current: string | null, target: string): string | null {
 function splitOnAmpersand(cmd: string): string[] {
   return cmd
     .split(/&&|\|\||;|\n/)
-    .map((s) => s.trim())
+    .map((s) => unwrapSubshell(s.trim()))
     .filter(Boolean);
+}
+
+/** `(cd site` and `npm run dev)`: the parentheses of a subshell belong to the shell, not to a word of the command. */
+function unwrapSubshell(segment: string): string {
+  let out = segment;
+  while (out.startsWith('(')) out = out.slice(1).trim();
+  while (out.endsWith(')') && (out.match(/\)/g)?.length ?? 0) > (out.match(/\(/g)?.length ?? 0)) out = out.slice(0, -1).trim();
+  return out;
 }
 
 /** Returns true if a text looks like it could be a shell command to validate. */
@@ -787,11 +940,11 @@ function findMissingScript(
    * without discovered workspaces to resolve it against — the candidate pool
    * would then be the root manifest, which is not where the script would run.
    */
-  const propose = (name: string, pool: Iterable<string>): void => {
+  const propose = (name: string, pool: Iterable<string>, viaRoot = false): void => {
     if (!suggest || names.length !== 1) return;
     const candidate = closestUniqueMatch(name, pool);
     if (candidate !== undefined) {
-      suggest({ missing: name, candidate, mechanical: isMechanicalRename(name, candidate) });
+      suggest({ missing: name, candidate, mechanical: isMechanicalRename(name, candidate), viaRoot });
     }
   };
   const scopedToWorkspaces = selector !== undefined || allWorkspaces;
@@ -804,6 +957,11 @@ function findMissingScript(
   // there is no location to name, so say nothing at all — a "check incomplete"
   // warning here would name zero locations and tell the reader nothing.
   if (dirPkg === 'unfetched') return null;
+  // A corrupt manifest in the directory the command names: nothing to judge it against.
+  if (dirPkg === 'corrupt') {
+    noteCorrupt(tree, path.join(tree.root, cwd, 'package.json'));
+    return null;
+  }
   // pcic-x1vl: a directory on the way could not be listed — say so, don't guess.
   if (dirPkg === 'unreadable') return UNJUDGED;
   // cd'd into a directory whose package.json we can't read — don't guess.
@@ -812,6 +970,7 @@ function findMissingScript(
   // No manifest we can check anywhere — stay silent.
   if (!dirPkg && !rootScriptsLoaded) return null;
 
+  let pendingElsewhere: { name: string; dirs: string[] } | undefined;
   for (const name of names) {
     if (builtins.has(name)) continue;
     // `pnpm vitest run`, `yarn tsc --noEmit`: no script of that name, but it is
@@ -865,15 +1024,36 @@ function findMissingScript(
       // script can live. A directory the text names that defines it settles the
       // command; a package elsewhere that defines it turns the finding into a
       // note and withdraws the typo suggestion (the name is not misspelled).
-      for (const dir of scope?.hintDirs?.() ?? []) {
-        const pkg = readPackageScripts(tree, path.join(tree.root, dir, 'package.json'));
-        if (pkg && pkg !== 'unreadable' && pkg !== 'unfetched' && hasScript(pkg.scripts, name)) return null;
+      //
+      // Each name of a slash-joined list is judged on its own: one that is
+      // settled or only elsewhere must not hide a sibling that is missing.
+      // Text that says "at the repo root" is an explicit root: no hint applies.
+      let settled = false;
+      if (!scope?.explicitRoot) {
+        for (const dir of scope?.hintDirs?.() ?? []) {
+          const pkg = readPackageScripts(tree, path.join(tree.root, dir, 'package.json'));
+          // Listed by a caller's inventory but never fetched: the script may be there. Say nothing.
+          if (pkg === 'unfetched') settled = true;
+          else if (pkg === 'corrupt') {
+            noteCorrupt(tree, path.join(tree.root, dir, 'package.json'));
+            settled = true;
+          } else if (pkg === 'unreadable') return UNJUDGED;
+          else if (pkg && hasScript(pkg.scripts, name)) settled = true;
+        }
+        if (settled) continue;
+        const elsewhere = packagesDefining(context, tree, name);
+        if (elsewhere.length > 0) {
+          pendingElsewhere ??= { name, dirs: elsewhere };
+          continue;
+        }
       }
-      const elsewhere = packagesDefining(context, tree, name);
-      if (elsewhere.length > 0) scope?.elsewhere?.(name, elsewhere);
-      else propose(name, Object.keys(context.packageJson.scripts));
+      propose(name, Object.keys(context.packageJson.scripts), true);
     }
     return `${tool} script "${name}" does not appear in package.json scripts`;
+  }
+  if (pendingElsewhere) {
+    scope?.elsewhere?.(pendingElsewhere.name, pendingElsewhere.dirs);
+    return `${tool} script "${pendingElsewhere.name}" does not appear in package.json scripts`;
   }
   return null;
 }
@@ -957,13 +1137,14 @@ function validatePackageManagerScript(
   // (`npm run bulid`, `pnpm --filter web lnit`) rather than a bare word.
   const prefix = parts.slice(0, nameIdx).join(' ');
   const onSuggestion = suggest
-    ? ({ missing, candidate, mechanical }: ScriptSuggestion): void =>
+    ? ({ missing, candidate, mechanical, viaRoot }: ScriptSuggestion): void =>
         suggest({
           find: prefix ? `${prefix} ${missing}` : missing,
           replace: prefix ? `${prefix} ${candidate}` : candidate,
           missing,
           candidate,
           mechanical,
+          viaRoot,
         })
     : undefined;
 
@@ -1249,8 +1430,10 @@ function computeCommandAnalysis(context: RepoContext): CommandAnalysis {
     // unambiguous there before the finding claims to be auto-applicable.
     const contentLines = file.content.split(/\r?\n/);
     const commentLines = htmlCommentLines(file.content);
+    const structure = lineStructure(file.content);
     const evaluated = new Set<string>();
     const fileDir = path.relative(context.repoRoot, path.dirname(file.path)).replace(/\\/g, '/') || '.';
+    const nearDir = fileDir.startsWith('..') ? '.' : fileDir;
     evaluatedScripts.set(file.path, evaluated);
 
     for (const cmd of commands) {
@@ -1262,19 +1445,37 @@ function computeCommandAnalysis(context: RepoContext): CommandAnalysis {
       const cwd = cmd.cwd === undefined ? '.' : cmd.cwd;
       let rewrite: ScriptRewrite | undefined;
       let elsewhere: { script: string; dirs: string[] } | undefined;
+      // pcic-1ik0.2: what the text around the command says, read only when it is needed.
+      const namesDirectory = (text: string): boolean => resolveHintDirs(directoryTokens([text]), nearDir, tree).length > 0;
+      let framing: CommandContext | undefined;
+      const framingOf = (): CommandContext =>
+        (framing ??= commandContext(structure, cmd.line, cmd.text, namesDirectory));
+      const blockCd = earlierCd(structure, cmd.line);
+      const blockDirs = (): string[] =>
+        blockCd.dir !== null && blockCd.dir !== '.' ? resolveHintDirs([blockCd.dir], nearDir, tree) : [];
+      let hints: string[] | undefined;
+      const hintDirs = (): string[] =>
+        (hints ??=
+          cwd === '.'
+            ? [...new Set([...blockDirs(), ...resolveHintDirs(directoryTokens(framingOf().text), nearDir, tree)])]
+            : []);
       const error = validateSegment(cmd.text, context, cwd, (name) => evaluated.add(`${cmd.line}:${name}`), {
         fenced: cmd.fenced === true,
         makefileFor,
-        fileDir: fileDir.startsWith('..') ? '.' : fileDir,
+        fileDir: nearDir,
         tree,
         suggestScript: (r) => { rewrite = r; },
         scope: {
           // Only a command run from the repo root is placed by the text around it.
-          hintDirs: () => (cwd === '.' ? textNamedDirs(contentLines, cmd.line, fileDir.startsWith('..') ? '.' : fileDir, tree) : []),
+          hintDirs,
+          get explicitRoot() { return cwd === '.' && framingOf().explicitRoot; },
           elsewhere: (script, dirs) => { elsewhere = { script, dirs }; },
         },
       });
       if (!error) continue;
+      // A command in an HTML comment is text no reader sees: judged (so no other
+      // detector re-reads it), never reported.
+      if (commentLines[cmd.line - 1] === true) continue;
       if (error === UNJUDGED) {
         const evidence = `Not checked: \`${cmd.text}\``;
         const entry = unchecked.get(evidence) ?? { filePaths: new Set(), fileLines: new Map(), evidence };
@@ -1296,22 +1497,32 @@ function computeCommandAnalysis(context: RepoContext): CommandAnalysis {
       // (`isMechanicalRename`; `test:api` vs `test:app` is not), and the text
       // to replace appears exactly once on the line, so the edit cannot land on
       // another command that shares it.
-      // A command in an HTML comment is text no reader sees (pcic-1ik0.4 review):
-      // reported, never rewritten. Fenced and indented commands are the normal
-      // home of a command, so they stay rewritable.
-      const fix =
-        rewrite?.mechanical &&
-        countOnLine(contentLines[cmd.line - 1] ?? '', rewrite.find) === 1 &&
-        commentLines[cmd.line - 1] !== true
-          ? rewrite
-          : undefined;
+      //
+      // Only where the edit cannot change what the sentence means (editBlocker):
+      // an edit is applied unseen in a fix PR on someone else's repository.
+      const mechanical =
+        rewrite?.mechanical === true && countOnLine(contentLines[cmd.line - 1] ?? '', rewrite.find) === 1;
+      const editContext = mechanical
+        ? editBlocker(
+            cmd,
+            contentLines,
+            commentLines[cmd.line - 1] === true,
+            framingOf(),
+            blockCd.any,
+            singlePackageRepo(context, tree),
+            rewrite?.viaRoot === true,
+          )
+        : undefined;
+      const fix = mechanical && editContext === undefined ? rewrite : undefined;
       // A candidate too close to a different script to apply is still worth
       // naming — cautiously, and in the recommendation rather than the summary,
       // so nothing reads as a verdict.
       const hint =
         rewrite && !fix
           ? ` The manifest defines "${rewrite.candidate}", which is close to "${rewrite.missing}"; ` +
-            'it may be what was meant, but it is near enough to be a different script, so check before changing it.'
+            (editContext
+              ? `it may be what was meant, but ${editContext}, so it was left unedited; check before changing it.`
+              : 'it may be what was meant, but it is near enough to be a different script, so check before changing it.')
           : '';
 
       if (elsewhere) {
@@ -1365,6 +1576,24 @@ function computeCommandAnalysis(context: RepoContext): CommandAnalysis {
         confidence: 0.8,
       });
     }
+  }
+
+  // One info finding per manifest the check relied on and could not parse: about the manifest, not
+  // about anyone's instructions, so it never carries the weight of a warning.
+  for (const manifest of [...(corruptUsed.get(tree) ?? [])].sort()) {
+    const rel = path.relative(tree.root, manifest).split(path.sep).join('/');
+    issues.push({
+      id: issueId('', `(unparsable ${rel})`),
+      severity: 'info',
+      category: 'command_validity',
+      title: `Could not parse ${rel}`,
+      summary: `${rel} is not a valid JSON object, so the commands that depend on its scripts were not checked.`,
+      filePaths: [manifest],
+      locations: [{ filePath: manifest }],
+      evidence: [`File: ${rel}`],
+      recommendation: `Fix the syntax of ${rel}; commands documented to run there are checked once it parses.`,
+      confidence: 0.9,
+    });
   }
 
   if (unchecked.size > 0) {

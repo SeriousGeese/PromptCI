@@ -280,7 +280,7 @@ describe('command_validity: mistyped script with one close match', () => {
       expect(issues[0]!.autoApplySafe).toBeUndefined();
     });
 
-    it('still applies when every selected package defines the candidate', async () => {
+    it('names the candidate but offers no edit when every selected package defines it', async () => {
       const repo = repoWith({
         ...workspace,
         'packages/a/package.json': JSON.stringify({ name: 'a', scripts: { lint: 'eslint .' } }),
@@ -289,8 +289,11 @@ describe('command_validity: mistyped script with one close match', () => {
       });
       const issues = commandIssues(await issuesIn(repo));
       expect(issues).toHaveLength(1);
-      expect(issues[0]!.autoApplySafe).toBe(true);
-      expect(await applyAll(repo, issues, 'AGENTS.md')).toContain('pnpm --filter "packages/*" lint');
+      // Default-deny (pcic-1ik0.2): the closest name must come from the ROOT manifest, and here it
+      // comes from the selected workspaces, so it is named in the recommendation and never applied.
+      expect(issues[0]!.autoApplySafe).toBeUndefined();
+      expect(issues[0]!.fixEdits).toBeUndefined();
+      expect(issues[0]!.recommendation).toContain('lint');
     });
   });
 
@@ -306,6 +309,56 @@ describe('command_validity: mistyped script with one close match', () => {
 });
 
 // ── Recipe 2: a link whose target moved ──────────────────────────────────────
+
+describe('command_validity: no rewrite where the surroundings change what the command means (pcic-1ik0.2)', () => {
+  const advisory = async (agents: string, extra: Record<string, string> = {}): Promise<PromptCiIssue> => {
+    const repo = repoWith({ 'package.json': MANIFEST, 'AGENTS.md': agents, ...extra });
+    const issues = commandIssues(await issuesIn(repo));
+    expect(issues).toHaveLength(1);
+    expect(issues[0]!.autoApplySafe).toBeUndefined();
+    expect(issues[0]!.fixEdits).toBeUndefined();
+    expect(isRepairable(issues[0]!)).toBe(false);
+    expect(await applyFixRecipe(issues[0]!, repo)).toEqual([]);
+    return issues[0]!;
+  };
+
+  it('inside an HTML comment: not reported at all', async () => {
+    for (const body of ['<!-- run `npm run bulid` once -->', '<!--\nrun npm run bulid\n-->']) {
+      const repo = repoWith({ 'package.json': MANIFEST, 'AGENTS.md': `# Agents\n\n${body}\n` });
+      expect(commandIssues(await issuesIn(repo))).toEqual([]);
+    }
+  });
+
+  it('inside an indented block', async () => {
+    const issue = await advisory('# Agents\n\nRun it:\n\n    run npm run bulid\n');
+    expect(issue.recommendation).toContain('indented block');
+  });
+
+  it('after a cd, inside a fence or inline', async () => {
+    const issue = await advisory('# Agents\n\n```bash\ncd site && npm run bulid\n```\n', { 'site/package.json': MANIFEST });
+    expect(issue.recommendation).toContain('another directory');
+    await advisory('# Agents\n\nRun `cd site && npm run bulid` first.\n', { 'site/package.json': MANIFEST });
+  });
+
+  it('with a directory flag, spaced, attached or with an equals sign', async () => {
+    await advisory('# Agents\n\n```bash\nnpm run --prefix site bulid\n```\n', { 'site/package.json': MANIFEST });
+    await advisory('# Agents\n\n```bash\npnpm -Csite run bulid\n```\n', { 'site/package.json': MANIFEST });
+    await advisory('# Agents\n\n```bash\npnpm -C site run bulid\n```\n', { 'site/package.json': MANIFEST });
+    await advisory('# Agents\n\n```bash\nyarn --cwd=site bulid\n```\n', { 'site/package.json': MANIFEST });
+  });
+
+  it('in a repository with a second package.json, whatever the text says', async () => {
+    const issue = await advisory('# Agents\n\n## Site (from `site/` directory)\n\n```bash\nnpm run bulid\n```\n', {
+      'site/package.json': JSON.stringify({ name: 'site', scripts: { dev: 'x' } }),
+    });
+    expect(issue.recommendation).toContain('more than one package');
+  });
+
+  it('still rewrites a plain command in a fence and in prose', async () => {
+    const repo = repoWith({ 'package.json': MANIFEST, 'AGENTS.md': '# Agents\n\n```bash\nnpm run bulid\n```\n' });
+    expect(commandIssues(await issuesIn(repo))[0]!.autoApplySafe).toBe(true);
+  });
+});
 
 describe('structure: broken link whose basename is unique in the tree', () => {
   it('re-points the link at the file, relative to the linking file', async () => {
@@ -477,6 +530,26 @@ describe('structure: broken link whose basename is unique in the tree', () => {
       expect(after).toBe(`# Agents\n\n${body}\n`);
     });
 
+    it('does not let `<!--` inside a code span or a fence swallow the rest of the file', async () => {
+      for (const prefix of ['Comments start with `<!--`.\n\n', '```html\n<!-- a comment in an example\n```\n\n']) {
+        const body = `${prefix}See ${LINK}.`;
+        const { issue, after } = await linkCase(body);
+        expect(issue.autoApplySafe, prefix).toBe(true);
+        expect(after, prefix).toBe(`# Agents\n\n${body.replace('](./docs/runbook.md)', MOVED)}\n`);
+      }
+      // A script rename after the same text is still repaired.
+      const original = '# Agents\n\nComments start with `<!--`.\n\n```bash\nnpm run bulid\n```\n';
+      const repo = repoWith({ 'package.json': MANIFEST, 'AGENTS.md': original });
+      const issues = commandIssues(await issuesIn(repo));
+      expect(await applyAll(repo, issues, 'AGENTS.md')).toBe(original.replace('bulid', 'build'));
+    });
+
+    it('still hides a real comment that follows such text', async () => {
+      const { issue, after } = await linkCase(`Comments start with \`<!--\`.\n\n<!-- old: ${LINK} -->`);
+      expect(issue.autoApplySafe).toBeUndefined();
+      expect(after).toContain(`<!-- old: ${LINK} -->`);
+    });
+
     it('still rewrites a link after a comment has closed, and a normal line', async () => {
       const body = `<!-- note -->\nSee ${LINK}.`;
       const { issue, after } = await linkCase(body);
@@ -493,9 +566,9 @@ describe('structure: broken link whose basename is unique in the tree', () => {
     it('does not rewrite a mistyped script inside an HTML comment, but does in a fenced block', async () => {
       const comment = '# Agents\n\n<!-- old: run `npm run bulid` -->\n';
       const repo = repoWith({ 'package.json': MANIFEST, 'AGENTS.md': comment });
+      // A command in a comment no reader sees is not even reported (pcic-1ik0.2).
       const hidden = commandIssues(await issuesIn(repo));
-      expect(hidden.length).toBeGreaterThan(0);
-      for (const issue of hidden) expect(issue.autoApplySafe).toBeUndefined();
+      expect(hidden).toEqual([]);
       expect(await applyAll(repo, hidden, 'AGENTS.md')).toBe(comment);
 
       const fenced = '# Agents\n\n```bash\nnpm run bulid\n```\n';
@@ -517,6 +590,17 @@ describe('structure: broken link whose basename is unique in the tree', () => {
       const [issue] = brokenRefIssues(await issuesIn(repo));
       expect(issue!.autoApplySafe).toBeUndefined();
       expect(issue!.summary).not.toContain('may be what was meant');
+    });
+
+    it('treats docs/spec as documentation, not a fixture tree', async () => {
+      const repo = repoWith({
+        'package.json': MANIFEST,
+        'AGENTS.md': '# Agents\n\nSee [protocol](./protocol.md).\n',
+        'docs/spec/protocol.md': '# Protocol\n',
+      });
+      const issues = brokenRefIssues(await issuesIn(repo));
+      expect(issues[0]!.summary).toContain('"docs/spec/protocol.md"');
+      expect(await applyAll(repo, issues, 'AGENTS.md')).toBe('# Agents\n\nSee [protocol](./docs/spec/protocol.md).\n');
     });
 
     it('rewrites to the real file when a fixture copy also exists', async () => {

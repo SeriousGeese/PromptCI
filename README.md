@@ -202,6 +202,9 @@ and a confidence value. Finding `id`s are derived from repo-relative paths, so t
 wherever the repo is checked out — upgrading from a release that hashed absolute paths changes
 path-based ids once (baselines match on fingerprints, not ids, and are unaffected).
 
+Findings tagged `unscored` (agent-practice gaps, unpinned actions) are reported but cost no
+health-score points; see [Docs/cli-reference.md](Docs/cli-reference.md#unscored-findings).
+
 ## Configuration
 
 `promptci init` creates `.promptci/config.json`:
