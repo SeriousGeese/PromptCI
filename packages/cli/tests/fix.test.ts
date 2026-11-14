@@ -102,6 +102,26 @@ describe('runFix CLI command', () => {
     expect(claudeContent).not.toContain('Ensure coverage matches or exceeds 80%.');
   });
 
+  // pcic-1ik0.5 (PromptCI#160): a near-duplicate is two copies that have
+  // drifted apart. Consolidating it unattended would replace the text that
+  // differs with a pointer, deleting the conflict along with its evidence.
+  it('leaves near-duplicate (drifted) sections in both files untouched', async () => {
+    const agentsPath = path.join(tmpDir, 'AGENTS.md');
+    const claudePath = path.join(tmpDir, 'CLAUDE.md');
+    const body = (word: string) =>
+      '## Database Rules\n' +
+      `Every schema change ships as a new migration under drizzle/ and is ${word} edited after merge.\n` +
+      'Queries go through the repository modules in src/repos so transactions stay in one place.\n' +
+      'Route handlers must not import the database client directly; tests stub the repositories.\n';
+    await fs.writeFile(agentsPath, body('never'), 'utf-8');
+    await fs.writeFile(claudePath, body('always'), 'utf-8');
+
+    await runFix({ scanPath: tmpDir, interactive: false });
+
+    expect(await fs.readFile(agentsPath, 'utf-8')).toBe(body('never'));
+    expect(await fs.readFile(claudePath, 'utf-8')).toBe(body('always'));
+  });
+
   it('prompts user in interactive mode and applies changes on confirmation', async () => {
     const gitignorePath = path.join(tmpDir, '.gitignore');
     await fs.writeFile(gitignorePath, 'node_modules/\n', 'utf-8');

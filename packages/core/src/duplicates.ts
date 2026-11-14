@@ -315,9 +315,16 @@ export function detectDuplicates(files: InstructionFile[]): PromptCiIssue[] {
       : `Possible duplicate: ${headingLabel}`;
 
     const duplicateTokens = sections.slice(1).reduce((sum, s) => sum + Math.round(s.text.length / 4), 0);
-    const summary = fileCount > 2
-      ? `This section appears highly similar in ${fileCount} files. Consider consolidating into one canonical location.`
-      : 'These sections appear highly similar. Consider consolidating them into one canonical location.';
+    // Copies that are similar but not the same text (near-duplicates) must not
+    // be consolidated unattended: the pointer would replace the text that
+    // differs, and with it the evidence of a conflict. Same text = equal after
+    // collapsing whitespace and line endings (pcic-1ik0.5, PromptCI#160).
+    const identical = new Set(sections.map((s) => s.text.replace(/\s+/g, ' ').trim())).size === 1;
+    const summary =
+      (fileCount > 2
+        ? `This section appears highly similar in ${fileCount} files. Consider consolidating into one canonical location.`
+        : 'These sections appear highly similar. Consider consolidating them into one canonical location.') +
+      (identical ? '' : ' The copies are not identical: they differ in places, so compare them before consolidating.');
 
     issues.push({
       id: clusterIssueId(keys),
@@ -338,13 +345,17 @@ export function detectDuplicates(files: InstructionFile[]): PromptCiIssue[] {
         `Duplicated size: ~${duplicateTokens} tokens`,
       ],
       recommendation:
-        `Consolidate these sections into one canonical location (e.g. AGENTS.md) and use forwarding pointers to save ~${duplicateTokens} tokens per session. If both are intentional, add a comment clarifying the distinction.`,
+        (identical
+          ? ''
+          : 'The copies differ: decide which text is right before consolidating, since a pointer would discard the other. Then ') +
+        `${identical ? 'Consolidate' : 'consolidate'} these sections into one canonical location (e.g. AGENTS.md) and use forwarding pointers to save ~${duplicateTokens} tokens per session. If both are intentional, add a comment clarifying the distinction.`,
       // `applyFixRecipe` can consolidate a duplicate that spans MULTIPLE files
-      // (pick a canonical file, replace the copies with a forwarding pointer).
-      // A cluster confined to one file has no other file to point at, so it
-      // stays advisory. Same-file duplicate *headings* are handled by the other
-      // detectors below and are never auto-applied.
-      autoApplySafe: fileCount >= 2,
+      // (pick a canonical file, replace the copies with a forwarding pointer),
+      // but only copies that are the same text: a near-duplicate stays
+      // advisory. A cluster confined to one file has no other file to point
+      // at, so it stays advisory too. Same-file duplicate *headings* are
+      // handled by the other detectors below and are never auto-applied.
+      autoApplySafe: fileCount >= 2 && identical,
       confidence,
     });
   }

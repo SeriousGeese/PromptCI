@@ -958,3 +958,40 @@ describe('detectDuplicates — BUG-003 borderline info-level near-duplicate', ()
     expect(issues[0].recommendation).toContain('tokens per session');
   });
 });
+
+// ---------------------------------------------------------------------------
+// pcic-1ik0.5 (PromptCI#160): only identical copies are auto-applied
+// ---------------------------------------------------------------------------
+
+describe('detectDuplicates — auto-fix only for identical copies', () => {
+  const pair = (textA: string, textB: string) => {
+    const a = makeSection({ text: textA, id: 'a', heading: 'Testing', filePath: '/repo/CLAUDE.md', startLine: 1, endLine: 7 });
+    const b = makeSection({ text: textB, id: 'b', heading: 'Testing', filePath: '/repo/AGENTS.md', startLine: 1, endLine: 7 });
+    return detectDuplicates([makeFile('/repo/CLAUDE.md', [a]), makeFile('/repo/AGENTS.md', [b])]);
+  };
+
+  it('a drifted pair ("never" versus "always") is reported without an auto-fix', () => {
+    const drifted = LONG_TEXT_A.replace('before committing', 'never before committing');
+    const issues = pair(LONG_TEXT_A.replace('before committing', 'always before committing'), drifted);
+    expect(issues).toHaveLength(1);
+    const issue = issues[0]!;
+    expect(issue.severity).toBe('warning');
+    expect(issue.autoApplySafe).toBe(false);
+    expect(issue.fixEdits).toBeUndefined();
+    expect(issue.summary).toContain('The copies are not identical');
+    expect(issue.recommendation).toMatch(/^The copies differ: decide which text is right before consolidating/);
+  });
+
+  it('an identical pair keeps the auto-fix', () => {
+    const [issue] = pair(LONG_TEXT_A, LONG_TEXT_A);
+    expect(issue!.severity).toBe('high');
+    expect(issue!.autoApplySafe).toBe(true);
+    expect(issue!.summary).not.toContain('not identical');
+    expect(issue!.recommendation).toMatch(/^Consolidate these sections/);
+  });
+
+  it('copies that differ only in whitespace and line endings count as identical', () => {
+    const [issue] = pair(LONG_TEXT_A, LONG_TEXT_A.replace(/\n/g, '\r\n').replace(/ the /g, '  the '));
+    expect(issue!.autoApplySafe).toBe(true);
+  });
+});
