@@ -57,6 +57,23 @@ async function newAfter(root: string, change: Record<string, string>): Promise<P
 const isPin = (i: PromptCiIssue) => i.id.startsWith('action-pin-');
 const isPractice = (i: PromptCiIssue) => i.id.startsWith('agent-practice-');
 
+describe('an exact per-section duplicate keeps its identity when a copy goes away (pcic-1ik0.10)', () => {
+  const shared =
+    '## Contributing\n\nOpen pull requests against main with a short description and the issue they close. Keep each\n' +
+    'pull request to one logical change, add tests for every behaviour change, and wait for CI to pass.\n';
+  const own = (topic: string) => `## ${topic}\n\nNotes about ${topic} that only this file carries, long enough to stand alone here.\n`;
+  const isContributing = (i: PromptCiIssue) => i.title.startsWith('Possible duplicate: Contributing');
+
+  it('three copies become two: same finding in the baseline, trend and SARIF', async () => {
+    const root = repoFrom({
+      'AGENTS.md': `# Rules\n\n${own('stack')}\n${shared}`,
+      'CLAUDE.md': `# Claude\n\n${own('slash commands')}\n${shared}`,
+      'README.md': `# Project\n\n${own('install')}\n${shared}`,
+    });
+    await expectGroupKeepsIdentity(root, { 'CLAUDE.md': `# Claude\n\n${own('slash commands')}` }, isContributing);
+  });
+});
+
 describe('grouped findings keep their identity when their list changes (baseline, trend, SARIF)', () => {
   it('pinning one of several actions in a workflow', async () => {
     const root = repoFrom({ 'AGENTS.md': '# Rules\n', '.github/workflows/ci.yml': workflow('a/one@v1', 'b/two@v2') });

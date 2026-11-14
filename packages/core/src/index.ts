@@ -40,7 +40,8 @@ export type { ContextAnalysis } from './context-analysis.js';
 export { scan } from './scan.js';
 export { ADDRESSABLE_CATEGORIES, estimateTokens, annotateIssueTokens, computeAddressableTokens } from './token-estimates.js';
 export { computeFingerprint, createBaseline, filterNewIssues, assertValidBaseline } from './baseline.js';
-export { applyFixRecipe, resolveSafePath, isRepairable } from './fix-engine.js';
+export { applyFixRecipe, resolveSafePath, isRepairable, isOptInRecipe, planMirrorImport } from './fix-engine.js';
+export type { MirrorImportPlan } from './fix-engine.js';
 export {
   closestUniqueMatch,
   isMechanicalRename,
