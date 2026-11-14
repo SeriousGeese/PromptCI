@@ -328,10 +328,19 @@ export function isKnownBinary(context: RepoContext, name: string): boolean {
   return providers.some((provider) => installed.has(provider));
 }
 
+/**
+ * True when `scripts` defines `name`. A script with an empty command is still
+ * defined, and an inherited key (`constructor`, `toString`) is not a script, so
+ * this is an own-property test rather than a truthiness one.
+ */
+export function hasScript(scripts: Readonly<Record<string, string>>, name: string): boolean {
+  return Object.prototype.hasOwnProperty.call(scripts, name);
+}
+
 /** True when the root manifest or any workspace package defines the script. */
 export function anyWorkspaceHasScript(context: RepoContext, name: string): boolean {
-  if (context.packageJson.scripts[name]) return true;
-  return (context.workspaces ?? []).some((ws) => !!ws.scripts[name]);
+  if (hasScript(context.packageJson.scripts, name)) return true;
+  return (context.workspaces ?? []).some((ws) => hasScript(ws.scripts, name));
 }
 
 /**

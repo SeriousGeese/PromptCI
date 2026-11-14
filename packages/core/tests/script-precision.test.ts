@@ -592,6 +592,61 @@ describe('a glob or placeholder in a script token is not a typo (pcic-qc33, #156
   });
 });
 
+describe('review follow-up to #163 (pcic-1ik0.2)', () => {
+  const root = pkg({ scripts: { check: 'echo' } });
+
+  it('counts a script with an empty command as defined, at the root, in a named directory and elsewhere', async () => {
+    expect(
+      scriptFindings(await scanRepo({ 'package.json': pkg({ scripts: { check: 'x', noop: '' } }), 'CLAUDE.md': '# P\n\nRun `npm run noop`.\n' })),
+    ).toEqual([]);
+    expect(
+      scriptFindings(
+        await scanRepo({
+          'package.json': root,
+          'site/package.json': pkg({ scripts: { noop: '' } }),
+          'CLAUDE.md': '## Site (from `site/`)\n\n```sh\nnpm run noop\n```\n',
+        }),
+      ),
+    ).toEqual([]);
+    const elsewhere = scriptFindings(
+      await scanRepo({ 'package.json': root, 'site/package.json': pkg({ scripts: { noop: '' } }), 'CLAUDE.md': '# P\n\nRun `npm run noop`.\n' }),
+    );
+    expect(elsewhere).toHaveLength(1);
+    expect(elsewhere[0]!.severity).toBe('info');
+  });
+
+  it('does not take an inherited object key for a script', async () => {
+    const findings = scriptFindings(
+      await scanRepo({ 'package.json': root, 'site/package.json': pkg({ scripts: { dev: 'x' } }), 'CLAUDE.md': '# P\n\nRun `npm run constructor`.\n' }),
+    );
+    expect(findings).toHaveLength(1);
+    expect(findings[0]!.severity).toBe('warning');
+  });
+
+  it('reads a directory named on the command\'s own line', async () => {
+    const issues = await scanRepo({
+      'package.json': root,
+      'site/package.json': pkg({ scripts: { dev: 'x' } }),
+      'CLAUDE.md': '# P\n\nFrom `site/`: run `npm run dev`.\n',
+    });
+    expect(scriptFindings(issues)).toEqual([]);
+  });
+
+  it('survives a malformed nested package.json without reporting from it', async () => {
+    const issues = await scanRepo({
+      'package.json': root,
+      'broken/package.json': '{ not json',
+      'site/package.json': pkg({ scripts: { dev: 'x' } }),
+      'CLAUDE.md': '# P\n\nRun `npm run dev` and `npm run nothing-anywhere`.\n',
+    });
+    const findings = scriptFindings(issues);
+    expect(findings.map((f) => `${f.severity}:${f.evidence[0]}`).sort()).toEqual([
+      'info:Command: `npm run dev`',
+      'warning:Command: `npm run nothing-anywhere`',
+    ]);
+  });
+});
+
 describe('fixture-command-scope', () => {
   it('flags only the note and the deliberately broken command', async () => {
     const findings = scriptFindings(await scanIssues(SCOPE_FIXTURE));
