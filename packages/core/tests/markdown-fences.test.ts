@@ -23,6 +23,15 @@ describe('scanFencedLines', () => {
     expect(lines.map(l => l.lineNumber)).toEqual([1, 2, 3, 4, 5]);
   });
 
+  it('opens a fence only on one repeated character: a line starting with ~~`code`~~ opens nothing', () => {
+    const lines = scanFencedLines(['From `site/`:', '~~`pnpm lnit`~~', '```', 'x', '```'].join('\n'));
+    expect(lines.map((l) => l.inFence)).toEqual([false, false, true, true, true]);
+    // ...and the mixed run cannot close a real fence either.
+    const closing = scanFencedLines(['```', 'x', '~`~', 'y', '```'].join('\n'));
+    expect(closing.map((l) => l.inFence)).toEqual([true, true, true, true, true]);
+    expect(fencedBlocks(['```', 'x', '~`~', 'y', '```'].join('\n'))).toHaveLength(1);
+  });
+
   it('does not let ``` close a ~~~ block', () => {
     const lines = scanFencedLines(['~~~', 'inside', '```', 'still inside', '~~~', 'out'].join('\n'));
 

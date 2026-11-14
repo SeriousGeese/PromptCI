@@ -347,11 +347,11 @@ describe('command_validity: no rewrite where the surroundings change what the co
     await advisory('# Agents\n\n```bash\nyarn --cwd=site bulid\n```\n', { 'site/package.json': MANIFEST });
   });
 
-  it('near text that names the directory it runs from', async () => {
+  it('in a repository with a second package.json, whatever the text says', async () => {
     const issue = await advisory('# Agents\n\n## Site (from `site/` directory)\n\n```bash\nnpm run bulid\n```\n', {
       'site/package.json': JSON.stringify({ name: 'site', scripts: { dev: 'x' } }),
     });
-    expect(issue.recommendation).toContain('names a directory');
+    expect(issue.recommendation).toContain('more than one package');
   });
 
   it('still rewrites a plain command in a fence and in prose', async () => {

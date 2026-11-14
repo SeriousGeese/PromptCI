@@ -183,7 +183,7 @@ describe('a manifest that was listed but not read says nothing (hosted scans)', 
 
   it('offers no edit when the manifest walk hit its directory limit', async () => {
     const dirs: Record<string, string> = {};
-    for (let i = 0; i < 1100; i++) dirs[`d${String(i).padStart(3, '0')}/keep.txt`] = 'x';
+    for (let i = 0; i < 2100; i++) dirs[`d${String(i).padStart(3, '0')}/keep.txt`] = 'x';
     const issues = await findings({ 'package.json': ROOT, ...dirs, 'CLAUDE.md': '# P\n\n```sh\nnpm run buil\n```\n' });
     expect(brief(issues)).toEqual(['warning:npm run buil']);
     noEdit(issues);
@@ -195,8 +195,14 @@ describe('a manifest that was listed but not read says nothing (hosted scans)', 
       'site/package.json': '{ "scripts": { "dev": ',
       'CLAUDE.md': '## Site (from `site/`)\n\n```sh\nnpm run dev\n```\n',
     });
+    // Nothing is judged against it; one info finding names the file, and it is not a warning that could fail a CI.
     expect(named.every((i) => !i.summary.includes('does not appear'))).toBe(true);
-    expect(named.some((i) => i.title.includes('incomplete'))).toBe(true);
+    const parse = named.filter((i) => i.title.startsWith('Could not parse'));
+    expect(parse).toHaveLength(1);
+    expect(parse[0]!.severity).toBe('info');
+    expect(parse[0]!.title).toContain('site/package.json');
+    expect(parse[0]!.locations?.[0]?.filePath).toContain('site');
+    expect(named.some((i) => i.title.includes('incomplete'))).toBe(false);
 
     const unnamed = await findings({
       'package.json': ROOT,
@@ -332,6 +338,103 @@ describe('an unattended edit is default-deny (re-review of #170)', () => {
       'CLAUDE.md': '## Checks\n\nRun `npm run bild` before you push.\n',
     });
     expect(issues[0]!.autoApplySafe).toBe(true);
+  });
+});
+
+describe('RULE 1: an edit only in a repository that is certainly one package (third review of #170)', () => {
+  const root = pkg({ build: 'x', lint: 'x', test: 'x', typecheck: 'x' });
+  const multi = { 'package.json': root, 'site/package.json': pkg({ deploy: 'x', dev: 'x' }), 'apps/web/package.json': pkg({ deploy: 'x', dev: 'x' }) };
+
+  it.each([
+    ['a directory in a parent list item', '# P\n\nScripts per package:\n\n- From `site/`:\n  - `npm run buil`\n'],
+    ['a <details> summary', '<details>\n<summary>Site (from `site/`)</summary>\n\nBuild:\n\n```sh\nnpm run buil\n```\n\n</details>\n'],
+    ['a table header', '| Run from `site/` | What |\n| --- | --- |\n| a | b |\n| c | d |\n| e | `npm run buil` |\n'],
+    ['a cd in an earlier block', '```sh\ncd site\nnpm install\n```\n\nThen:\n\n```sh\nnpm run buil\n```\n'],
+    ['a directory without backticks or a slash', 'From apps/web:\n\n```sh\nnpm run buil\n```\n'],
+    ['a heading naming the folder in words', '## Site (run inside the site folder)\n\n```sh\nnpm run buil\n```\n'],
+    ['a sentence naming the folder in words', '# P\n\nInside site, run npm run buil\n'],
+    ['a table cell', '| site | `npm run buil` |\n'],
+  ])('offers no edit with a second package.json, after %s', async (_name, body) => {
+    const issues = await findings({ ...multi, 'CLAUDE.md': body });
+    expect(issues.length).toBeGreaterThan(0);
+    noEdit(issues);
+  });
+
+  it.each([
+    ['a second package.json', { 'tools/package.json': pkg({ x: 'x' }) }],
+    ['a workspaces field', { 'package.json': pkg({ build: 'x', lint: 'x' }, { workspaces: ['packages/*'] }) }],
+    ['pnpm-workspace.yaml', { 'pnpm-workspace.yaml': "packages:\n  - 'packages/*'\n" }],
+    ['turbo.json', { 'turbo.json': '{}' }],
+    ['nx.json', { 'nx.json': '{}' }],
+    ['lerna.json', { 'lerna.json': '{}' }],
+    ['a corrupt nested package.json', { 'tools/package.json': '{ nope' }],
+  ])('offers no edit with %s, even for a plain typo', async (_name, extra) => {
+    const issues = await findings({ 'package.json': pkg({ build: 'x', lint: 'x' }), 'CLAUDE.md': '## Checks\n\n```sh\nnpm run bild\n```\n', ...extra });
+    expect(brief(issues)).toEqual(['warning:npm run bild']);
+    noEdit(issues);
+  });
+
+  it('offers no edit when the caller\'s inventory is partial or lists a manifest it never fetched', async () => {
+    const files = { 'package.json': pkg({ build: 'x', lint: 'x' }), 'CLAUDE.md': '## Checks\n\n```sh\nnpm run bild\n```\n' };
+    noEdit(await findings(files, { knownPaths: ['CLAUDE.md', 'package.json', 'site/package.json'] }));
+  });
+
+  it('keeps the edit in a single-package repository: a plain fenced command', async () => {
+    const issues = await findings({ 'package.json': root, 'src/index.ts': 'x', 'CLAUDE.md': '## Checks\n\n```sh\npnpm run lnit\n```\n' });
+    expect(issues[0]!.autoApplySafe).toBe(true);
+    expect(issues[0]!.fixEdits).toHaveLength(1);
+  });
+});
+
+describe('RULE 2: caution anywhere around the command withholds the edit, even in a single package', () => {
+  const files = (body: string): Record<string, string> => ({ 'package.json': pkg({ build: 'x', lint: 'x', test: 'x' }), 'CLAUDE.md': body });
+
+  it.each([
+    ['<del>', '# P\n\n<del>`npm run bulid`</del>\n'],
+    ['<s>', '# P\n\n<s>`npm run bulid`</s>\n'],
+    ['<strike>', '# P\n\n<strike>`npm run bulid`</strike>\n'],
+    ['a heavy cross mark', '# P\n\n✖ `npm run bulid`\n'],
+    ['a warning sign', '# P\n\n⚠️ `npm run bulid`\n'],
+    ['an ancestor heading', '## Common mistakes\n\n### Build\n\n- `npm run bulid`\n'],
+    ['a line anywhere in the same block', '```sh\n# Do not run these:\nnpm run lint\nnpm run bulid\n```\n'],
+    ['a trailing comment on the line', '```sh\nnpm run bulid   # removed in v2\n```\n'],
+    ['the same paragraph, after the command', '# P\n\nThe old `npm run bulid` alias was removed in v2.\n'],
+    ['a blockquote', '# P\n\n> Warning: this is only for the old layout.\n> `npm run bulid` no longer exists\n'],
+    ['a parent list item', '# P\n\n- Do not use these:\n  - `npm run bulid`\n'],
+    ['a table header', '| Wrong | Right |\n| --- | --- |\n| `npm run bulid` | `npm run build` |\n'],
+    ['a <details> summary', '<details>\n<summary>Old commands, removed</summary>\n\n```sh\nnpm run bulid\n```\n\n</details>\n'],
+    ['"Before:" and "After:"', '# P\n\nBefore: `npm run bulid`\nAfter: `npm run build`\n'],
+    ['"Not this:"', '# P\n\nNot this: `npm run bulid`\n'],
+  ])('offers no edit after %s', async (_name, body) => {
+    const issues = await findings(files(body));
+    expect(issues.length).toBeGreaterThan(0);
+    noEdit(issues);
+  });
+
+  it('still edits a plain fenced command, and a plain sentence', async () => {
+    expect((await findings(files('## Checks\n\n```sh\nnpm run bulid\n```\n')))[0]!.autoApplySafe).toBe(true);
+    expect((await findings(files('## Checks\n\nBefore you push, run `npm run bulid`.\n')))[0]!.autoApplySafe).toBe(true);
+  });
+
+  it('is not fooled by a strikethrough code span at the start of a line opening a fence (RULE 3)', async () => {
+    // The line starting ~~`...`~~ must not open a fence; a later bare ~~~ then cannot hide the lead-in or swallow the document.
+    const issues = await findings({
+      'package.json': pkg({ build: 'x', lint: 'x' }),
+      'site/package.json': pkg({ dev: 'x' }),
+      'CLAUDE.md': '~~`npm run old`~~\n\nFrom `site/`:\n\n```sh\nnpm run dev\n```\n\n~~~\nx\n~~~\n',
+    });
+    expect(issues.filter((i) => i.evidence[0]!.includes('npm run dev'))).toEqual([]);
+  });
+
+  it('reads a caution above a block even when a struck-through code span starts a line earlier and a bare ~~~ comes later (RULE 3)', async () => {
+    // With the old mixed-character fence match, the ~~`...`~~ line opened a fence that the later ~~~ closed,
+    // hiding the warning line from the block that follows it and letting the edit through.
+    const issues = await findings({
+      'package.json': pkg({ build: 'x', lint: 'x' }),
+      'CLAUDE.md': '~~`npm run old`~~ is gone.\n\nDo not run this:\n\n```sh\nnpm run bulid\n```\n\n~~~\nx\n~~~\n',
+    });
+    expect(brief(issues)).toContain('warning:npm run bulid');
+    noEdit(issues);
   });
 });
 

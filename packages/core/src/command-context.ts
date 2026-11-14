@@ -10,7 +10,7 @@
  * findings.
  *
  * Whether a script rewrite may be applied unseen is a different question and is
- * default-deny: see {@link CommandContext.editText} and `cautionary`.
+ * default-deny: see `cautionary` and the single-package rule in command-validity.ts.
  *
  * Pure text work: nothing here touches the filesystem. The detector resolves the
  * directory tokens against the repository.
@@ -90,13 +90,17 @@ export type CommandContext = {
   /**
    * Text that may name the directory the command runs from: its own line, the
    * paragraph or list lead-in that introduces it, the comment lines above it in
-   * its block, and the nearest heading (for a command written in a heading, the
-   * paragraph under it).
+   * its block, the nearest heading (for a command written in a heading, the
+   * paragraph under it), the list items that enclose it, a `<details>` summary and
+   * a table's header row.
    */
   text: string[];
-  /** `text` plus every ancestor heading: any directory named in it withholds an edit. */
-  editText: string[];
-  /** A cautionary or negating marker in the own line, the introduction, the comment lines above or the nearest heading. */
+  /**
+   * A cautionary or negating marker anywhere that frames the command: its whole heading chain, whole block
+   * or paragraph, every enclosing list item, its table row and header, an enclosing blockquote or
+   * `<details>` summary, or a trailing comment on its own line. Wide on purpose (non-English cautions
+   * are a known gap).
+   */
   cautionary: boolean;
   /**
    * The command's own sentence, or the sentence that introduces its block, says
@@ -111,7 +115,7 @@ const ROOT_RE =
 const NEGATION_RE = /\b(?:not|never|without|instead\s+of|rather\s+than|other\s+than|except|unlike)\b|n't\b/i;
 /** Words and marks that say a command is shown as something not to do. Applied to text with straight quotes. */
 const CAUTION_RE =
-  /\b(?:don'?t|do\s+not|doesn'?t|never|avoid|wrong|bad|incorrect|invalid|broken|deprecated|outdated|legacy|anti-?pattern|typo|mistake|should\s+not|shouldn'?t|must\s+not|can'?t|cannot|fails?|failing|instead\s+of|no\s+longer|old\s+way|not\s+(?:this|that|like\s+this|recommended|to))\b|[❌✗✘\u{1f6ab}⛔]|~~/iu;
+  /\b(?:don'?t|do\s+not|doesn'?t|never|avoid|wrong|bad|incorrect|invalid|broken|deprecated|outdated|obsolete|legacy|old|removed|renamed|anti-?pattern|typo|mistakes?|warning|should\s+not|shouldn'?t|must\s+not|can'?t|cannot|fails?|failing|instead\s+of|no\s+longer|not\s+(?:this|that|like\s+this|recommended|to))\b|[❌✗✘✖⚠\u{1f6ab}⛔]|~~|<\/?(?:del|s|strike)>|\bbefore\s*:/iu;
 
 /** Up to `max` contiguous non-blank, non-heading, non-fence lines ending at line `from` (1-based). */
 function paragraphEndingAt(s: LineStructure, from: number, max: number): string[] {
@@ -130,6 +134,52 @@ function listLeadIn(s: LineStructure, line: number): string[] {
     const text = s.lines[n - 1]!;
     if (text.trim() === '' || LIST_ITEM_RE.test(text) || /^\s{2,}\S/.test(text)) continue;
     return paragraphEndingAt(s, n, 3);
+  }
+  return [];
+}
+
+function indentOf(text: string): number {
+  return /^\s*/.exec(text)![0].replace(/\t/g, '    ').length;
+}
+
+/** The list items that enclose line `from` (a list item, or a line or block nested under one), nearest first. */
+function ancestorListItems(s: LineStructure, from: number): string[] {
+  const out: string[] = [];
+  let indent = indentOf(s.lines[from - 1] ?? '');
+  for (let n = from - 1; n >= 1 && from - n <= 200 && indent > 0; n--) {
+    if (s.inFence[n - 1] || isHeadingLine(s, n)) continue;
+    const text = s.lines[n - 1]!;
+    if (LIST_ITEM_RE.test(text) && indentOf(text) < indent) {
+      out.push(text);
+      indent = indentOf(text);
+    }
+  }
+  return out;
+}
+
+/** Contiguous lines around `line` that satisfy `keep`, up to 60 each way (a table, a blockquote). */
+function runOfLines(s: LineStructure, line: number, keep: (text: string) => boolean): string[] {
+  let first = line;
+  while (first > 1 && line - first < 60 && keep(s.lines[first - 2]!)) first--;
+  let last = line;
+  while (last < s.lines.length && last - line < 60 && keep(s.lines[last]!)) last++;
+  return s.lines.slice(first - 1, last);
+}
+
+/** The `<summary>` text of the `<details>` element that encloses line `from`, if any. */
+function enclosingSummary(s: LineStructure, from: number): string[] {
+  let depth = 0;
+  for (let n = from - 1; n >= 1 && from - n <= 300; n--) {
+    const text = s.lines[n - 1]!;
+    if (/<\/details>/i.test(text)) depth++;
+    if (/<details\b/i.test(text)) {
+      if (depth > 0) {
+        depth--;
+        continue;
+      }
+      const block = s.lines.slice(n - 1, Math.min(s.lines.length, n + 6)).join('\n');
+      return /<summary[\s\S]*?<\/summary>/i.exec(block)?.slice(0, 1) ?? [text];
+    }
   }
   return [];
 }
@@ -188,6 +238,13 @@ export function commandContext(
     rootCandidates.push(sentenceHolding(own, command));
   }
   text.push(...introduction);
+  // What encloses the command: the list items it sits under, a <details> summary, a table's header row.
+  const around: string[] = [...ancestorListItems(s, anchor), ...enclosingSummary(s, anchor)];
+  if (own.includes('|') && open === undefined) {
+    const table = runOfLines(s, line, (t) => t.includes('|'));
+    around.push(...table.slice(0, 2));
+  }
+  text.push(...around);
   const lastIntroSentence = sentencesOf(introduction.join(' ')).pop();
   if (lastIntroSentence) rootCandidates.push(lastIntroSentence);
 
@@ -212,14 +269,29 @@ export function commandContext(
       if (first) rootCandidates.push(first);
     }
   }
-  const editText = [...text, ...headingLines.slice(1).map((n) => s.lines[n - 1]!)];
 
-  const cautionary = CAUTION_RE.test(normalizeQuotes(text.join('\n')));
+  // Caution is wide on purpose (RULE 2): the whole block, paragraph, table, blockquote and every ancestor heading.
+  const scope: string[] = [...text, ...headingLines.map((n) => s.lines[n - 1]!)];
+  if (open !== undefined) {
+    scope.push(s.lines[open - 1]!);
+    let n = open + 1;
+    while (n <= s.lines.length && s.opener.get(n) === open) scope.push(s.lines[n++ - 1]!);
+    if (n <= s.lines.length && s.inFence[n - 1]) scope.push(s.lines[n - 1]!);
+  } else if (!isHeadingLine(s, line)) {
+    scope.push(...paragraphEndingAt(s, line, 30));
+    for (let n = line + 1; n <= s.lines.length && n <= line + 30; n++) {
+      if (s.inFence[n - 1] || isHeadingLine(s, n) || s.lines[n - 1]!.trim() === '') break;
+      scope.push(s.lines[n - 1]!);
+    }
+  }
+  if (/^\s*>/.test(own)) scope.push(...runOfLines(s, line, (t) => /^\s*>/.test(t)));
+  if (own.includes('|') && open === undefined) scope.push(...runOfLines(s, line, (t) => t.includes('|')));
+  const cautionary = CAUTION_RE.test(normalizeQuotes(scope.join('\n')));
   const explicitRoot = rootCandidates.some((sentence) => {
     const plain = normalizeQuotes(sentence);
     return ROOT_RE.test(plain) && !NEGATION_RE.test(plain) && !namesDirectory(sentence);
   });
-  return { text, editText, cautionary, explicitRoot };
+  return { text, cautionary, explicitRoot };
 }
 
 /**
@@ -228,7 +300,7 @@ export function commandContext(
  * or a glob (`packages/*`) is a path, not a directory name.
  */
 const DIR_TOKEN_RE =
-  /`([^`\s]+)`|(?<![\w./@-])((?:\.{1,2}\/)?[\w@.-]+(?:\/[\w@.-]+)*\/)(?![\w@.*?[{-])|\bcd\s+(?:\.\/)?([\w@.-]+(?:\/[\w@.-]+)*)/g;
+  /`([^`\s]+)`|(?<![\w./@-])((?:\.{1,2}\/)?[\w@.-]+(?:\/[\w@.-]+)*\/)(?![\w@.*?[{-])|\bcd\s+(?:\.\/)?([\w@.-]+(?:\/[\w@.-]+)*)|\b(?:from|in|inside|under|within|into)\s+(?:the\s+)?([\w@.-]+(?:\/[\w@.-]+)*)/gi;
 const NOT_A_DIR_RE = /[*?<>{}[\]$~%\\]/;
 const MAX_TOKENS = 24;
 
@@ -237,7 +309,7 @@ export function directoryTokens(texts: readonly string[]): string[] {
   const seen = new Set<string>();
   for (const text of texts) {
     for (const m of text.matchAll(DIR_TOKEN_RE)) {
-      const token = (m[1] ?? m[2] ?? m[3] ?? '').replace(/^\.\//, '').replace(/\/+$/, '');
+      const token = (m[1] ?? m[2] ?? m[3] ?? m[4] ?? '').replace(/^\.\//, '').replace(/\/+$/, '');
       if (!token || token === '.' || NOT_A_DIR_RE.test(token)) continue;
       seen.add(token);
       if (seen.size >= MAX_TOKENS) return [...seen];
