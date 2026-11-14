@@ -428,6 +428,20 @@ describe('detectSecurityPack', () => {
       expect(unignored({ 'pom.xml': '<project/>', 'package.json': body, 'bin/Debug/App.dll': 'MZ' })).toBeUndefined();
     });
 
+    it('a package.json bin target that climbs out of bin/ does not make bin/ source', () => {
+      const issue = unignored({ 'pom.xml': '<project/>', 'package.json': '{"bin":{"x":"bin/../dist/cli.js"}}', 'bin/Debug/App.class': 'x' });
+      expect(issue?.evidence).toEqual(['Directory "bin" exists but is not ignored in .gitignore.']);
+      expect(unignored({ 'pom.xml': '<project/>', 'package.json': '{"bin":"./bin/./cli.js"}', 'bin/Debug/App.class': 'x' })).toBeUndefined();
+    });
+
+    it('does NOT report a bin/ beside a build file when its contents cannot be listed', () => {
+      const tree = repo({ '.gitignore': '.promptci/', 'pom.xml': '<project/>', 'bin/Debug/App.class': 'x' });
+      const list = tree.entries.bind(tree);
+      tree.entries = ((candidate: string) => (candidate === 'bin' ? 'unreadable' : list(candidate))) as typeof tree.entries;
+      const issues = detectSecurityPack({ ...mockContext, tree, files: [makeFile('# Rules')] });
+      expect(issues.find((i) => i.id === 'security-pack-unignored-dirs')).toBeUndefined();
+    });
+
     it('an extensionless file without #! (a compiled apphost) does not make bin/ source', () => {
       const issue = unignored({ 'App.csproj': '<Project />', 'bin/App': 'MZ\u0090\u0000' });
       expect(issue?.evidence).toEqual(['Directory "bin" exists but is not ignored in .gitignore.']);

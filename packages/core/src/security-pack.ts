@@ -165,9 +165,12 @@ function packageJsonNamesBinDir(tree: Tree): boolean {
   const { bin, directories } = pkg as { bin?: unknown; directories?: { bin?: unknown } };
   const targets: unknown[] = typeof bin === 'string' ? [bin] : typeof bin === 'object' && bin !== null ? Object.values(bin) : [];
   if (directories && typeof directories === 'object') targets.push(directories.bin);
-  return targets.some(
-    (t) => typeof t === 'string' && /^bin(?:\/|$)/.test(t.replace(/\\/g, '/').replace(/^(?:\.\/)+/, '')),
-  );
+  return targets.some((t) => {
+    if (typeof t !== 'string') return false;
+    // Resolve `.` and `..` first: `bin/../dist/cli.js` lives in dist/, not bin/.
+    const normalized = path.posix.normalize(t.replace(/\\/g, '/'));
+    return normalized === 'bin' || normalized.startsWith('bin/');
+  });
 }
 
 /** Extensions of hand-written scripts, never of .NET or JVM build output. */
@@ -178,11 +181,12 @@ const SCRIPT_EXTENSION_RE = /\.(?:sh|bash|zsh|fish|js|mjs|cjs|ts|mts|cts|py|rb|p
  * script extension, or an extensionless file starting with `#!`. An
  * extensionless file whose content cannot be read (a hosted scan that listed
  * but did not fetch it) counts too, since a wrong `bin/` line in .gitignore is
- * the costlier mistake.
+ * the costlier mistake. So does a directory that cannot be listed: its
+ * contents are unknown, so it is not reported.
  */
 function holdsHandWrittenScript(tree: Tree, dir: string): boolean {
   const entries = tree.entries(dir);
-  if (typeof entries === 'string') return false;
+  if (typeof entries === 'string') return true;
   for (const entry of entries.values()) {
     if (entry.isDirectory()) continue;
     if (SCRIPT_EXTENSION_RE.test(entry.name)) return true;
