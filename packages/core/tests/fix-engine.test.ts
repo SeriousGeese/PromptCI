@@ -236,6 +236,17 @@ describe('applyFixRecipe — duplicate consolidation (pcic-1ik0.10: import, neve
       await write({ 'AGENTS.md': '## A\na\n', 'CLAUDE.md': '## B\nb\n' });
       return mirror('AGENTS.md', 'CLAUDE.md');
     }],
+    ['a section reflowed in the copy (byte-identical rule: different text)', async () => {
+      await write({
+        'AGENTS.md': '## Rules\nKeep each change small and\nfocused on one task.\n',
+        'CLAUDE.md': '## Rules\nKeep each change small and focused\non one task.\n',
+      });
+      return mirror('AGENTS.md', 'CLAUDE.md');
+    }],
+    ['a nested list flattened in the copy', async () => {
+      await write({ 'AGENTS.md': '## Steps\n- build\n  - pnpm build\n', 'CLAUDE.md': '## Steps\n- build\n- pnpm build\n' });
+      return mirror('AGENTS.md', 'CLAUDE.md');
+    }],
     ['a canonical file the .gitignore ignores by name', async () => {
       await write({ 'AGENTS.md': '## A\na\n', 'CLAUDE.md': '## A\na\n', '.gitignore': 'node_modules/\nAGENTS.md\n' });
       return mirror('AGENTS.md', 'CLAUDE.md');
