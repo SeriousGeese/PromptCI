@@ -470,6 +470,7 @@ function findMirrorGroups(
 
   const parent = new Map<string, string>();
   const mirrored = new Set<string>();
+  const mirrorPairs = new Set<string>();
   for (const [a, byTarget] of matched) {
     for (const [b, aKeys] of byTarget) {
       if (a >= b) continue; // each unordered pair once
@@ -485,6 +486,7 @@ function findMirrorGroups(
       union(parent, a, b);
       mirrored.add(a);
       mirrored.add(b);
+      mirrorPairs.add(pairKey(a, b));
     }
   }
 
@@ -493,7 +495,11 @@ function findMirrorGroups(
     const root = find(parent, file);
     members.set(root, [...(members.get(root) ?? []), file]);
   }
+  // Every pair in a group must itself be a mirror pair. Connected components
+  // alone would chain A~B and B~C into one group although A and C share
+  // nothing, and the consolidation fix would then point C's own text at A.
   const groups = [...members.values()]
+    .flatMap((component) => splitIntoCliques(component, (x, y) => mirrorPairs.has(pairKey(x, y))))
     .map(canonicalFirst)
     .sort((x, y) => x[0]!.localeCompare(y[0]!));
 
@@ -506,6 +512,29 @@ function findMirrorGroups(
     }
   });
   return { groups, groupOfFile, comparable };
+}
+
+const pairKey = (a: string, b: string) => (a < b ? `${a}\u0000${b}` : `${b}\u0000${a}`);
+
+/**
+ * Split a connected set of files into groups in which every two files are
+ * linked, deterministically: seed each group with the canonical remaining file
+ * (AGENTS.md first, else the first path), add each other remaining file, in
+ * path order, that is linked to every member so far, and repeat with what is
+ * left. Groups of one file are dropped.
+ */
+function splitIntoCliques(files: string[], linked: (a: string, b: string) => boolean): string[][] {
+  const groups: string[][] = [];
+  let remaining = canonicalFirst(files);
+  while (remaining.length > 1) {
+    const group = [remaining[0]!];
+    for (const file of remaining.slice(1)) {
+      if (group.every((member) => linked(member, file))) group.push(file);
+    }
+    if (group.length > 1) groups.push(group);
+    remaining = canonicalFirst(remaining.filter((f) => !group.includes(f)));
+  }
+  return groups;
 }
 
 /** True when a section has text beyond its heading line. */

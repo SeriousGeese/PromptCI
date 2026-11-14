@@ -1122,6 +1122,26 @@ describe('detectDuplicates — mirrored instruction files', () => {
     expect(issues[0]!.title.startsWith('Possible duplicate')).toBe(true);
   });
 
+  it('does not chain mirrors: A and C each copied into B, but sharing nothing, are not one group', () => {
+    const a = makeFile('/repo/AGENTS.md', sectionsFor('/repo/AGENTS.md', ['caching', 'logging', 'routing']));
+    const b = makeFile(
+      '/repo/CLAUDE.md',
+      sectionsFor('/repo/CLAUDE.md', ['caching', 'logging', 'routing', 'billing', 'search', 'uploads']),
+    );
+    const c = makeFile('/repo/GEMINI.md', sectionsFor('/repo/GEMINI.md', ['billing', 'search', 'uploads']));
+    const issues = detectDuplicates([a, b, c]);
+    const mirrors = issues.filter((i) => i.title.startsWith('Possible mirrored instruction files'));
+    expect(mirrors.map((i) => i.title)).toEqual(['Possible mirrored instruction files: AGENTS.md, CLAUDE.md']);
+    // GEMINI.md's copies stay per-section findings, so no fix points its text at AGENTS.md.
+    const gemini = issues.filter((i) => i.filePaths.includes('/repo/GEMINI.md'));
+    expect(gemini.map((i) => i.title).sort()).toEqual([
+      'Possible duplicate: billing',
+      'Possible duplicate: search',
+      'Possible duplicate: uploads',
+    ]);
+    expect(mirrors[0]!.filePaths).not.toContain('/repo/GEMINI.md');
+  });
+
   it('identical one-section files are a mirror', () => {
     const one = (filePath: string) =>
       makeFile(filePath, [makeSection({ text: LONG_TEXT_A, id: filePath, heading: 'Testing', filePath })]);
