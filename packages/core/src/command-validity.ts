@@ -4,7 +4,7 @@ import type { RepoContext } from './repo-context.js';
 import type { PromptCiIssue } from './types.js';
 import { fencedBlocks, scanFencedLines } from './markdown-fences.js';
 import { fileIdPath } from './finding-id.js';
-import { anyWorkspaceHasScript, isKnownBinary, selectWorkspaces } from './workspace-manifests.js';
+import { anyWorkspaceHasScript, hasScript, isKnownBinary, selectWorkspaces } from './workspace-manifests.js';
 import { makefileDefines, readMakefile } from './makefile.js';
 import type { MakefileFacts } from './makefile.js';
 import { RepoTree, incompleteCheckIssue, isAbsoluteAnywhere, treeFor } from './repo-tree.js';
@@ -255,8 +255,8 @@ function packageIndex(tree: RepoTree): PackageIndex {
 /** Repo-relative directories (never the root) of the packages that define `script`, sorted. */
 function packagesDefining(context: RepoContext, tree: RepoTree, script: string): string[] {
   const dirs = new Set<string>();
-  for (const ws of context.workspaces ?? []) if (ws.dir !== '.' && ws.scripts[script]) dirs.add(ws.dir);
-  for (const [dir, scripts] of packageIndex(tree)) if (dir !== '.' && scripts[script]) dirs.add(dir);
+  for (const ws of context.workspaces ?? []) if (ws.dir !== '.' && hasScript(ws.scripts, script)) dirs.add(ws.dir);
+  for (const [dir, scripts] of packageIndex(tree)) if (dir !== '.' && hasScript(scripts, script)) dirs.add(dir);
   return [...dirs].sort();
 }
 
@@ -382,7 +382,7 @@ function workspaceHasScript(
   // `workspaces` globs, any layout). The path-based lookup below is only for
   // contexts built without them.
   if (context.workspaces) {
-    return selectWorkspaces(context, normalizedSelector).some((ws) => !!ws.scripts[scriptName]);
+    return selectWorkspaces(context, normalizedSelector).some((ws) => hasScript(ws.scripts, scriptName));
   }
 
   const { candidates, complete } = workspacePackageJsonCandidates(tree, normalizedSelector);
@@ -399,7 +399,7 @@ function workspaceHasScript(
       pkg.name === normalizedSelector ||
       relDir === normalizedSelector ||
       relDir.endsWith(`/${normalizedSelector}`);
-    if (selectorMatches && !!pkg.scripts[scriptName]) return true;
+    if (selectorMatches && hasScript(pkg.scripts, scriptName)) return true;
   }
 
   if (unknown) return 'unknown';
@@ -822,7 +822,7 @@ function findMissingScript(
         if (context.workspacesTruncated) continue; // only a sample of the workspace was read
         return `no workspace matches "${selector}" for ${tool} script "${name}"`;
       }
-      if (selectedWorkspaces.some((ws) => !!ws.scripts[name])) continue;
+      if (selectedWorkspaces.some((ws) => hasScript(ws.scripts, name))) continue;
       const target = selectedWorkspaces.length === 1
         ? `${selectedWorkspaces[0]!.name ?? selectedWorkspaces[0]!.dir} (${selectedWorkspaces[0]!.dir}/package.json)`
         : `the ${selectedWorkspaces.length} workspaces selected by "${selector}"`;
@@ -845,7 +845,7 @@ function findMissingScript(
       // from an explicit --filter workspace target. A same-named root script is
       // NOT reachable here, so it must not mask a genuinely missing subdir
       // script.
-      if (dirPkg.scripts[name]) continue;
+      if (hasScript(dirPkg.scripts, name)) continue;
       const inWorkspace = inWorkspaceScope(name);
       if (inWorkspace === true || inWorkspace === 'silent') continue;
       if (inWorkspace === 'unknown') return UNJUDGED;
@@ -856,7 +856,7 @@ function findMissingScript(
     // Repo-root context: the workspace target(s) or the root manifest.
     const inWorkspace = inWorkspaceScope(name);
     if (inWorkspace === true || inWorkspace === 'silent') continue;
-    if (context.packageJson.scripts[name]) continue;
+    if (hasScript(context.packageJson.scripts, name)) continue;
     // pcic-x1vl: a selected workspace may define it in a directory that could not be read.
     if (inWorkspace === 'unknown') return UNJUDGED;
     if (!scopedToWorkspaces) {
@@ -866,7 +866,7 @@ function findMissingScript(
       // note and withdraws the typo suggestion (the name is not misspelled).
       for (const dir of scope?.hintDirs?.() ?? []) {
         const pkg = readPackageScripts(tree, path.join(tree.root, dir, 'package.json'));
-        if (pkg && pkg !== 'unreadable' && pkg !== 'unfetched' && pkg.scripts[name]) return null;
+        if (pkg && pkg !== 'unreadable' && pkg !== 'unfetched' && hasScript(pkg.scripts, name)) return null;
       }
       const elsewhere = packagesDefining(context, tree, name);
       if (elsewhere.length > 0) scope?.elsewhere?.(name, elsewhere);
