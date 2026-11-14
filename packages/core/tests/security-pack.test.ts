@@ -469,6 +469,9 @@ describe('detectSecurityPack', () => {
       ['a text file deep under build output', { 'bin/Debug/net8.0/App.dll': 'MZ', 'bin/Debug/net8.0/appsettings.json': '{}' }],
       ['an extensionless file that cannot be read', { 'bin/run': '' }],
       ['an extensionless text file that starts with MZ', { 'bin/env': 'MZ_HOME=/opt/mz\n' }],
+      // PR #210 review: an executable-jar stub is a shebang script with a zip
+      // appended, so it has NUL bytes, but a `#!` line marks it hand-written.
+      ['a shebang stub with an appended jar', { 'bin/mytool': '#!/bin/sh\nexec java -jar "$0" "$@"\nPK\u0003\u0004\u0014\u0000\u0000\u0000' }],
       ['a tree deeper than the walk reads', { 'bin/a/b/c/d/e/f/g/h/i/App.class': 'x' }],
       [
         'more files than the walk reads, with a script after them',

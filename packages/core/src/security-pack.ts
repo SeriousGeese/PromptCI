@@ -191,13 +191,14 @@ const BIN_WALK_MAX_FILES = 2000;
  * anything that was not a recognised script build output, so `bin/linux/start.sh`,
  * `bin/tool.groovy`, `bin/app.properties` and an extensionless `bin/setup` were
  * all reported as safe to ignore. Now a file must look compiled: an extension in
- * {@link COMPILER_OUTPUT_RE}, or an extensionless file that is binary (a NUL
- * byte or an ELF header) or too large to be a script. Dotfiles (`.gitkeep`)
- * carry no evidence either way. A directory or extensionless file that cannot
- * be listed or read (a hosted scan that listed but did not fetch it), and a
- * tree past the walk's bounds, count as source, since a wrong `bin/` line in
- * .gitignore is the costlier mistake. An empty directory holds nothing
- * hand-written.
+ * {@link COMPILER_OUTPUT_RE}, or an extensionless file without a `#!` line
+ * that is binary (a NUL byte or an ELF header) or too large to be a script.
+ * Dotfiles (`.gitkeep`) carry no evidence either way. A directory or
+ * extensionless file that cannot be listed or read (a hosted scan that listed
+ * but did not fetch it), a tree past the walk's bounds, and a scan whose
+ * caller declared its file inventory incomplete all count as source, since a
+ * wrong `bin/` line in .gitignore is the costlier mistake. An empty directory
+ * holds nothing hand-written.
  */
 function holdsSourceFiles(tree: Tree, dir: string): boolean {
   let seen = 0;
@@ -218,11 +219,16 @@ function holdsSourceFiles(tree: Tree, dir: string): boolean {
       const head = tree.readText(child, { maxBytes: 256 * 1024 });
       if (head.state === 'too-large') continue;
       if (head.state !== 'found') return true;
+      // A `#!` line is hand-written even when binary follows (an executable-jar
+      // stub is a shell script with a zip appended, PR #210 review).
       const binary = head.content.includes('\u0000') || head.content.startsWith('\u007fELF');
-      if (!binary) return true;
+      if (!binary || head.content.startsWith('#!')) return true;
     }
     return false;
   };
+  // A caller's partial inventory may leave out what else is in bin/, so what
+  // the walk sees is not the whole directory (PR #210 review).
+  if (tree.inventory?.complete === false) return true;
   return walk(dir, 1);
 }
 

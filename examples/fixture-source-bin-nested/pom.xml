@@ -1,0 +1,6 @@
+<project>
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>dev.promptci.fixture</groupId>
+  <artifactId>fixture-source-bin-nested</artifactId>
+  <version>0.0.1</version>
+</project>
