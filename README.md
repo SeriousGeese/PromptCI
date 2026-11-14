@@ -166,7 +166,7 @@ The score is self-reported by your own scan; regenerate the file in CI to keep i
 - Duplicate instruction sections, within and across files; files that mirror each other (an
   `AGENTS.md`, `CLAUDE.md` and `GEMINI.md` kept identical, or one cut down from another) are
   reported once per group of files
-- Conflicting directives (do/don't pairs, framework or version choices, tool files that disagree with AGENTS.md)
+- Conflicting directives (do/don't pairs, framework or version choices, tool files that disagree with AGENTS.md, info, not scored)
 - Context bloat (file-size thresholds, token budget checks)
 - Stale instructions (old years, dated TODOs, deprecated wording, outdated versions)
 - Missing setup/validation commands and project-specific guidance

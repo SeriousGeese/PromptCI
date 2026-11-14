@@ -215,9 +215,9 @@ const PM_VERBS = 'install|i|ci|add|run|test|start|build|dev|lint|remove|update|u
 const PM_COMMAND_RE = new RegExp(`(?:^|[\\s(;&|])(${PM_ALT})\\s+(?:${PM_VERBS})\\b([^\\n;&|]*)`, 'gi');
 const NOT_A_PM_NOUN = '(?!\\s+(?:packages?|modules?|registry|scripts?|workspaces?|dependenc\\w+|audit|lockfile|cache))';
 const PM_USE_RE = new RegExp(`\\b(?:use|uses|using|prefer|stick\\s+to|always\\s+use|run\\s+with|managed\\s+(?:by|with))\\s+(?:the\\s+)?(${PM_ALT})\\b${NOT_A_PM_NOUN}`, 'gi');
-const PM_FORBID_RE = new RegExp(`\\b(?:never|don'?t|do\\s+not|must\\s+not|should\\s+not|shouldn'?t|avoid|instead\\s+of|rather\\s+than|not)\\s+(?:use\\s+|using\\s+|run\\s+|with\\s+)?(?:the\\s+)?\`?(${PM_ALT})\\b${NOT_A_PM_NOUN}`, 'gi');
+const PM_FORBID_RE = new RegExp(`\\b(?:never|don'?t|do\\s+not|must\\s+not|should\\s+not|shouldn'?t|avoid|instead\\s+of|rather\\s+than|not)[*_]*\\s+(?:use\\s+|using\\s+|run\\s+|with\\s+)?(?:the\\s+)?\`?(${PM_ALT})\\b${NOT_A_PM_NOUN}`, 'gi');
 /** What directly precedes a command span that rules its manager out: "never run `", "instead of `". */
-const SPAN_FORBID_RE = /\b(?:never|don'?t|do\s+not|must\s+not|should\s+not|shouldn'?t|avoid|instead\s+of|rather\s+than|not)\s+(?:(?:use|using|run|running|with)\s+)?(?:the\s+)?`*$/i;
+const SPAN_FORBID_RE = /\b(?:never|don'?t|do\s+not|must\s+not|should\s+not|shouldn'?t|avoid|instead\s+of|rather\s+than|not)[*_]*\s+(?:(?:use|using|run|running|with)\s+)?(?:the\s+)?`*$/i;
 const GLOBAL_RE = /(?:\s-g\b|--global\b)/;
 
 function collectPackageManagers(lines: ScannedLine[], facts: FileFacts): void {
@@ -225,6 +225,8 @@ function collectPackageManagers(lines: ScannedLine[], facts: FileFacts): void {
     if (!map.has(pm)) map.set(pm, { line: line.n, text: snippet(line.text.trim(), 100) });
   };
   for (const line of lines) {
+    const used = new Set<string>();
+    const forbidden = new Set<string>();
     for (const seg of commandSegments(line)) {
       for (const m of seg.text.matchAll(PM_COMMAND_RE)) {
         if (GLOBAL_RE.test(m[0])) continue; // a global tool install is not the project's package manager
@@ -235,20 +237,25 @@ function collectPackageManagers(lines: ScannedLine[], facts: FileFacts): void {
         if (ctx.negated) {
           // A reminder ("Don't forget to run `pnpm install`") is not a ban: only a negation that
           // directly governs the manager ("never run `npm install`") rules it out.
-          if (!line.fence && SPAN_FORBID_RE.test(line.text.slice(0, at))) first(facts.pmForbidden, pm, line);
-        } else if (!ctx.scoped) first(facts.pmUsed, pm, line);
+          if (!line.fence && SPAN_FORBID_RE.test(line.text.slice(0, at))) forbidden.add(pm);
+        } else if (!ctx.scoped) used.add(pm);
       }
     }
-    if (line.fence) continue;
-    for (const m of line.text.matchAll(PM_FORBID_RE)) first(facts.pmForbidden, m[1]!.toLowerCase(), line);
-    for (const m of line.text.matchAll(PM_USE_RE)) {
-      const ctx = mentionContext(line, m.index);
-      if (!ctx.negated && !ctx.scoped) first(facts.pmUsed, m[1]!.toLowerCase(), line);
+    if (!line.fence) {
+      for (const m of line.text.matchAll(PM_FORBID_RE)) forbidden.add(m[1]!.toLowerCase());
+      for (const m of line.text.matchAll(PM_USE_RE)) {
+        const ctx = mentionContext(line, m.index);
+        if (!ctx.negated && !ctx.scoped) used.add(m[1]!.toLowerCase());
+      }
     }
-  }
-  // Said on one line as both used and ruled out ("not npm"): the prohibition wins.
-  for (const pm of facts.pmForbidden.keys()) {
-    if (facts.pmUsed.get(pm)?.line === facts.pmForbidden.get(pm)!.line) facts.pmUsed.delete(pm);
+    for (const pm of used) {
+      // "Run `pnpm build`, not `pnpm dev`": a line that both uses a manager and negates a command of
+      // the SAME manager is about the script, so it is neither a usage nor a ban on that manager.
+      if (!forbidden.has(pm)) first(facts.pmUsed, pm, line);
+    }
+    for (const pm of forbidden) {
+      if (!used.has(pm)) first(facts.pmForbidden, pm, line);
+    }
   }
 }
 
@@ -482,7 +489,9 @@ export function detectCrossToolParity(files: InstructionFile[], options: CrossTo
 
   const issues: PromptCiIssue[] = [];
   for (const g of [...merged.values()].sort((x, y) => (issueId(x.dimension, x.scope, x.key) < issueId(y.dimension, y.scope, y.key) ? -1 : 1))) {
-    const mentions = [...g.mentions].sort((x, y) => (x.facts.label === y.facts.label ? x.place.line - y.place.line : x.facts.label < y.facts.label ? -1 : 1));
+    // A line can be both the usage and the ban ("Use pnpm, not npm"): list it once.
+    const unique = g.mentions.filter((m, i) => g.mentions.findIndex((o) => o.facts === m.facts && o.place.line === m.place.line) === i);
+    const mentions = unique.sort((x, y) => (x.facts.label === y.facts.label ? x.place.line - y.place.line : x.facts.label < y.facts.label ? -1 : 1));
     issues.push({
       id: issueId(g.dimension, g.scope, g.key),
       severity: 'info',

@@ -167,6 +167,34 @@ describe('package manager', () => {
     expect(detect(agents(`${FILLER}${reminder}\n`), copilot(plain))).toEqual([]);
   });
 
+  // Re-review of PR 167 at 5181132: "X, not Y" with the SAME manager is about the script.
+  it.each([
+    'Run `pnpm build`, not `pnpm dev`, before committing.',
+    'Use `pnpm test`, not `pnpm test:watch`, in CI.',
+    'Run `pnpm test:ci` rather than `pnpm test` in CI.',
+  ])('does not read a choice between two scripts of one manager as a ban on it: %s', (line) => {
+    const plain = `${FILLER}Install with \`pnpm install\`.\n`;
+    expect(detect(agents(plain), claude(`${FILLER}${line}\n`))).toEqual([]);
+    expect(detect(claude(plain), agents(`${FILLER}${line}\n`))).toEqual([]);
+  });
+
+  it('still reads "pnpm, not npm" (different managers) as a ban, and lists that line once', () => {
+    const issues = detect(agents(`${FILLER}Use \`pnpm install\`, not \`npm install\`.\n`), claude(`${FILLER}Use \`npm install\`.\n`));
+    expect(issues).toHaveLength(1);
+    expect(issues[0]!.evidence.filter((e) => e.startsWith('AGENTS.md:'))).toHaveLength(1);
+  });
+
+  it('reads a ban with emphasis markers around the negation word', () => {
+    for (const ban of ['**Never** run `npm install`.', '**NEVER** use npm.', '*Do not* use `npm install`.']) {
+      const issues = detect(agents(`${FILLER}Use \`pnpm install\`.\n${ban}\n`), claude(`${FILLER}Use \`pnpm install\`.\n`));
+      expect(issues, ban).toEqual([]);
+      const flagged = detect(agents(`${FILLER}${ban}\n`), claude(`${FILLER}Install with \`npm install\`.\n`));
+      expect(titles(flagged), ban).toEqual([
+        'Possible package manager disagreement with AGENTS.md: npm is used in CLAUDE.md and ruled out in AGENTS.md',
+      ]);
+    }
+  });
+
   it('still reads "never use / run / instead of" directly before the manager as a ban', () => {
     const plainConfidence = detect(agents(`${FILLER}Use \`pnpm install\`.\n`), claude(`${FILLER}Use \`npm install\`.\n`))[0]!.confidence;
     for (const ban of ['Never use `npm install` here.', "Don't run `npm install`.", 'Run `pnpm install` instead of `npm install`.', 'Do not use `npm`.']) {
