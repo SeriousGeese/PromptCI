@@ -362,8 +362,9 @@ export function detectDuplicates(files: InstructionFile[]): PromptCiIssue[] {
     const duplicateTokens = sections.slice(1).reduce((sum, s) => sum + Math.round(s.text.length / 4), 0);
     // Copies that are similar but not the same text (near-duplicates) must not
     // be consolidated unattended: the pointer would replace the text that
-    // differs, and with it the evidence of a conflict. Same text = equal after
-    // collapsing whitespace and line endings (pcic-1ik0.5, PromptCI#160).
+    // differs, and with it the evidence of a conflict. Same text = byte-identical
+    // after the normalisation in same-text.ts (line endings, trailing
+    // whitespace, a leading BOM, edge blank lines only; pcic-1ik0.5, PromptCI#160).
     const identical = allSameText(sections);
     const summary =
       (fileCount > 2
