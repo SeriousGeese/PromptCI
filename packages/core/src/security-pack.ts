@@ -131,17 +131,17 @@ const isJvmBuildFile = (name: string) =>
  * scripts (a package.json `bin` target, `bin/install-wp-tests.sh`): ignoring
  * it would silently keep the next script added there out of git. `obj` is
  * .NET's intermediate output. Each is reported only next to a root build file
- * of an ecosystem that writes it, and `bin` not even then when it is plainly
- * source: the root package.json names it as a `bin` target, or it holds a
- * file that looks hand-written (a script extension or a `#!` line). A repo can
- * carry a pom.xml or Directory.Build.props and a Node CLI side by side.
+ * of an ecosystem that writes it, and `bin` only when it is plainly output:
+ * the root package.json does not name it as a `bin` target, and every file
+ * under it looks compiled (#206, {@link holdsSourceFiles}). A repo can carry a
+ * pom.xml or Directory.Build.props and a Node CLI side by side.
  */
 type Tree = ReturnType<typeof treeFor>;
 const ECOSYSTEM_OUTPUT_DIRS: Record<string, (tree: Tree, rootNames: string[]) => boolean> = {
   bin: (tree, names) =>
     names.some((n) => isDotnetBuildFile(n) || isJvmBuildFile(n)) &&
     !packageJsonNamesBinDir(tree) &&
-    !holdsHandWrittenScript(tree, 'bin'),
+    !holdsSourceFiles(tree, 'bin'),
   obj: (_tree, names) => names.some(isDotnetBuildFile),
 };
 
@@ -173,30 +173,57 @@ function packageJsonNamesBinDir(tree: Tree): boolean {
   });
 }
 
-/** Extensions of hand-written scripts, never of .NET or JVM build output. */
-const SCRIPT_EXTENSION_RE = /\.(?:sh|bash|zsh|fish|js|mjs|cjs|ts|mts|cts|py|rb|pl|php|ps1|cmd|bat)$/i;
+/**
+ * #206: what a .NET or JVM build writes into `bin/`: compiled classes and
+ * archives, assemblies, symbols, native libraries, and the .NET files generated
+ * beside an assembly. Nothing else counts as evidence of build output.
+ */
+const COMPILER_OUTPUT_RE =
+  /\.(?:class|jar|war|ear|dll|exe|pdb|mdb|winmd|so|dylib|deps\.json|runtimeconfig\.json|runtimeconfig\.dev\.json|dll\.config|exe\.config)$/i;
+
+/** Bounds on the walk under `bin/`; past either, the files already seen decide. */
+const BIN_WALK_MAX_DEPTH = 8;
+const BIN_WALK_MAX_FILES = 2000;
 
 /**
- * True when the directory's own files include one that looks hand-written: a
- * script extension, or an extensionless file starting with `#!`. An
- * extensionless file whose content cannot be read (a hosted scan that listed
- * but did not fetch it) counts too, since a wrong `bin/` line in .gitignore is
- * the costlier mistake. So does a directory that cannot be listed: its
- * contents are unknown, so it is not reported.
+ * True unless every file under the directory, at any depth, is compiler output
+ * (#206). The earlier test looked only at the directory's own files and called
+ * anything that was not a recognised script build output, so `bin/linux/start.sh`,
+ * `bin/tool.groovy`, `bin/app.properties` and an extensionless `bin/setup` were
+ * all reported as safe to ignore. Now a file must look compiled: an extension in
+ * {@link COMPILER_OUTPUT_RE}, or an extensionless file that is binary (a NUL
+ * byte, an `MZ` or ELF header) or too large to be a script. Dotfiles
+ * (`.gitkeep`) carry no evidence either way. A directory or extensionless file
+ * that cannot be listed or read (a hosted scan that listed but did not fetch
+ * it) counts as source, since a wrong `bin/` line in .gitignore is the costlier
+ * mistake. An empty directory holds nothing hand-written.
  */
-function holdsHandWrittenScript(tree: Tree, dir: string): boolean {
-  const entries = tree.entries(dir);
-  if (typeof entries === 'string') return true;
-  for (const entry of entries.values()) {
-    if (entry.isDirectory()) continue;
-    if (SCRIPT_EXTENSION_RE.test(entry.name)) return true;
-    if (entry.name.includes('.')) continue;
-    // A script is small; a larger extensionless file is a compiled binary.
-    const head = tree.readText(`${dir}/${entry.name}`, { maxBytes: 256 * 1024 });
-    if (head.state === 'too-large') continue;
-    if (head.state !== 'found' || head.content.startsWith('#!')) return true;
-  }
-  return false;
+function holdsSourceFiles(tree: Tree, dir: string): boolean {
+  let seen = 0;
+  const walk = (rel: string, depth: number): boolean => {
+    const entries = tree.entries(rel);
+    if (typeof entries === 'string') return true;
+    for (const entry of entries.values()) {
+      if (seen >= BIN_WALK_MAX_FILES) return false;
+      const child = `${rel}/${entry.name}`;
+      if (entry.isDirectory()) {
+        if (depth >= BIN_WALK_MAX_DEPTH) continue;
+        if (walk(child, depth + 1)) return true;
+        continue;
+      }
+      if (entry.name.startsWith('.')) continue;
+      seen++;
+      if (COMPILER_OUTPUT_RE.test(entry.name)) continue;
+      if (entry.name.includes('.')) return true;
+      const head = tree.readText(child, { maxBytes: 256 * 1024 });
+      if (head.state === 'too-large') continue;
+      if (head.state !== 'found') return true;
+      const binary = head.content.includes('\u0000') || head.content.startsWith('MZ') || head.content.startsWith('\u007fELF');
+      if (!binary) return true;
+    }
+    return false;
+  };
+  return walk(dir, 1);
 }
 
 function issueId(checkId: string): string {

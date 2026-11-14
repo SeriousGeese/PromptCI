@@ -458,6 +458,42 @@ describe('detectSecurityPack', () => {
       expect(issue?.autoApplySafe).toBe(true);
     });
 
+    // #206: 0.4.0 looked only at bin/'s own files and called anything that was
+    // not a recognised script build output. Each of these was reported with
+    // autoApplySafe beside a pom.xml, so an unattended fix ignored tracked source.
+    it.each([
+      ['scripts in subdirectories', { 'bin/linux/start.sh': '#!/bin/sh\nexec java -jar app.jar', 'bin/windows/start.bat': '@echo off' }],
+      ['a Groovy script', { 'bin/tool.groovy': 'println "hi"' }],
+      ['a properties file beside a jar', { 'bin/app.properties': 'a=b', 'bin/widgets.jar': 'PK' }],
+      ['an extensionless script without a shebang', { 'bin/setup': 'mvn -q install\n' }],
+      ['a text file deep under build output', { 'bin/Debug/net8.0/App.dll': 'MZ', 'bin/Debug/net8.0/appsettings.json': '{}' }],
+      ['an extensionless file that cannot be read', { 'bin/run': '' }],
+    ])('does NOT report a bin/ holding %s beside a JVM build file (#206)', (_label, files) => {
+      const tree = repo({ '.gitignore': '.promptci/', 'pom.xml': '<project/>', ...files });
+      if ('bin/run' in files) {
+        const read = tree.readText.bind(tree);
+        tree.readText = ((rel: string, opts?: { maxBytes?: number }) =>
+          rel === 'bin/run' ? { state: 'unreadable' } : read(rel, opts)) as typeof tree.readText;
+      }
+      const issue = detectSecurityPack({ ...mockContext, tree, files: [makeFile('# Rules')] })
+        .find((i) => i.id === 'security-pack-unignored-dirs');
+      expect(issue).toBeUndefined();
+    });
+
+    it.each([
+      ['compiled classes in packages', { 'bin/com/example/App.class': 'x', 'bin/com/example/util/Io.class': 'x' }],
+      ['.NET output with its generated companions', {
+        'bin/Release/net8.0/App.dll': 'MZ', 'bin/Release/net8.0/App.pdb': 'x', 'bin/Release/net8.0/App.deps.json': '{}',
+        'bin/Release/net8.0/App.runtimeconfig.json': '{}', 'bin/Release/net8.0/de/App.resources.dll': 'MZ',
+      }],
+      ['an ELF apphost', { 'bin/Release/App': '\u007fELF\u0002' }],
+      ['a jar and a placeholder dotfile', { 'bin/app.jar': 'PK', 'bin/.gitkeep': '' }],
+    ])('still reports a bin/ of %s beside a build file (#206)', (_label, files) => {
+      const issue = unignored({ 'pom.xml': '<project/>', 'App.csproj': '<Project />', ...files });
+      expect(issue?.evidence).toEqual(['Directory "bin" exists but is not ignored in .gitignore.']);
+      expect(issue?.autoApplySafe).toBe(true);
+    });
+
     it('reports dist/ beside a source bin/ and proposes ignoring only dist/', () => {
       const issue = unignored({ 'package.json': '{"name":"x","bin":"bin/cli.mjs"}', 'bin/cli.mjs': '', 'dist/': '' });
       expect(issue?.evidence).toEqual(['Directory "dist" exists but is not ignored in .gitignore.']);

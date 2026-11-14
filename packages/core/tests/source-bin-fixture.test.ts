@@ -43,6 +43,21 @@ describe('fixture-source-bin (#161)', () => {
     }
   });
 
+  it('still clean when bin/ holds only scripts in subdirectories and non-script source (#206)', async () => {
+    const root = copyFixture();
+    try {
+      fs.rmSync(path.join(root, 'bin'), { recursive: true });
+      fs.writeFileSync(path.join(root, 'package.json'), '{"name":"fixture-source-bin","private":true}\n');
+      fs.mkdirSync(path.join(root, 'bin', 'linux'), { recursive: true });
+      fs.writeFileSync(path.join(root, 'bin', 'linux', 'start.sh'), '#!/bin/sh\nexec java -jar app.jar\n');
+      fs.writeFileSync(path.join(root, 'bin', 'tool.groovy'), 'println "hi"\n');
+      fs.writeFileSync(path.join(root, 'bin', 'setup'), 'mvn -q install\n');
+      expect(await unignored(root)).toBeUndefined();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('reports bin/ once it holds only .NET build output', async () => {
     const root = copyFixture();
     try {
