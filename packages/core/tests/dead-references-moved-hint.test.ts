@@ -1,11 +1,9 @@
 /**
  * pcic-1ik0.4 (issue 159): a dead reference whose last segment names exactly
- * one file or directory in the repository gets a hint, and a code-span path
- * that is only missing a prefix gets a mechanical edit.
- *
- * The corpus shapes the issue lists are asserted as they are written there:
- * the hint is text for every form, the edit is the narrow case, and the
- * ambiguous twin of each stays quiet.
+ * one file or directory in the repository gets a hint, for every reference form.
+ * Only the text changes: a code span is never rewritten (see the review note
+ * below). The corpus shapes the issue lists are asserted as they are written
+ * there, and the ambiguous twin of each stays quiet.
  */
 
 import * as fs from 'node:fs';
@@ -56,7 +54,7 @@ async function applyAll(repo: string, issues: PromptCiIssue[], relPath: string):
 }
 
 describe('examples/fixture-moved-refs', () => {
-  it('hints the one candidate, edits only the prefix-wrong code span, stays quiet elsewhere', async () => {
+  it('hints the one candidate, edits nothing, stays quiet where it is ambiguous', async () => {
     const issues = await brokenIn(FIXTURE);
     expect(issues.map((i) => i.title).sort()).toEqual([
       'Broken directory reference: plans/',
@@ -66,18 +64,11 @@ describe('examples/fixture-moved-refs', () => {
       'Broken file reference: setup.md',
     ]);
 
-    // Missing prefix only: hint AND the edit.
+    // Missing prefix: a hint. A code span is prose, so it is never edited.
     const deploy = byTitle(issues, 'Broken file reference: deploy.sh');
     expect(deploy.summary).toContain('The only file named "deploy.sh" in the repository is "tools/scripts/deploy.sh"; it may be what was meant.');
-    expect(deploy.autoApplySafe).toBe(true);
-    expect(deploy.fixEdits).toEqual([
-      {
-        filePath: path.join(FIXTURE, 'AGENTS.md'),
-        line: 3,
-        find: '`scripts/deploy.sh`',
-        replace: '`tools/scripts/deploy.sh`',
-      },
-    ]);
+    expect(deploy.autoApplySafe).toBeUndefined();
+    expect(deploy.fixEdits).toBeUndefined();
 
     // A directory segment in the middle is missing: a hint, not an edit.
     const billing = byTitle(issues, 'Broken file reference: billing.ts');
@@ -103,57 +94,70 @@ describe('examples/fixture-moved-refs', () => {
   });
 });
 
-describe('prefix-wrong code span edit', () => {
+/**
+ * Review of the first version: a code-span path is prose. It can be relative to
+ * a package or to a directory the text `cd`s into, and the detector's own
+ * suffix rule already treats a path that ends a longer one as imprecise, so a
+ * rewrite was a guess. A code span is hinted and never edited.
+ */
+describe('code spans are hinted, never rewritten', () => {
   const SCRIPT_REPO = { 'tools/scripts/deploy.sh': '#!/bin/sh\n' };
 
-  it('applies byte-for-byte and leaves every other line alone', async () => {
-    const original = '# Agents\r\n\r\nDeploy with `scripts/deploy.sh`, then see `docs/x.md` (not a ref).\r\nBye\r\n';
+  it('names the candidate and offers no edit, from the root, a dot-directory or a nested file', async () => {
+    for (const rel of ['AGENTS.md', '.claude/CLAUDE.md', 'packages/app/AGENTS.md']) {
+      const content = '# A\n\nRun `scripts/deploy.sh`.\n';
+      const repo = repoWith({ ...SCRIPT_REPO, [rel]: content });
+      const file: InstructionFile = {
+        path: path.join(repo, rel),
+        fileType: 'agents',
+        content,
+        sections: [],
+        lineCount: 4,
+        charCount: content.length,
+        estimatedTokens: 10,
+      };
+      const [issue] = detectDeadReferences([file], repo);
+      expect(issue!.summary, rel).toContain('"tools/scripts/deploy.sh"');
+      expect(issue!.autoApplySafe, rel).toBeUndefined();
+      expect(issue!.fixEdits, rel).toBeUndefined();
+    }
+  });
+
+  it('does not repoint a path relative to a package ("inside each package")', async () => {
+    // Review example 1: `seed.js` used to get an edit to packages/api/scripts/seed.js.
+    const original = '# A\n\nInside each package, `src/lib/db.ts` holds the client and `scripts/seed.js` seeds it.\n';
+    const repo = repoWith({
+      'AGENTS.md': original,
+      'packages/api/src/lib/db.ts': 'x\n',
+      'packages/api/scripts/seed.js': 'x\n',
+    });
+    const issues = await brokenIn(repo);
+    for (const issue of issues) expect(issue.autoApplySafe).toBeUndefined();
+    expect(await applyAll(repo, issues, 'AGENTS.md')).toBe(original);
+  });
+
+  it('does not repoint a path that follows a `cd`', async () => {
+    // Review example 2: an edit to tools/scripts/deploy.sh breaks the command for anyone who ran the cd.
+    const original = '# A\n\n```bash\ncd tools\n```\n\nThen run `scripts/deploy.sh`.\n';
     const repo = repoWith({ ...SCRIPT_REPO, 'AGENTS.md': original });
-    const issues = (await brokenIn(repo)).filter((i) => i.title === 'Broken file reference: deploy.sh');
-    expect(issues).toHaveLength(1);
-    expect(await applyAll(repo, issues, 'AGENTS.md')).toBe(original.replace('`scripts/deploy.sh`', '`tools/scripts/deploy.sh`'));
+    const issues = await brokenIn(repo);
+    expect(issues.length).toBeGreaterThan(0);
+    for (const issue of issues) expect(issue.autoApplySafe).toBeUndefined();
+    expect(await applyAll(repo, issues, 'AGENTS.md')).toBe(original);
   });
 
-  it('works from a top-level dot-directory instruction file', async () => {
-    const repo = repoWith({ ...SCRIPT_REPO, '.claude/CLAUDE.md': '# C\n\nRun `scripts/deploy.sh`.\n' });
-    const [issue] = await brokenIn(repo);
-    expect(issue!.autoApplySafe).toBe(true);
-  });
-
-  it('stays a hint from an instruction file in a nested directory (the span may be relative to it)', async () => {
-    // Built by hand: whether discovery lists a nested AGENTS.md is not what this asserts.
-    const content = '# A\n\nRun `scripts/deploy.sh`.\n';
-    const repo = repoWith({ ...SCRIPT_REPO, 'packages/app/AGENTS.md': content });
-    const file: InstructionFile = {
-      path: path.join(repo, 'packages/app/AGENTS.md'),
-      fileType: 'agents',
-      content,
-      sections: [],
-      lineCount: 4,
-      charCount: content.length,
-      estimatedTokens: 10,
-    };
-    const [issue] = detectDeadReferences([file], repo);
-    expect(issue!.summary).toContain('"tools/scripts/deploy.sh"');
-    expect(issue!.autoApplySafe).toBeUndefined();
-
-    // The same text from the repository root IS repaired.
-    const rootFile = { ...file, path: path.join(repo, 'AGENTS.md') };
-    expect(detectDeadReferences([rootFile], repo)[0]!.autoApplySafe).toBe(true);
-  });
-
-  it('stays a hint when two files end with the written path', async () => {
+  it('names no candidate when two files end with the written path', async () => {
     const repo = repoWith({
       ...SCRIPT_REPO,
       'other/scripts/deploy.sh': '#!/bin/sh\n',
       'AGENTS.md': '# A\n\nRun `scripts/deploy.sh`.\n',
     });
+    // Same basename twice: ambiguous, no hint.
     const [issue] = await brokenIn(repo);
-    expect(issue!.autoApplySafe).toBeUndefined();
     expect(issue!.summary).not.toContain('may be what was meant');
   });
 
-  it('ignores a candidate the repository ignores', async () => {
+  it('does not name a candidate the repository ignores', async () => {
     const repo = repoWith({
       '.gitignore': 'generated/\n',
       'generated/scripts/deploy.sh': '#!/bin/sh\n',
@@ -161,34 +165,27 @@ describe('prefix-wrong code span edit', () => {
     });
     const [issue] = await brokenIn(repo);
     expect(issue!.summary).not.toContain('may be what was meant');
-    expect(issue!.autoApplySafe).toBeUndefined();
   });
 
-  it('stays a hint when the span carries a :line suffix, a leading ./ or a repeat on the line', async () => {
-    for (const line of ['Run `scripts/deploy.sh:12`.', 'Run `./scripts/deploy.sh`.']) {
-      const repo = repoWith({ ...SCRIPT_REPO, 'AGENTS.md': `# A\n\n${line}\n` });
-      const issues = await brokenIn(repo);
-      for (const issue of issues) expect(issue.autoApplySafe).toBeUndefined();
+  it('does not name a copy under a fixture, test, example or vendor tree', async () => {
+    for (const dir of ['test/fixtures', 'tests', 'examples/demo', 'vendor/lib', '__fixtures__']) {
+      const repo = repoWith({ [`${dir}/scripts/release.sh`]: '#!/bin/sh\n', 'AGENTS.md': '# A\n\nRun `scripts/release.sh`.\n' });
+      const [issue] = await brokenIn(repo);
+      expect(issue!.summary, dir).not.toContain('may be what was meant');
     }
-    const twice = repoWith({ ...SCRIPT_REPO, 'AGENTS.md': '# A\n\nRun `scripts/deploy.sh` or `scripts/deploy.sh`.\n' });
-    const [issue] = await brokenIn(twice);
-    expect(issue!.autoApplySafe).toBeUndefined();
-  });
-
-  it('is all-or-nothing: one occurrence that cannot be edited keeps the whole finding advisory', async () => {
-    const repo = repoWith({
-      ...SCRIPT_REPO,
-      'AGENTS.md': '# A\n\nRun `scripts/deploy.sh`.\n\n```md\nRun `scripts/deploy.sh`.\n```\n',
+    // The real file wins over its fixture copy: it is the only candidate left.
+    const both = repoWith({
+      'tools/scripts/release.sh': '#!/bin/sh\n',
+      'test/fixtures/scripts/release.sh': '#!/bin/sh\n',
+      'AGENTS.md': '# A\n\nRun `scripts/release.sh`.\n',
     });
-    const [issue] = await brokenIn(repo);
-    expect(issue!.autoApplySafe).toBeUndefined();
-    expect(issue!.fixEdits).toBeUndefined();
+    const [issue] = await brokenIn(both);
+    expect(issue!.summary).toContain('is "tools/scripts/release.sh"');
+    // A reference that already points into such a tree may be repaired from it.
+    const into = repoWith({ 'test/fixtures/a.md': 'x\n', 'AGENTS.md': '# A\n\nSee `test/fixtures/old/a.md`.\n' });
+    expect((await brokenIn(into))[0]!.summary).toContain('"test/fixtures/a.md"');
   });
 
-  it('does not touch a reference that resolves', async () => {
-    const repo = repoWith({ ...SCRIPT_REPO, 'AGENTS.md': '# A\n\nRun `tools/scripts/deploy.sh`.\n' });
-    expect(await brokenIn(repo)).toEqual([]);
-  });
 });
 
 describe('hint on the corpus shapes', () => {

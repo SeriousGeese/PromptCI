@@ -421,6 +421,10 @@ describe('manifest-missing-script judges each occurrence on its own', () => {
   });
 });
 
+const SCOPE_CLEAN_FIXTURE = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  '../../../examples/fixture-command-scope-clean',
+);
 const SCOPE_FIXTURE = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   '../../../examples/fixture-command-scope',
@@ -456,14 +460,16 @@ describe('a script defined in a package the text points at (pcic-1ik0.2, #157)',
     expect(scriptFindings(issues)).toEqual([]);
   });
 
-  it('reads a `cd <dir>` in an earlier step of the same section', async () => {
+  it('does not carry a `cd <dir>` from an earlier step: the note says where the script is', async () => {
     const issues = await scanRepo({
       'package.json': root,
       'site/package.json': pkg({ scripts: { dev: 'x' } }),
       'CONTRIBUTING.md':
         '## Setup\n\n3. Install site dependencies:\n   ```bash\n   cd site\n   npm install\n   ```\n4. Start the dev server:\n   ```bash\n   npm run dev\n   ```\n',
     });
-    expect(scriptFindings(issues)).toEqual([]);
+    const findings = scriptFindings(issues);
+    expect(findings).toHaveLength(1);
+    expect(findings[0]!.severity).toBe('info');
   });
 
   it('reads the sentence under a heading that itself holds the command', async () => {
@@ -647,15 +653,22 @@ describe('review follow-up to #163 (pcic-1ik0.2)', () => {
   });
 });
 
-describe('fixture-command-scope', () => {
-  it('flags only the note and the deliberately broken command', async () => {
+describe('fixture-command-scope (triggering) and fixture-command-scope-clean', () => {
+  it('flags exactly the expected commands, none of them with an edit', async () => {
     const findings = scriptFindings(await scanIssues(SCOPE_FIXTURE));
     const bySeverity = findings.map((f) => `${f.severity}:${f.evidence[0]}`).sort();
     expect(bySeverity).toEqual([
       'info:Command: `npm run seed`',
+      'warning:Command: `npm run buil`',
+      'warning:Command: `npm run dev/nonexistent`',
+      'warning:Command: `npm run dev`',
       'warning:Command: `npm run release:nightly`',
     ]);
-    expect(findings.every((f) => f.fixEdits === undefined)).toBe(true);
+    expect(findings.every((f) => f.fixEdits === undefined && f.autoApplySafe === undefined)).toBe(true);
+  });
+
+  it('reports nothing on the twin that must stay clean', async () => {
+    expect(scriptFindings(await scanIssues(SCOPE_CLEAN_FIXTURE))).toEqual([]);
   });
 });
 
