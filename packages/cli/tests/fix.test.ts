@@ -121,6 +121,23 @@ describe('runFix CLI command', () => {
     expect(await fs.readFile(claudePath, 'utf-8')).toBe(body('always'));
   });
 
+  it('leaves a copy whose nested list was flattened untouched', async () => {
+    const agentsPath = path.join(tmpDir, 'AGENTS.md');
+    const claudePath = path.join(tmpDir, 'CLAUDE.md');
+    const body = (indent: string) =>
+      '## Release Steps\n' +
+      'Follow these steps in order for every release and never skip one of them, even for hotfixes.\n' +
+      `- Build the packages\n${indent}- run pnpm build in the repository root\n${indent}- check that dist/ holds the bundles\n` +
+      `- Publish the packages\n${indent}- run pnpm publish from each package directory\n`;
+    await fs.writeFile(agentsPath, body('  '), 'utf-8');
+    await fs.writeFile(claudePath, body(''), 'utf-8');
+
+    await runFix({ scanPath: tmpDir, interactive: false });
+
+    expect(await fs.readFile(agentsPath, 'utf-8')).toBe(body('  '));
+    expect(await fs.readFile(claudePath, 'utf-8')).toBe(body(''));
+  });
+
   it('leaves a copy whose fenced code lost its indentation untouched', async () => {
     const agentsPath = path.join(tmpDir, 'AGENTS.md');
     const claudePath = path.join(tmpDir, 'CLAUDE.md');
