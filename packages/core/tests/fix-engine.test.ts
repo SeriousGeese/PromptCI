@@ -198,6 +198,33 @@ describe('applyFixRecipe — mirrored CLAUDE.md import (pcic-1ik0.10: opt-in onl
     expect(await apply(mirror('AGENTS.md', 'CLAUDE.md'))).toEqual({ 'CLAUDE.md': '---\r\ntitle: x\r\n---\r\n@AGENTS.md\r\n' });
   });
 
+  it.each([
+    ['<pre>', '<pre>\n@AGENTS.md\n</pre>'],
+    ['<div>', '<div>\n@AGENTS.md\n</div>'],
+    ['an HTML comment', '<!--\n@AGENTS.md\n-->'],
+    ['a fence', '```\n@AGENTS.md\n```'],
+    ['a plain line in a kept section', '@AGENTS.md'],
+  ])('writes the import even when a kept section shows @AGENTS.md inside %s (review B1)', async (_label, shown) => {
+    const claude = `${AGENTS}\n## Claude notes\nAn import looks like:\n\n${shown}\n`;
+    await write({ 'AGENTS.md': AGENTS, 'CLAUDE.md': claude });
+    expect(await apply(mirror('AGENTS.md', 'CLAUDE.md'))).toEqual({
+      'CLAUDE.md': `@AGENTS.md\n\n## Claude notes\nAn import looks like:\n\n${shown}\n`,
+    });
+  });
+
+  it('keeps a trailing Claude-only section with its own subsection', async () => {
+    await write({ 'AGENTS.md': AGENTS, 'CLAUDE.md': `${AGENTS}\n## Claude only\nUse /review.\n\n### Commands\nUse /test.\n` });
+    expect(await apply(mirror('AGENTS.md', 'CLAUDE.md'))).toEqual({
+      'CLAUDE.md': '@AGENTS.md\n\n## Claude only\nUse /review.\n\n### Commands\nUse /test.\n',
+    });
+  });
+
+  it('a relative import in shared text is fine for the root CLAUDE.md (same directory as AGENTS.md)', async () => {
+    const shared = `${AGENTS}\n## More\n@docs/style.md\n`;
+    await write({ 'AGENTS.md': shared, 'CLAUDE.md': shared, 'docs/style.md': '# Style\n' });
+    expect(await apply(mirror('AGENTS.md', 'CLAUDE.md'))).toEqual({ 'CLAUDE.md': '@AGENTS.md\n' });
+  });
+
   it('never edits GEMINI.md, Copilot or Cursor copies; edits the CLAUDE.md beside them', async () => {
     await write({ 'AGENTS.md': AGENTS, 'CLAUDE.md': AGENTS, 'GEMINI.md': AGENTS, '.github/copilot-instructions.md': AGENTS });
     const finding = mirror('AGENTS.md', 'CLAUDE.md', 'GEMINI.md', '.github/copilot-instructions.md');
@@ -216,6 +243,9 @@ describe('applyFixRecipe — mirrored CLAUDE.md import (pcic-1ik0.10: opt-in onl
     ['a copy-only first section would move (review 4B)', { 'AGENTS.md': AGENTS, 'CLAUDE.md': `## Binding\nEverything below binds.\n\n${AGENTS}` }, ['AGENTS.md', 'CLAUDE.md'], 'a section only CLAUDE.md has comes before "Guide"; it would move'],
     ['a copy-only middle section would move', { 'AGENTS.md': AGENTS, 'CLAUDE.md': AGENTS.replace('## Style', '## Claude only\nUse /review.\n\n## Style') }, ['AGENTS.md', 'CLAUDE.md'], 'a section only CLAUDE.md has comes before "Style"; it would move'],
     ['a drifted section (same heading, other text)', { 'AGENTS.md': AGENTS, 'CLAUDE.md': AGENTS.replace('Run all tests', 'Run some tests') }, ['AGENTS.md', 'CLAUDE.md'], 'CLAUDE.md lacks text that AGENTS.md has (Testing); an import would add it'],
+    ['a .claude/CLAUDE.md copy whose shared text holds a relative import (review B2)', { 'AGENTS.md': `${AGENTS}\n## More\n@docs/style.md\n`, '.claude/CLAUDE.md': `${AGENTS}\n## More\n@docs/style.md\n`, 'docs/style.md': '# Style\n' }, ['AGENTS.md', '.claude/CLAUDE.md'], '"More" holds a relative @ import that would resolve from the repository root instead of .claude'],
+    ['the shared sections are in another order', { 'AGENTS.md': AGENTS, 'CLAUDE.md': '# Guide\n\n## Style\nUse Prettier defaults.\n\n## Testing\nRun all tests before done.\n' }, ['AGENTS.md', 'CLAUDE.md'], 'CLAUDE.md has the sections of AGENTS.md in another order (or more than once)'],
+    ['a shared section appears twice in the copy', { 'AGENTS.md': AGENTS, 'CLAUDE.md': `${AGENTS}\n## Style\nUse Prettier defaults.\n` }, ['AGENTS.md', 'CLAUDE.md'], 'CLAUDE.md has the sections of AGENTS.md in another order (or more than once)'],
     ['AGENTS.md imports CLAUDE.md (circular)', { 'AGENTS.md': `${AGENTS}\n## More\n@CLAUDE.md\n`, 'CLAUDE.md': `${AGENTS}\n## More\n@CLAUDE.md\n` }, ['AGENTS.md', 'CLAUDE.md'], 'AGENTS.md imports CLAUDE.md (circular)'],
     ['the copy is a CLAUDE.md below the root (external import)', { 'AGENTS.md': AGENTS, 'packages/api/CLAUDE.md': AGENTS }, ['AGENTS.md', 'packages/api/CLAUDE.md'], 'no repository-root CLAUDE.md copy to edit'],
     ['the canonical file is not the root AGENTS.md', { 'docs/AGENTS.md': AGENTS, 'CLAUDE.md': AGENTS }, ['docs/AGENTS.md', 'CLAUDE.md'], 'the canonical file is docs/AGENTS.md, not the repository-root AGENTS.md'],

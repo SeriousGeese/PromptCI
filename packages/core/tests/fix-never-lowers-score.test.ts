@@ -17,7 +17,7 @@ import { scan } from '../src/scan.js';
 import { applyFixRecipe, isOptInRecipe } from '../src/fix-engine.js';
 import { parseSections } from '../src/scanner.js';
 import { sameSectionText } from '../src/same-text.js';
-import { MIRROR_CANONICAL_BASENAME, isImportOnlySection } from '../src/mirror-import.js';
+import { MIRROR_CANONICAL_BASENAME, isImportOnlySection, resolvedImports } from '../src/mirror-import.js';
 import { computeFingerprint } from '../src/baseline.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -57,6 +57,12 @@ describe('every opt-in mirror recipe, on every fixture, loses, moves and adds no
           expect(now, `${label}: kept text`).toEqual(was.filter((t) => !canonicalTexts.has(t)));
           // Every section the import brings in was already in the copy (nothing gained).
           for (const t of canonicalTexts) expect(was, `${label}: canonical text the copy lacked`).toContain(t);
+          // The result holds a LIVE import of AGENTS.md: in the import-only block at the top.
+          const [first] = parseSections(change.newContent, 'x').filter((s) => sameSectionText(s) !== '');
+          expect(first?.heading, `${label}: import block on top`).toBeUndefined();
+          expect(isImportOnlySection(first!), `${label}: import-only top block`).toBe(true);
+          const copyRel = path.relative(root, change.filePath).split(path.sep).join('/');
+          expect(resolvedImports(copyRel, first!.text), `${label}: live import of AGENTS.md`).toContain(MIRROR_CANONICAL_BASENAME);
           fs.writeFileSync(change.filePath, change.newContent);
         }
         if (changes.length === 0) continue;

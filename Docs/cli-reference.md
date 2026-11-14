@@ -147,10 +147,14 @@ and Windsurf files are never edited either (no import loads content).
 
 No edit is made, to any file, unless every section of `AGENTS.md`, the text before its first
 heading included, is in the copy byte-identically (line endings, trailing whitespace, a BOM and
-edge blank lines aside); no section has drifted; no copy-only section comes before a copied one or
-sits under one; `AGENTS.md` does not import the copy; and `AGENTS.md` is readable and not ignored
-by the root `.gitignore`. `promptci fix --issue <id>` prints the reason when it refuses.
-Per-section duplicate findings are advisory and never edited.
+edge blank lines aside), once each and in the same order; no section has drifted; no copy-only
+section comes before a copied one, and the first copy-only section is not nested under a copied
+one; for `.claude/CLAUDE.md`, no copied section holds a relative `@` import (it would resolve from
+another directory after the edit); `AGENTS.md` does not import the copy; and `AGENTS.md` is
+readable and not ignored by the root `.gitignore`. An existing import counts only in the import
+lines at the very top of the copy; anywhere else the line is added again (a second import is
+harmless). `promptci fix --issue <id>` prints the reason when it refuses. Per-section duplicate
+findings are advisory and never edited.
 
 A close match is not enough to rewrite a script name, because most one-edit neighbours of a
 script name are a real sibling script: `test:api` → `test:app`, `test:unit` → `test:init`,

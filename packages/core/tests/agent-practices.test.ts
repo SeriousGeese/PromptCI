@@ -990,8 +990,18 @@ describe('detectAgentPractices — @ import lines as forwarding (pcic-1ik0.10)',
     ['inside an HTML comment', '# Claude\n\n<!--\n@AGENTS.md\n-->\n\nUse /review.\n', '/repo/CLAUDE.md'],
     ['inside fenced code', '# Claude\n\n```\n@AGENTS.md\n```\n\nUse /review.\n', '/repo/CLAUDE.md'],
     ['with a path that does not reach AGENTS.md', '# Claude\n\n@AGENTS.md\n\nUse /review.\n', '/repo/.claude/CLAUDE.md'],
+    ['inside <pre>', '# Claude\n\n<pre>\n@AGENTS.md\n</pre>\n\nUse /review.\n', '/repo/CLAUDE.md'],
+    ['inside a <div> block', '# Claude\n\n<div>\n@AGENTS.md\n</div>\n\nUse /review.\n', '/repo/CLAUDE.md'],
   ])('does not count an import %s', (_label, content, filePath) => {
     expect(gap(makeTypedFile(content, filePath, 'claude'))).toHaveLength(1);
+  });
+
+  it('a code span holding "<!--" does not hide a later real import', () => {
+    expect(gap(makeTypedFile('# Claude\n\nWrite comments as `<!-- like this` sparingly.\n\n@AGENTS.md\n', '/repo/CLAUDE.md', 'claude'))).toEqual([]);
+  });
+
+  it('a line after a <div> block and a blank line counts again', () => {
+    expect(gap(makeTypedFile('# Claude\n\n<div>\nlayout\n</div>\n\n@AGENTS.md\n', '/repo/CLAUDE.md', 'claude'))).toEqual([]);
   });
 });
 

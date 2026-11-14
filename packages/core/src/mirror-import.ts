@@ -79,23 +79,62 @@ function normImport(p: string): string {
   return p.replace(/\\/g, '/').replace(/^(?:\.\/)+/, '');
 }
 
+/** An HTML block whose content runs to its closing tag (CommonMark type 1). */
+const HTML_RAW_BLOCK_RE = /^ {0,3}<(pre|script|style|textarea)(?=[\s>]|$)/i;
+/** Any other HTML tag opening a line starts an HTML block that runs to the next blank line. */
+const HTML_BLOCK_RE = /^ {0,3}<\/?[A-Za-z][A-Za-z0-9-]*(?=[\s/>]|$)/;
+
 /**
- * Line indices that hold live Markdown text: outside fenced code and outside
- * HTML comments (`<!-- ... -->`, which Claude Code does not load either). A
- * line that only partly overlaps a comment counts as inside it.
+ * Line indices that hold live Markdown text: outside fenced code, HTML
+ * comments (`<!-- ... -->`) and HTML blocks (`<pre>` to `</pre>`, or a line
+ * opening with a tag such as `<div>` up to the next blank line). Claude Code
+ * loads none of those as an import. A line that only partly overlaps a
+ * comment counts as inside it. Code spans are removed before looking for a
+ * comment, so `` `<!--` `` in prose does not open one. Errs on the side of
+ * "not live": a line it cannot place for sure is not counted as an import.
  */
 function liveLines(content: string): boolean[] {
   const lines = content.split(/\r?\n/);
   const fences = scanFencedLines(content);
   const live: boolean[] = [];
   let inComment = false;
+  let rawTag: string | undefined;
+  let inHtmlBlock = false;
   lines.forEach((line, i) => {
     if (fences[i]?.inFence) {
       live.push(false);
       return;
     }
+    if (rawTag !== undefined) {
+      live.push(false);
+      if (line.toLowerCase().includes(`</${rawTag}>`)) rawTag = undefined;
+      return;
+    }
+    if (inHtmlBlock) {
+      if (line.trim() === '') {
+        inHtmlBlock = false;
+        live.push(true);
+      } else {
+        live.push(false);
+      }
+      return;
+    }
+    if (!inComment) {
+      const raw = HTML_RAW_BLOCK_RE.exec(line);
+      if (raw) {
+        const tag = raw[1]!.toLowerCase();
+        if (!line.toLowerCase().includes(`</${tag}>`)) rawTag = tag;
+        live.push(false);
+        return;
+      }
+      if (!/^ {0,3}<!--/.test(line) && HTML_BLOCK_RE.test(line)) {
+        inHtmlBlock = true;
+        live.push(false);
+        return;
+      }
+    }
     let touchedComment = inComment;
-    let rest = line;
+    let rest = line.replace(/(`+)(?:(?!\1)[\s\S])*?\1/g, '');
     for (;;) {
       if (inComment) {
         const close = rest.indexOf('-->');
@@ -182,15 +221,21 @@ export type ImportConsolidation =
  *   import must not ADD text Claude did not have;
  * - a copy section under a heading the canonical file also has, with other
  *   text, is drift: refused (importing would put both versions in context);
- * - every dropped section comes before every kept one, and a kept section is
- *   no deeper than the dropped sections (ignoring an H1 title): a kept
- *   section must not move, or end up reading as part of AGENTS.md;
+ * - the copied sections are the canonical sections, once each, in the
+ *   canonical order: the import must not reorder what Claude reads;
+ * - every dropped section comes before every kept one, and the first kept
+ *   section is no deeper than the dropped sections (ignoring an H1 title):
+ *   a kept section must not move, or read as part of AGENTS.md (a kept
+ *   tail may nest under its own first section);
+ * - when the copy is not in the canonical file's directory
+ *   (`.claude/CLAUDE.md`), no dropped section holds a relative @ import,
+ *   which would resolve from another directory after the edit;
  * - the canonical file must not import the copy (circular);
  * - there must be something to drop.
  *
- * The import line goes at the top (after front matter) unless a live line of
- * the KEPT text already imports the canonical file. Line endings and the
- * final newline are kept.
+ * The import line goes at the top (after front matter) unless the leading
+ * import-only block already imports the canonical file. Line endings and
+ * the final newline are kept.
  */
 export function consolidateWithImport(
   copyContent: string,
@@ -246,19 +291,44 @@ export function consolidateWithImport(
   }
   if (dropped.length === 0) return refuse(`${paths.copyRel} repeats nothing from ${paths.canonicalRel}`);
 
+  // The copied sections must be AGENTS.md's sections, once each, in AGENTS.md's
+  // order: otherwise the import changes the order (or count) Claude reads them in.
+  const canonicalOrder = canonicalSections.map((s) => sameSectionText(s)).filter((t) => t !== '');
+  const droppedOrder = dropped.map((s) => sameSectionText(s));
+  if (droppedOrder.length !== canonicalOrder.length || droppedOrder.some((t, i) => t !== canonicalOrder[i])) {
+    return refuse(`${paths.copyRel} has the sections of ${paths.canonicalRel} in another order (or more than once)`);
+  }
+
+  // A kept tail must start at the top level (no deeper than the dropped
+  // sections, an H1 title aside): its first section must not read as part of
+  // the last section of AGENTS.md. Sections after it may nest under it.
   const droppedLevels = dropped.map(headingLevel).filter((l) => l >= 2);
   const topLevel = droppedLevels.length > 0 ? Math.min(...droppedLevels) : 2;
-  const nested = kept.find((s) => headingLevel(s) === 0 || headingLevel(s) > topLevel);
-  if (nested) {
-    return refuse(`"${nested.heading ?? '(preamble)'}" sits under a section being removed; it would read as part of ${paths.canonicalRel}`);
+  const firstKept = kept[0];
+  if (firstKept && (headingLevel(firstKept) === 0 || headingLevel(firstKept) > topLevel)) {
+    return refuse(`"${firstKept.heading ?? '(preamble)'}" sits under a section being removed; it would read as part of ${paths.canonicalRel}`);
+  }
+
+  // An import line inside a dropped section resolved from the copy's own
+  // directory before the edit and resolves from the canonical file's after it.
+  // Same directory (the root CLAUDE.md): no change. Otherwise refuse.
+  const copyDir = path.posix.dirname(paths.copyRel);
+  const canonicalDir = path.posix.dirname(paths.canonicalRel);
+  if (copyDir !== canonicalDir) {
+    const relative = dropped.find((s) => importTargets(s.text).some((t) => !t.startsWith('/') && !t.startsWith('~')));
+    if (relative) {
+      return refuse(
+        `"${relative.heading ?? '(preamble)'}" holds a relative @ import that would resolve from ${canonicalDir === '.' ? 'the repository root' : canonicalDir} instead of ${copyDir}`,
+      );
+    }
   }
 
   const leadingLines = leading ? sameSectionText(leading).split('\n') : [];
   const keptLines = kept.flatMap((s) => s.text.split('\n'));
-  // Computed over what STAYS (leading imports and kept sections), outside
-  // fences and HTML comments: an import inside a dropped section or a comment
-  // loads nothing after the edit.
-  const alreadyImports = importTargets([...leadingLines, '', ...keptLines].join('\n')).includes(normImport(paths.importPath));
+  // Only an import in the leading import-only block counts as already there:
+  // anywhere else (a kept section, raw HTML, a comment) it may not load, and
+  // a second import line is harmless.
+  const alreadyImports = importTargets(leadingLines.join('\n')).includes(normImport(paths.importPath));
   // Drop leading and trailing blank lines of what is kept, and squeeze the
   // seams the removals left to one blank line.
   const squeezed: string[] = [];

@@ -395,13 +395,14 @@ export function detectDuplicates(files: InstructionFile[]): PromptCiIssue[] {
           ? ''
           : 'The copies differ: decide which text is right before consolidating, since a pointer would discard the other. Then ') +
         `${identical ? 'Consolidate' : 'consolidate'} these sections into one canonical location (e.g. AGENTS.md) to save ~${duplicateTokens} tokens per session. ` +
-        'A CLAUDE.md or GEMINI.md can load AGENTS.md with an `@AGENTS.md` import line; a markdown link is not loaded by any of these tools. ' +
-        'If both copies are intentional, add a comment clarifying the distinction.',
+        'A repository-root CLAUDE.md can load AGENTS.md with an `@AGENTS.md` line, but only a session started at the ' +
+        'repository root loads it without asking (from a subdirectory it is an external import that needs a one-time ' +
+        'approval); a markdown link is not loaded at all. If both copies are intentional, add a comment clarifying the distinction.',
       // pcic-1ik0.10: advisory. Replacing ONE section of a file with a pointer
       // drops it from the agent's context (no tool loads a markdown link), and
       // an import would load the whole canonical file, not just this section.
-      // The unattended fix is the mirrored-files finding's import recipe,
-      // offered only when a whole file is a copy (see mirrorIssue).
+      // The only edit for duplicates is the mirrored-files finding's opt-in
+      // CLAUDE.md import (see mirrorIssue and mirror-import.ts).
       autoApplySafe: false,
       // pcic-1ik0.10: an exact duplicate's identity is the repeated text, not
       // the list of files that repeat it, so a copy being removed (the import
@@ -665,7 +666,7 @@ function mirrorIssue(
         'files load no import and need their own copy. If a generator writes these files, configure it accordingly.';
   const geminiNote = hasGemini
     ? ' GEMINI.md: keep its text; Gemini CLI documents `@file.md` imports, but Antigravity CLI, which replaced it ' +
-      'for many users, documents that `@filename` does not inline the file (it reads AGENTS.md itself).'
+      'for many users, documents that `@filename` does not inline the file (its rules page lists AGENTS.md among the files it reads).'
     : '';
   const counts = files
     .map((f, i) => `${names[i]} ${shared(f)} of ${Math.max(shared(f), mirrors.comparable.get(f) ?? 0)}`)

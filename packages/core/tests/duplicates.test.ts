@@ -1016,7 +1016,9 @@ describe('detectDuplicates — auto-fix only for identical copies', () => {
     expect(issue!.autoApplySafe).toBe(false);
     expect(issue!.summary).not.toContain('not identical');
     expect(issue!.recommendation).toMatch(/^Consolidate these sections/);
-    expect(issue!.recommendation).toContain('`@AGENTS.md` import line; a markdown link is not loaded');
+    expect(issue!.recommendation).toContain('A repository-root CLAUDE.md can load AGENTS.md with an `@AGENTS.md` line');
+    expect(issue!.recommendation).toContain('needs a one-time approval');
+    expect(issue!.recommendation).not.toContain('GEMINI');
   });
 
   describe('sameSectionText: byte-identical after line endings, trailing whitespace, BOM and edge blank lines only', () => {

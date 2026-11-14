@@ -102,6 +102,19 @@ describe('the opt-in import edit (fixtures)', () => {
     expect(added).toEqual([]);
   });
 
+  it('fixture-mirror-import-pre-example: an @AGENTS.md shown inside <pre> does not stop the real import (review B1)', async () => {
+    const { files, added } = await optInFix('fixture-mirror-import-pre-example');
+    expect(files['CLAUDE.md']).toMatch(/^@AGENTS\.md\n\n## Claude notes\n/);
+    expect(files['CLAUDE.md']).toContain('<pre>\n@AGENTS.md\n</pre>');
+    expect(added).toEqual([]);
+  });
+
+  it('fixture-mirror-import-subtree: a trailing Claude-only section and its subsection stay', async () => {
+    const { files, added } = await optInFix('fixture-mirror-import-subtree');
+    expect(files['CLAUDE.md']).toMatch(/^@AGENTS\.md\n\n## Claude Code only\n[\s\S]*\n### Slash commands\n/);
+    expect(added).toEqual([]);
+  });
+
   it('fixture-mirror-import-clean: a repository that already imports stays clean', async () => {
     const report = await scan({ repoPath: fixture('fixture-mirror-import-clean') });
     expect(report.issues.filter((i) => i.category === 'duplicate')).toEqual([]);
@@ -118,6 +131,8 @@ describe('refused shapes: a mirror finding, and no edit even with the opt-in (fi
     ['fixture-mirror-refuse-middle', 'a section only CLAUDE.md has comes before "Database rules"; it would move'],
     ['fixture-mirror-refuse-comment-import', 'a section only CLAUDE.md has comes before "Agent Guidelines"; it would move'],
     ['fixture-mirror-refuse-circular', 'AGENTS.md imports CLAUDE.md (circular)'],
+    ['fixture-mirror-refuse-dotclaude-relative', '"Style" holds a relative @ import that would resolve from the repository root instead of .claude'],
+    ['fixture-mirror-refuse-reordered', 'CLAUDE.md has the sections of AGENTS.md in another order (or more than once)'],
     ['fixture-mirrored-drift', 'CLAUDE.md lacks text that AGENTS.md has (Database rules); an import would add it'],
   ])('%s', async (name, reason) => {
     const root = fixture(name);

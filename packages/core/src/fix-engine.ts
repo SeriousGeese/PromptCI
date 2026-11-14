@@ -281,6 +281,11 @@ export type MirrorImportPlan = {
  * `.claude/CLAUDE.md` copy of the repo-root `AGENTS.md` (see
  * `importRecipeTarget`); every other member is left as it is. All or
  * nothing: any refusal means no edit to any file.
+ *
+ * Calling this IS naming the recipe: unlike `applyFixRecipe`, it has no
+ * `optIn` gate and returns the edits for any mirrored-files finding it can
+ * apply. Call it only for a finding the user picked (as
+ * `promptci fix --issue <id>` does), never from an autopilot.
  */
 export async function planMirrorImport(issue: PromptCiIssue, repoRoot: string): Promise<MirrorImportPlan> {
   const root = path.resolve(repoRoot);
