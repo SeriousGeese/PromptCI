@@ -43,6 +43,52 @@ describe('fixture-source-bin (#161)', () => {
     }
   });
 
+  it('still clean when bin/ holds only scripts in subdirectories and non-script source (#206)', async () => {
+    const root = copyFixture();
+    try {
+      fs.rmSync(path.join(root, 'bin'), { recursive: true });
+      fs.writeFileSync(path.join(root, 'package.json'), '{"name":"fixture-source-bin","private":true}\n');
+      fs.mkdirSync(path.join(root, 'bin', 'linux'), { recursive: true });
+      fs.writeFileSync(path.join(root, 'bin', 'linux', 'start.sh'), '#!/bin/sh\nexec java -jar app.jar\n');
+      fs.writeFileSync(path.join(root, 'bin', 'tool.groovy'), 'println "hi"\n');
+      fs.writeFileSync(path.join(root, 'bin', 'setup'), 'mvn -q install\n');
+      expect(await unignored(root)).toBeUndefined();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('fixture-source-bin-nested: a nested launcher and a Groovy script beside pom.xml are source (#206)', async () => {
+    const nested = path.resolve(__dirname, '../../../examples/fixture-source-bin-nested');
+    for (const marker of ['pom.xml', 'bin/linux/start.sh', 'bin/tool.groovy']) {
+      expect(fs.existsSync(path.join(nested, marker)), marker).toBe(true);
+    }
+    expect(await unignored(nested)).toBeUndefined();
+  });
+
+  it('does not report bin/ when the caller says its file inventory is partial (PR #210 review)', async () => {
+    // A hosted scan that listed only bin/widgets.jar cannot know what else is
+    // in bin/, so it must not propose ignoring it.
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'promptci-partial-bin-'));
+    try {
+      fs.writeFileSync(path.join(root, 'pom.xml'), '<project/>\n');
+      fs.writeFileSync(path.join(root, '.gitignore'), 'target/\n.promptci/\n');
+      fs.writeFileSync(path.join(root, 'AGENTS.md'), '# Agents\n\nRun `mvn -q verify` before you push.\n');
+      fs.mkdirSync(path.join(root, 'bin'));
+      fs.writeFileSync(path.join(root, 'bin', 'widgets.jar'), 'PK');
+      const knownPaths = ['pom.xml', '.gitignore', 'AGENTS.md', 'bin/widgets.jar'];
+      const partial = (await scan({ repoPath: root, knownPaths, knownPathsComplete: false })).issues
+        .find((i) => i.id === 'security-pack-unignored-dirs');
+      expect(partial).toBeUndefined();
+      // The same listing, declared complete, is plain build output.
+      const complete = (await scan({ repoPath: root, knownPaths, knownPathsComplete: true })).issues
+        .find((i) => i.id === 'security-pack-unignored-dirs');
+      expect(complete?.evidence).toEqual(['Directory "bin" exists but is not ignored in .gitignore.']);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('reports bin/ once it holds only .NET build output', async () => {
     const root = copyFixture();
     try {
