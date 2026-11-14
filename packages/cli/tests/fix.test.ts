@@ -155,6 +155,60 @@ describe('runFix CLI command', () => {
     expect(await fs.readFile(claudePath, 'utf-8')).toBe(body(''));
   });
 
+  // pcic-1ik0.5 (PromptCI#160): a near-duplicate is two copies that have
+  // drifted apart. Consolidating it unattended would replace the text that
+  // differs with a pointer, deleting the conflict along with its evidence.
+  it('leaves near-duplicate (drifted) sections in both files untouched', async () => {
+    const agentsPath = path.join(tmpDir, 'AGENTS.md');
+    const claudePath = path.join(tmpDir, 'CLAUDE.md');
+    const body = (word: string) =>
+      '## Database Rules\n' +
+      `Every schema change ships as a new migration under drizzle/ and is ${word} edited after merge.\n` +
+      'Queries go through the repository modules in src/repos so transactions stay in one place.\n' +
+      'Route handlers must not import the database client directly; tests stub the repositories.\n';
+    await fs.writeFile(agentsPath, body('never'), 'utf-8');
+    await fs.writeFile(claudePath, body('always'), 'utf-8');
+
+    await runFix({ scanPath: tmpDir, interactive: false });
+
+    expect(await fs.readFile(agentsPath, 'utf-8')).toBe(body('never'));
+    expect(await fs.readFile(claudePath, 'utf-8')).toBe(body('always'));
+  });
+
+  it('leaves a copy whose nested list was flattened untouched', async () => {
+    const agentsPath = path.join(tmpDir, 'AGENTS.md');
+    const claudePath = path.join(tmpDir, 'CLAUDE.md');
+    const body = (indent: string) =>
+      '## Release Steps\n' +
+      'Follow these steps in order for every release and never skip one of them, even for hotfixes.\n' +
+      `- Build the packages\n${indent}- run pnpm build in the repository root\n${indent}- check that dist/ holds the bundles\n` +
+      `- Publish the packages\n${indent}- run pnpm publish from each package directory\n`;
+    await fs.writeFile(agentsPath, body('  '), 'utf-8');
+    await fs.writeFile(claudePath, body(''), 'utf-8');
+
+    await runFix({ scanPath: tmpDir, interactive: false });
+
+    expect(await fs.readFile(agentsPath, 'utf-8')).toBe(body('  '));
+    expect(await fs.readFile(claudePath, 'utf-8')).toBe(body(''));
+  });
+
+  it('leaves a copy whose fenced code lost its indentation untouched', async () => {
+    const agentsPath = path.join(tmpDir, 'AGENTS.md');
+    const claudePath = path.join(tmpDir, 'CLAUDE.md');
+    const body = (indent: string) =>
+      '## Database Rules\n' +
+      'Every schema change ships as a new migration under drizzle/ and is never edited after merge.\n' +
+      'Queries go through the repository modules in src/repos so transactions stay in one place.\n' +
+      '\n```python\nif x:\n' + `${indent}run()\nelse:\n${indent}stop()\n` + '```\n';
+    await fs.writeFile(agentsPath, body('    '), 'utf-8');
+    await fs.writeFile(claudePath, body(''), 'utf-8');
+
+    await runFix({ scanPath: tmpDir, interactive: false });
+
+    expect(await fs.readFile(agentsPath, 'utf-8')).toBe(body('    '));
+    expect(await fs.readFile(claudePath, 'utf-8')).toBe(body(''));
+  });
+
   it('prompts user in interactive mode and applies changes on confirmation', async () => {
     const gitignorePath = path.join(tmpDir, '.gitignore');
     await fs.writeFile(gitignorePath, 'node_modules/\n', 'utf-8');
