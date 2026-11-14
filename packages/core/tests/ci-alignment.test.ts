@@ -304,6 +304,19 @@ describe('detectCiAlignment — package manager mismatch', () => {
     expect(manifest[0]!.summary).toContain('The CI workflows use pnpm too.');
   });
 
+  it('defers too when only a lockfile (no package.json) names the package manager', () => {
+    const file = makeFile('Run `npm install` and then `npm test`.');
+    const context = makeContext(
+      [file],
+      makeWorkflow([{ filePath: '.github/workflows/ci.yml', command: 'pnpm install', line: 5 }]),
+    );
+    context.packageJson = parsePackageJsonFacts(undefined, ['pnpm-lock.yaml']);
+    expect(context.packageJson.packageManagerName).toBe('pnpm');
+    const mismatch = (i: { title: string }) => i.title.startsWith('Possible package manager mismatch');
+    expect(detectCiAlignment(context).filter(mismatch)).toEqual([]);
+    expect(detectManifestConsistency(context).filter(mismatch)).toHaveLength(1);
+  });
+
   it('the manifest finding does not claim CI agreement when there is no workflow', () => {
     const file = makeFile('Run `npm install` and then `npm test`.');
     const context = makeContext([file], makeWorkflow([]), JSON.stringify({ name: 'test' }));
