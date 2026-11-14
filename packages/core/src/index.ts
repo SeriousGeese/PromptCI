@@ -90,3 +90,6 @@ export {
 
 export { selectScanPaths } from './discovery.js';
 export type { ScanPathEntry, SelectScanPathsOptions, SelectScanPathsResult } from './discovery.js';
+
+// pcic-kvv3.1: provenance of every check family (kind, claim, sources, appliesTo, lastVerified).
+export * from './provenance/index.js';
