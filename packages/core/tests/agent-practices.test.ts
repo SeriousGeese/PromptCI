@@ -3,10 +3,17 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { detectAgentPractices } from '../src/agent-practices.js';
-import type { InstructionFile } from '../src/types.js';
+import { detectAgentPractices, MISSING_PRACTICES_ISSUE_ID } from '../src/agent-practices.js';
+import { computeHealthScore, isScored, UNSCORED_TAG } from '../src/health-score.js';
+import type { InstructionFile, PromptCiIssue } from '../src/types.js';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+/** The "Not found: <label>" line of the repository-level practice finding, if listed. */
+function gap(issues: PromptCiIssue[], label: string): string | undefined {
+  const issue = issues.find((i) => i.id === MISSING_PRACTICES_ISSUE_ID);
+  return issue?.evidence.find((line) => line === `Not found: ${label}`);
+}
 
 function makeFile(content: string, filePath = '/repo/CLAUDE.md'): InstructionFile {
   return {
@@ -47,12 +54,8 @@ describe('detectAgentPractices', () => {
 
   // ── Verification loop ────────────────────────────────────────────────────
 
-  it('flags missing verification loop', () => {
-    const issues = detectAgentPractices([MINIMAL_FILE]);
-    const issue = issues.find((i) => i.id.includes('no-verification-loop') || i.title.includes('verification loop'));
-    expect(issue).toBeDefined();
-    expect(issue!.severity).toBe('warning');
-    expect(issue!.category).toBe('agent_practices');
+  it('lists a missing verification loop', () => {
+    expect(gap(detectAgentPractices([MINIMAL_FILE]), 'verification loop')).toBeDefined();
   });
 
   it('does NOT flag when verification loop is present', () => {
@@ -60,7 +63,7 @@ describe('detectAgentPractices', () => {
       '# Rules\nBefore saying done, run pnpm lint && pnpm typecheck && pnpm test.',
     );
     const issues = detectAgentPractices([file]);
-    expect(issues.find((i) => i.title.includes('verification loop'))).toBeUndefined();
+    expect(gap(issues, 'verification loop')).toBeUndefined();
   });
 
   it('recognises "work is not complete until" as a verification loop signal', () => {
@@ -68,7 +71,7 @@ describe('detectAgentPractices', () => {
       '# Session Close\nWork is not complete until git push succeeds.',
     );
     expect(
-      detectAgentPractices([file]).find((i) => i.title.includes('verification loop')),
+      gap(detectAgentPractices([file]), 'verification loop'),
     ).toBeUndefined();
   });
 
@@ -77,19 +80,14 @@ describe('detectAgentPractices', () => {
       '# Runtime\nSocket.io session end handling lives in src/net.',
     );
     expect(
-      detectAgentPractices([file]).find((i) => i.title.includes('verification loop')),
+      gap(detectAgentPractices([file]), 'verification loop'),
     ).toBeDefined();
   });
 
   // ── Honesty policy ────────────────────────────────────────────────────────
 
-  it('flags missing honesty policy at warning severity', () => {
-    const issues = detectAgentPractices([MINIMAL_FILE]);
-    const issue = issues.find((i) => i.title.includes('honestly'));
-    expect(issue).toBeDefined();
-    // FEAT-003: elevated from info 0.70 — failure-reporting is a production risk.
-    expect(issue!.severity).toBe('warning');
-    expect(issue!.confidence).toBe(0.75);
+  it('lists a missing honesty policy', () => {
+    expect(gap(detectAgentPractices([MINIMAL_FILE]), 'report failures honestly')).toBeDefined();
   });
 
   it('does NOT flag when honesty policy is present', () => {
@@ -97,19 +95,14 @@ describe('detectAgentPractices', () => {
       '# Rules\nIf tests fail, report the failure honestly. Never claim success.',
     );
     expect(
-      detectAgentPractices([file]).find((i) => i.title.includes('honestly')),
+      gap(detectAgentPractices([file]), 'report failures honestly'),
     ).toBeUndefined();
   });
 
   // ── Ask when unsure (FEAT-005) ────────────────────────────────────────────
 
-  it('flags missing ask-when-unsure instruction at warning severity', () => {
-    const issues = detectAgentPractices([MINIMAL_FILE]);
-    const issue = issues.find((i) => i.title.includes('ask when unsure'));
-    expect(issue).toBeDefined();
-    expect(issue!.severity).toBe('warning');
-    expect(issue!.confidence).toBe(0.75);
-    expect(issue!.category).toBe('agent_practices');
+  it('lists a missing ask-when-unsure instruction', () => {
+    expect(gap(detectAgentPractices([MINIMAL_FILE]), 'ask when unsure')).toBeDefined();
   });
 
   it('does NOT flag when uncertainty handling is present', () => {
@@ -117,14 +110,14 @@ describe('detectAgentPractices', () => {
       '# Rules\nIf you are uncertain about the correct approach, ask before proceeding.',
     );
     expect(
-      detectAgentPractices([file]).find((i) => i.title.includes('ask when unsure')),
+      gap(detectAgentPractices([file]), 'ask when unsure'),
     ).toBeUndefined();
   });
 
   it('recognises "if unsure" / "don\'t guess" phrasing as uncertainty handling', () => {
     const file = makeFile("# Rules\nIf unsure, say so. Don't guess.");
     expect(
-      detectAgentPractices([file]).find((i) => i.title.includes('ask when unsure')),
+      gap(detectAgentPractices([file]), 'ask when unsure'),
     ).toBeUndefined();
   });
 
@@ -132,7 +125,7 @@ describe('detectAgentPractices', () => {
     // Regression: an un-anchored /ask before/ matched the "ask" inside "task before".
     const file = makeFile('# Rules\nFinish the current task before moving to the next.');
     expect(
-      detectAgentPractices([file]).find((i) => i.title.includes('ask when unsure')),
+      gap(detectAgentPractices([file]), 'ask when unsure'),
     ).toBeDefined();
   });
 
@@ -143,19 +136,14 @@ describe('detectAgentPractices', () => {
       '# Rules\nIf tests fail, report the failure honestly. Never claim success.',
     );
     const issues = detectAgentPractices([file]);
-    expect(issues.find((i) => i.title.includes('honestly'))).toBeUndefined();
-    expect(issues.find((i) => i.title.includes('ask when unsure'))).toBeDefined();
+    expect(gap(issues, 'report failures honestly')).toBeUndefined();
+    expect(gap(issues, 'ask when unsure')).toBeDefined();
   });
 
   // ── Read-before-edit ──────────────────────────────────────────────────────
 
-  it('flags missing read-before-edit instruction at warning severity', () => {
-    const issues = detectAgentPractices([MINIMAL_FILE]);
-    const issue = issues.find((i) => i.title.includes('read before edit'));
-    expect(issue).toBeDefined();
-    // FEAT-003: elevated from info 0.70 — editing unread files is the #1 mistake.
-    expect(issue!.severity).toBe('warning');
-    expect(issue!.confidence).toBe(0.75);
+  it('lists a missing read-before-edit instruction', () => {
+    expect(gap(detectAgentPractices([MINIMAL_FILE]), 'read before edit')).toBeDefined();
   });
 
   it('does NOT flag when read-before-edit is present', () => {
@@ -163,7 +151,7 @@ describe('detectAgentPractices', () => {
       '# Rules\nAlways read a file fully before editing it.',
     );
     expect(
-      detectAgentPractices([file]).find((i) => i.title.includes('read before edit')),
+      gap(detectAgentPractices([file]), 'read before edit'),
     ).toBeUndefined();
   });
 
@@ -172,19 +160,14 @@ describe('detectAgentPractices', () => {
       '# Onboarding\nUsers must first read the onboarding docs before requesting access.',
     );
     expect(
-      detectAgentPractices([file]).find((i) => i.title.includes('read before edit')),
+      gap(detectAgentPractices([file]), 'read before edit'),
     ).toBeDefined();
   });
 
   // ── Scope control ─────────────────────────────────────────────────────────
 
-  it('flags missing scope-control instruction at warning severity', () => {
-    const issues = detectAgentPractices([MINIMAL_FILE]);
-    const issue = issues.find((i) => i.title.includes('scope-control'));
-    expect(issue).toBeDefined();
-    // FEAT-003: elevated from info 0.65 — unconstrained scope yields sweeping diffs.
-    expect(issue!.severity).toBe('warning');
-    expect(issue!.confidence).toBe(0.7);
+  it('lists a missing scope-control instruction', () => {
+    expect(gap(detectAgentPractices([MINIMAL_FILE]), 'scope control')).toBeDefined();
   });
 
   it('does NOT flag when scope control is present', () => {
@@ -192,18 +175,14 @@ describe('detectAgentPractices', () => {
       '# Rules\nPrefer focused, minimal diffs. Do not rewrite unrelated systems.',
     );
     expect(
-      detectAgentPractices([file]).find((i) => i.title.includes('scope-control')),
+      gap(detectAgentPractices([file]), 'scope control'),
     ).toBeUndefined();
   });
 
   // ── Code preservation (FEAT-006) ──────────────────────────────────────────
 
-  it('flags missing code-preservation instruction at warning severity', () => {
-    const issues = detectAgentPractices([MINIMAL_FILE]);
-    const issue = issues.find((i) => i.title.includes('code-preservation'));
-    expect(issue).toBeDefined();
-    expect(issue!.severity).toBe('warning');
-    expect(issue!.confidence).toBe(0.7);
+  it('lists a missing code-preservation instruction', () => {
+    expect(gap(detectAgentPractices([MINIMAL_FILE]), 'code preservation')).toBeDefined();
   });
 
   it('does NOT flag when code preservation is present', () => {
@@ -211,14 +190,14 @@ describe('detectAgentPractices', () => {
       '# Rules\nPreserve existing code and only change what the task requires.',
     );
     expect(
-      detectAgentPractices([file]).find((i) => i.title.includes('code-preservation')),
+      gap(detectAgentPractices([file]), 'code preservation'),
     ).toBeUndefined();
   });
 
   it('recognises "don\'t delete working code" as code preservation', () => {
     const file = makeFile("# Rules\nDon't delete working tests to make the build pass.");
     expect(
-      detectAgentPractices([file]).find((i) => i.title.includes('code-preservation')),
+      gap(detectAgentPractices([file]), 'code preservation'),
     ).toBeUndefined();
   });
 
@@ -228,24 +207,60 @@ describe('detectAgentPractices', () => {
     // FEAT-006 acceptance: each behavior covered by exactly one check.
     const scopeOnly = makeFile('# Rules\nPrefer minimal diffs and targeted fixes.');
     const scopeIssues = detectAgentPractices([scopeOnly]);
-    expect(scopeIssues.find((i) => i.title.includes('scope-control'))).toBeUndefined();
-    expect(scopeIssues.find((i) => i.title.includes('code-preservation'))).toBeDefined();
+    expect(gap(scopeIssues, 'scope control')).toBeUndefined();
+    expect(gap(scopeIssues, 'code preservation')).toBeDefined();
 
     const preserveOnly = makeFile('# Rules\nPreserve existing code; keep existing tests.');
     const preserveIssues = detectAgentPractices([preserveOnly]);
-    expect(preserveIssues.find((i) => i.title.includes('code-preservation'))).toBeUndefined();
-    expect(preserveIssues.find((i) => i.title.includes('scope-control'))).toBeDefined();
+    expect(gap(preserveIssues, 'code preservation')).toBeUndefined();
+    expect(gap(preserveIssues, 'scope control')).toBeDefined();
   });
 
   // ── Plan-first ────────────────────────────────────────────────────────────
 
-  it('flags missing plan-first instruction (stays info)', () => {
+  it('lists a missing plan-first instruction', () => {
+    expect(gap(detectAgentPractices([MINIMAL_FILE]), 'plan before implementing')).toBeDefined();
+  });
+
+  // ── One unscored finding per repository (pcic-1ik0.3) ─────────────────────
+
+  it('reports every missing practice in ONE info finding that the health score skips', () => {
     const issues = detectAgentPractices([MINIMAL_FILE]);
-    const issue = issues.find((i) => i.title.includes('plan before'));
-    expect(issue).toBeDefined();
-    // FEAT-003: plan-first is genuinely advisory — deliberately kept at info 0.65.
-    expect(issue!.severity).toBe('info');
-    expect(issue!.confidence).toBe(0.65);
+    const practice = issues.filter((i) => i.id.startsWith('agent-practice-'));
+    expect(practice).toHaveLength(1);
+    const issue = practice[0]!;
+    expect(issue.id).toBe(MISSING_PRACTICES_ISSUE_ID);
+    expect(issue.severity).toBe('info');
+    expect(issue.category).toBe('agent_practices');
+    expect(issue.tags).toContain(UNSCORED_TAG);
+    expect(isScored(issue)).toBe(false);
+    expect(issue.evidence).toEqual([
+      'Searched 1 instruction file(s).',
+      'Not found: verification loop',
+      'Not found: report failures honestly',
+      'Not found: ask when unsure',
+      'Not found: read before edit',
+      'Not found: scope control',
+      'Not found: code preservation',
+      'Not found: plan before implementing',
+    ]);
+    expect(issue.summary).toContain('7 of the 7');
+    expect(issue.summary).toContain('does not count toward the health score');
+    expect(issue.fixRecipe!.split('\n')).toHaveLength(7);
+    expect(computeHealthScore(issues)).toBe(100);
+  });
+
+  it('keeps the same id when only some practices are missing, and lists only those', () => {
+    const file = makeFile(
+      '# Rules\nBefore saying done, run pnpm test. If tests fail, report the failure honestly.\n' +
+        'If unsure, ask before proceeding. Always read a file before editing it.\n' +
+        'Prefer focused diffs. Preserve existing code.',
+    );
+    const [issue, ...rest] = detectAgentPractices([file]).filter((i) => i.id.startsWith('agent-practice-'));
+    expect(rest).toEqual([]);
+    expect(issue!.id).toBe(MISSING_PRACTICES_ISSUE_ID);
+    expect(issue!.evidence).toEqual(['Searched 1 instruction file(s).', 'Not found: plan before implementing']);
+    expect(issue!.summary).toContain('1 of the 7');
   });
 
   it('does NOT flag when plan-first is present', () => {
@@ -253,7 +268,7 @@ describe('detectAgentPractices', () => {
       '# Rules\nFor complex tasks, outline the approach before writing code.',
     );
     expect(
-      detectAgentPractices([file]).find((i) => i.title.includes('plan before'))).toBeUndefined();
+      gap(detectAgentPractices([file]), 'plan before implementing')).toBeUndefined();
   });
 
   it('does NOT treat casual "think through" prose as plan-first guidance', () => {
@@ -261,7 +276,7 @@ describe('detectAgentPractices', () => {
       '# UX\nThe settings screen helps users think through notification choices.',
     );
     expect(
-      detectAgentPractices([file]).find((i) => i.title.includes('plan before')),
+      gap(detectAgentPractices([file]), 'plan before implementing'),
     ).toBeDefined();
   });
 
@@ -344,7 +359,7 @@ describe('detectAgentPractices — BUG-002 checklist suppression', () => {
       ].join('\n'),
     );
     const issues = detectAgentPractices([file]);
-    const verifyIssue = issues.find((i) => i.title.includes('verification loop'));
+    const verifyIssue = gap(issues, 'verification loop');
     expect(verifyIssue).toBeDefined();
   });
 
@@ -360,7 +375,7 @@ describe('detectAgentPractices — BUG-002 checklist suppression', () => {
       ].join('\n'),
     );
     const issues = detectAgentPractices([file]);
-    expect(issues.find((i) => i.title.includes('verification loop'))).toBeUndefined();
+    expect(gap(issues, 'verification loop')).toBeUndefined();
   });
 
   it('does NOT flag when "work is not complete until" appears outside a checklist', () => {
@@ -373,7 +388,7 @@ describe('detectAgentPractices — BUG-002 checklist suppression', () => {
       ].join('\n'),
     );
     const issues = detectAgentPractices([file]);
-    expect(issues.find((i) => i.title.includes('verification loop'))).toBeUndefined();
+    expect(gap(issues, 'verification loop')).toBeUndefined();
   });
 
   it('does not strip non-list rules that contain numbered checkbox text later in the line', () => {
@@ -381,7 +396,7 @@ describe('detectAgentPractices — BUG-002 checklist suppression', () => {
       'Always read a file before editing it; ignore the example text 1. [ ] placeholder.',
     );
     const issues = detectAgentPractices([file]);
-    expect(issues.find((i) => i.title.includes('read before edit'))).toBeUndefined();
+    expect(gap(issues, 'read before edit')).toBeUndefined();
   });
 });
 
@@ -829,31 +844,31 @@ describe('detectAgentPractices — AP1 vacuous-pass fixes', () => {
   it('still flags "no verification loop" when the only pnpm mention is descriptive prose', () => {
     const file = makeFile('# Build\npnpm build outputs to dist/. Use TypeScript strict mode.');
     const issues = detectAgentPractices([file]);
-    expect(issues.some((i) => i.title === 'No verification loop instruction')).toBe(true);
+    expect((gap(issues, 'verification loop') !== undefined)).toBe(true);
   });
 
   it('does NOT flag "no verification loop" when pnpm test appears as a real directive', () => {
     const file = makeFile('# Build\nRun pnpm test before committing changes.');
     const issues = detectAgentPractices([file]);
-    expect(issues.some((i) => i.title === 'No verification loop instruction')).toBe(false);
+    expect((gap(issues, 'verification loop') !== undefined)).toBe(false);
   });
 
   it('still flags "no honesty policy" when the only "honest" mention is filler ("to be honest")', () => {
     const file = makeFile('# Notes\nTo be honest, this module is a bit messy but it works.');
     const issues = detectAgentPractices([file]);
-    expect(issues.some((i) => i.title === 'No "report failures honestly" instruction')).toBe(true);
+    expect((gap(issues, 'report failures honestly') !== undefined)).toBe(true);
   });
 
   it('does NOT flag "no honesty policy" when honesty is a real directive', () => {
     const file = makeFile('# Rules\nAlways report test results honestly, even on failure.');
     const issues = detectAgentPractices([file]);
-    expect(issues.some((i) => i.title === 'No "report failures honestly" instruction')).toBe(false);
+    expect((gap(issues, 'report failures honestly') !== undefined)).toBe(false);
   });
 
   it('does NOT flag "no honesty policy" when the word appears inside "dishonestly"', () => {
     const file = makeFile('# Notes\nNever act dishonestly toward users about pricing.');
     const issues = detectAgentPractices([file]);
-    expect(issues.some((i) => i.title === 'No "report failures honestly" instruction')).toBe(true);
+    expect((gap(issues, 'report failures honestly') !== undefined)).toBe(true);
   });
 });
 
@@ -952,7 +967,7 @@ describe('detectAgentPractices — AP5 read-before-edit word order', () => {
       '# Rules\nBefore editing, read the relevant files and prefer focused diffs.',
     );
     const issues = detectAgentPractices([file]);
-    expect(issues.find((i) => i.title.includes('read before edit'))).toBeUndefined();
+    expect(gap(issues, 'read before edit')).toBeUndefined();
   });
 });
 
@@ -1057,8 +1072,8 @@ describe('detectAgentPractices — example fixtures', () => {
     const fixtures = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../examples');
     const files = await scanFiles({ repoPath: path.join(fixtures, 'fixture-basic') });
     const issues = detectAgentPractices(files);
-    expect(issues.find((i) => i.title.includes('ask when unsure'))).toBeDefined();
-    expect(issues.find((i) => i.title.includes('code-preservation'))).toBeDefined();
+    expect(gap(issues, 'ask when unsure')).toBeDefined();
+    expect(gap(issues, 'code preservation')).toBeDefined();
   });
 
   it('fixture-clean stays clean for every agent-practices check', async () => {

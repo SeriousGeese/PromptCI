@@ -17,7 +17,9 @@
  *   - Plan-first guidance   — "outline the approach before coding"
  *   - No contradictory "do not edit" header in human-maintained files
  *
- * All findings are info/warning severity — these are guidance gaps, not errors.
+ * The seven practice checks yield ONE info-level finding per repository that
+ * lists every practice not found, tagged unscored so it costs no health-score
+ * points (pcic-1ik0.3). The per-file checks further down are warnings.
  */
 
 import * as crypto from 'node:crypto';
@@ -26,17 +28,19 @@ import type { InstructionFile, PromptCiIssue } from './types.js';
 import { stripCodeBlocks } from './markdown-fences.js';
 import { fileIdPath } from './finding-id.js';
 import { aliasesWithNewType, groupAliasesByTarget } from './alias-files.js';
+import { UNSCORED_TAG } from './health-score.js';
 
 // ── Practice checks ──────────────────────────────────────────────────────────
 
 interface PracticeCheck {
   id: string;
   title: string;
+  /** Short name listed in the repository-level "practices not found" finding. */
+  label: string;
   summary: string;
   /** At least one pattern must match somewhere across all files to pass. */
   patterns: RegExp[];
   recommendation: string;
-  severity: PromptCiIssue['severity'];
   confidence: number;
   fixRecipe?: string;
 }
@@ -45,6 +49,7 @@ const CHECKS: PracticeCheck[] = [
   {
     id: 'no-verification-loop',
     title: 'No verification loop instruction',
+    label: 'verification loop',
     summary:
       'No instruction found asking the agent to run lint, typecheck, or tests before marking work complete. ' +
       'Without this, agents commonly report "done" without validating that changes compile or pass tests.',
@@ -65,13 +70,13 @@ const CHECKS: PracticeCheck[] = [
     recommendation:
       'Add an explicit rule such as: "Before saying done, run pnpm lint && pnpm typecheck && pnpm test && pnpm build. ' +
       'Work is not complete until all checks pass."',
-    severity: 'warning',
     confidence: 0.75,
     fixRecipe: 'Before saying work is complete, run pnpm lint, pnpm typecheck, pnpm test, and pnpm build. If any command fails, report the failure and stop.',
   },
   {
     id: 'no-honesty-policy',
     title: 'No "report failures honestly" instruction',
+    label: 'report failures honestly',
     summary:
       'No instruction found requiring the agent to report test failures, errors, or build breakage honestly. ' +
       'Without this, agents may claim success when commands actually fail.',
@@ -88,9 +93,6 @@ const CHECKS: PracticeCheck[] = [
     ],
     recommendation:
       'Add a rule such as: "If tests fail, report the failure. Never claim success when commands error or tests are skipped."',
-    // An AI that doesn't report uncertainty or failures is a production risk,
-    // not a style suggestion — elevated from info 0.70 (roadmap FEAT-003).
-    severity: 'warning',
     confidence: 0.75,
     fixRecipe: 'If tests or commands fail, report the failure honestly. Never claim success when checks are skipped or error.',
   },
@@ -102,6 +104,7 @@ const CHECKS: PracticeCheck[] = [
     // *before* acting, so a file can satisfy one and miss the other.
     id: 'no-ask-when-unsure',
     title: 'No "ask when unsure" instruction',
+    label: 'ask when unsure',
     summary:
       'No instruction found telling the agent to surface uncertainty — to ask or say so when it is unsure — ' +
       'instead of guessing. Without this, agents may proceed on assumptions and produce confidently wrong work.',
@@ -120,7 +123,6 @@ const CHECKS: PracticeCheck[] = [
     ],
     recommendation:
       'Add a rule such as: "If you are uncertain about the correct approach, say so and ask before proceeding rather than guessing."',
-    severity: 'warning',
     confidence: 0.75,
     fixRecipe:
       'If you are uncertain about the correct approach, say so before proceeding rather than guessing.',
@@ -128,6 +130,7 @@ const CHECKS: PracticeCheck[] = [
   {
     id: 'no-read-before-edit',
     title: 'No "read before edit" instruction',
+    label: 'read before edit',
     summary:
       "No instruction found requiring the agent to read a file before editing it. " +
       "Agents that edit files they haven't read may clobber context or introduce inconsistencies.",
@@ -145,15 +148,13 @@ const CHECKS: PracticeCheck[] = [
     ],
     recommendation:
       'Add a rule such as: "Always read a file fully before editing it."',
-    // Editing files without reading them is the #1 source of AI coding
-    // mistakes — elevated from info 0.70 (roadmap FEAT-003).
-    severity: 'warning',
     confidence: 0.75,
     fixRecipe: 'Read a file before editing it. Preserve unrelated user changes.',
   },
   {
     id: 'no-scope-control',
     title: 'No scope-control instruction',
+    label: 'scope control',
     summary:
       'No instruction found telling the agent to avoid rewriting unrelated systems or making sweeping changes. ' +
       'Unconstrained agents often refactor things they were not asked to touch.',
@@ -169,9 +170,6 @@ const CHECKS: PracticeCheck[] = [
     ],
     recommendation:
       'Add a rule such as: "Prefer focused, minimal diffs. Do not rewrite or refactor code unrelated to the current task."',
-    // Unconstrained scope produces sweeping unrelated diffs that are hard to
-    // review — elevated from info 0.65 (roadmap FEAT-003).
-    severity: 'warning',
     confidence: 0.7,
     fixRecipe: 'Prefer focused, minimal diffs. Do not rewrite or refactor code unrelated to the current task.',
   },
@@ -187,6 +185,7 @@ const CHECKS: PracticeCheck[] = [
     // keys on "preserve/keep existing/only change what/don't delete".
     id: 'no-preserve-scope',
     title: 'No code-preservation instruction',
+    label: 'code preservation',
     summary:
       'No instruction found telling the agent to preserve existing code and only change what the task requires. ' +
       'Without this, agents may delete working code, drop tests, or overwrite unrelated edits to reach a passing state.',
@@ -201,7 +200,6 @@ const CHECKS: PracticeCheck[] = [
     ],
     recommendation:
       'Add a rule such as: "Preserve existing code and only change what the task requires. Do not delete working code, tests, or unrelated edits."',
-    severity: 'warning',
     confidence: 0.7,
     fixRecipe:
       'Preserve existing code and only change what the task requires. Do not delete working code, tests, or unrelated edits.',
@@ -209,6 +207,7 @@ const CHECKS: PracticeCheck[] = [
   {
     id: 'no-plan-first',
     title: 'No "plan before implementing" instruction',
+    label: 'plan before implementing',
     summary:
       'No instruction found asking the agent to outline an approach for complex tasks before writing code. ' +
       'Planning prompts significantly reduce wasted implementation effort on multi-file changes.',
@@ -222,7 +221,6 @@ const CHECKS: PracticeCheck[] = [
     ],
     recommendation:
       'Add a rule such as: "For complex or multi-file tasks, outline the approach and get confirmation before writing code."',
-    severity: 'info',
     confidence: 0.65,
     fixRecipe: 'For complex or multi-file tasks, outline the approach and get confirmation before writing code.',
   },
@@ -278,9 +276,45 @@ const SOURCE_OF_TRUTH_RE =
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function issueId(checkId: string): string {
-  const hash = crypto.createHash('sha1').update(checkId).digest('hex').slice(0, 12);
-  return `agent-practice-${hash}`;
+/** The one repository-level finding's id; stable whichever practices are missing. */
+export const MISSING_PRACTICES_ISSUE_ID = `agent-practice-${crypto
+  .createHash('sha1')
+  .update('missing-practices')
+  .digest('hex')
+  .slice(0, 12)}`;
+
+/**
+ * One info-level finding for the whole repository listing the practices no
+ * instruction file mentions. Tagged unscored: these are suggestions, and
+ * nothing yet shows that the sentences change agent behaviour, so they do not
+ * cost health-score points (see UNSCORED_TAG in health-score.ts).
+ */
+function missingPracticesIssue(missing: PracticeCheck[], fileCount: number, filePaths: string[]): PromptCiIssue {
+  const labels = missing.map((check) => check.label);
+  return {
+    id: MISSING_PRACTICES_ISSUE_ID,
+    severity: 'info',
+    category: 'agent_practices',
+    title: 'Some common agent-practice guidance was not found',
+    summary:
+      `No instruction found for ${missing.length} of the ${CHECKS.length} agent practices PromptCI looks for ` +
+      `(${labels.join(', ')}). These are suggestions that often help agents, not defects, so this finding ` +
+      'does not count toward the health score.',
+    filePaths,
+    locations: [],
+    // One line per missing practice, in a fixed order, so the baseline
+    // fingerprint changes only when the set of missing practices does.
+    evidence: [
+      `Searched ${fileCount} instruction file(s).`,
+      ...labels.map((label) => `Not found: ${label}`),
+    ],
+    recommendation:
+      'Consider adding the rules that fit how you want agents to work, for example: ' +
+      missing.map((check) => check.recommendation.replace(/^Add (?:an explicit |a )?rule such as: /, '')).join(' '),
+    fixRecipe: missing.map((check) => check.fixRecipe).filter(Boolean).join('\n'),
+    confidence: Math.min(...missing.map((check) => check.confidence)),
+    tags: [UNSCORED_TAG],
+  };
 }
 
 function doNotEditIssueId(filePath: string): string {
@@ -490,27 +524,18 @@ export function detectAgentPractices(files: InstructionFile[], aliases: Instruct
   const allFilePaths = files.map((f) => f.path);
 
   // ── Per-practice checks (scan combined content) ───────────────────────────
-  for (const check of CHECKS) {
+  // pcic-1ik0.3 (PromptCI#158): one info finding per repository listing every
+  // practice not found, left out of the health score. In a 43-repository corpus
+  // each practice was missing from nearly every repository, so seven separate
+  // findings said little about any one repository and set its score.
+  const missing = CHECKS.filter((check) => {
     // BUG-002: Verification loop requires an imperative agent directive, not a checklist item.
     const contentToSearch = check.id === 'no-verification-loop'
       ? combinedContentNoChecklists
       : combinedContent;
-    if (matchesAny(contentToSearch, check.patterns)) continue;
-
-    issues.push({
-      id: issueId(check.id),
-      severity: check.severity,
-      category: 'agent_practices',
-      title: check.title,
-      summary: check.summary,
-      filePaths: allFilePaths,
-      locations: [],
-      evidence: [`Pattern not found across ${files.length} instruction file(s).`],
-      recommendation: check.recommendation,
-      fixRecipe: check.fixRecipe,
-      confidence: check.confidence,
-    });
-  }
+    return !matchesAny(contentToSearch, check.patterns);
+  });
+  if (missing.length > 0) issues.push(missingPracticesIssue(missing, files.length, allFilePaths));
 
   // ── Per-file behavioral gap check for tool-specific files ──────────────────
   // Tool-specific files must stand alone. If CLAUDE.md has no behavioral rules

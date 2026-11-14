@@ -37,7 +37,9 @@ const CATEGORY_DEDUCTION_CAP: Partial<Record<IssueCategory, number>> = {
  * - `supply-chain` (8): unpinned GitHub Actions are `security` findings, but
  *   they describe CI configuration, not instruction health: uncapped, one
  *   finding per unpinned action took ~25 points off an otherwise healthy repo
- *   that simply uses tag-pinned third-party actions.
+ *   that simply uses tag-pinned third-party actions. Since pcic-1ik0.3 they are
+ *   unscored as well; the cap still bounds an action-pin finding from an
+ *   earlier release that a consumer re-scores (it carries no unscored tag).
  * - `skill-supply-chain` (15): findings about installed third-party skills,
  *   not the repo's own instruction health: uncapped, one noisy skill could
  *   zero an otherwise healthy score.
@@ -49,6 +51,22 @@ const TAG_DEDUCTION_CAP: Record<string, number> = {
   'supply-chain': 8,
   'skill-supply-chain': 15,
 };
+
+/**
+ * Tag on a finding that is reported but costs no health-score points
+ * (pcic-1ik0.3, PromptCI#158). Used for checks that fire on nearly every
+ * repository and so say little about any one of them: the repository-level
+ * "agent-practice guidance not found" finding and the per-workflow unpinned
+ * GitHub Actions finding. They still appear in the report, the JSON and SARIF,
+ * the baseline and `--fail-on`; they rank after every scored finding in top
+ * fixes.
+ */
+export const UNSCORED_TAG = 'unscored';
+
+/** False for a finding tagged {@link UNSCORED_TAG}, which the health score skips. */
+export function isScored(issue: PromptCiIssue): boolean {
+  return !(issue.tags ?? []).includes(UNSCORED_TAG);
+}
 
 /** The cap bucket an issue's deduction counts against, if any. */
 function deductionBucket(issue: PromptCiIssue): { key: string; cap: number } | undefined {
@@ -65,7 +83,7 @@ function deductionBucket(issue: PromptCiIssue): { key: string; cap: number } | u
  *
  * Starts at 100. Each issue subtracts (severityWeight × confidence), subject to
  * per-category caps so a single noisy detector cannot drive the score to zero on
- * its own.
+ * its own. A finding tagged {@link UNSCORED_TAG} subtracts nothing.
  *
  * Result is clamped to [0, 100] and rounded to the nearest integer.
  */
@@ -74,6 +92,7 @@ export function computeHealthScore(issues: PromptCiIssue[]): number {
   const categoryDeductions = new Map<string, number>();
 
   for (const issue of issues) {
+    if (!isScored(issue)) continue;
     const deduction = (SEVERITY_WEIGHT[issue.severity] ?? 0) * issue.confidence;
     const bucket = deductionBucket(issue);
 
@@ -171,6 +190,8 @@ export function getIssueImpact(issue: PromptCiIssue): 'high' | 'medium' | 'low' 
  * Select up to 3 top fixes from the issue list.
  *
  * Priority order (descending):
+ *   0. Scored before unscored (an unscored finding is a top fix only when
+ *      fewer than three categories have a scored one)
  *   1. Severity weight (critical → high → warning → info)
  *   2. Confidence (higher first)
  *   3. Blast-radius impact (high → medium → low)
@@ -183,6 +204,9 @@ export function getIssueImpact(issue: PromptCiIssue): 'high' | 'medium' | 'low' 
  */
 export function selectTopFixes(issues: PromptCiIssue[]): TopFix[] {
   const sorted = [...issues].sort((a, b) => {
+    const scoredDiff = Number(isScored(b)) - Number(isScored(a));
+    if (scoredDiff !== 0) return scoredDiff;
+
     const weightDiff =
       (SEVERITY_WEIGHT[b.severity] ?? 0) - (SEVERITY_WEIGHT[a.severity] ?? 0);
     if (weightDiff !== 0) return weightDiff;

@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { computeHealthScore, selectTopFixes } from '../src/health-score.js';
+import { computeHealthScore, isScored, selectTopFixes, UNSCORED_TAG } from '../src/health-score.js';
 import type { IssueSeverity, PromptCiIssue } from '../src/types.js';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -261,5 +261,41 @@ describe('selectTopFixes', () => {
     ];
     const fixes = selectTopFixes(issues);
     expect(fixes[0].title).toBe('Low impact critical');
+  });
+});
+
+// ── Unscored findings (pcic-1ik0.3) ───────────────────────────────────────────
+
+describe('unscored findings', () => {
+  it('costs nothing for a finding tagged unscored, whatever its severity', () => {
+    const unscored = [
+      makeIssue({ severity: 'warning', confidence: 1, tags: [UNSCORED_TAG] }),
+      makeIssue({ severity: 'high', confidence: 1, category: 'security', tags: ['supply-chain', UNSCORED_TAG] }),
+    ];
+    expect(computeHealthScore(unscored)).toBe(100);
+    expect(computeHealthScore([...unscored, makeIssue({ severity: 'warning', confidence: 1 })])).toBe(96);
+  });
+
+  it('does not let an unscored finding use up a capped bucket', () => {
+    // supply-chain is capped at 8: an unscored finding must not eat into it.
+    const issues = [
+      makeIssue({ severity: 'warning', confidence: 1, category: 'security', tags: ['supply-chain', UNSCORED_TAG] }),
+      makeIssue({ severity: 'warning', confidence: 1, category: 'security', tags: ['supply-chain'] }),
+    ];
+    expect(computeHealthScore(issues)).toBe(96);
+  });
+
+  it('isScored is true unless the tag is present', () => {
+    expect(isScored(makeIssue({ severity: 'info', confidence: 1 }))).toBe(true);
+    expect(isScored(makeIssue({ severity: 'info', confidence: 1, tags: ['other'] }))).toBe(true);
+    expect(isScored(makeIssue({ severity: 'info', confidence: 1, tags: ['other', UNSCORED_TAG] }))).toBe(false);
+  });
+
+  it('ranks unscored findings after every scored one in top fixes', () => {
+    const fixes = selectTopFixes([
+      makeIssue({ severity: 'warning', confidence: 1, category: 'agent_practices', title: 'unscored', tags: [UNSCORED_TAG] }),
+      makeIssue({ severity: 'info', confidence: 0.5, category: 'duplicate', title: 'scored info' }),
+    ]);
+    expect(fixes.map((f) => f.title)).toEqual(['scored info', 'unscored']);
   });
 });
