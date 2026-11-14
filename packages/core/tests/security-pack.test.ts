@@ -24,6 +24,11 @@ function repo(files: Record<string, string>): RepoTree {
     const rel = String(target).replace(/\\/g, '/').replace(/^.*\/repo\//, '');
     return files[rel] ?? '';
   });
+  // `readText(..., { maxBytes })` stats the file first; every fixture file is a small regular file.
+  vi.mocked(fs.statSync).mockImplementation(((target: unknown) => {
+    const rel = String(target).replace(/\\/g, '/').replace(/^.*\/repo\//, '');
+    return { isFile: () => true, size: (files[rel] ?? '').length };
+  }) as unknown as typeof fs.statSync);
   return new RepoTree('/repo', { knownPaths, knownPathsComplete: true });
 }
 
@@ -364,6 +369,99 @@ describe('detectSecurityPack', () => {
       const unignoredIssue = issues.find((i) => i.id === 'security-pack-unignored-dirs');
       expect(unignoredIssue).toBeDefined();
       expect(unignoredIssue?.evidence.some((e) => e.includes('"build"'))).toBe(true);
+    });
+
+    // #161: in a 43-repository corpus `bin` fired on 5 repositories, every time
+    // for one hand-written, tracked entry script. These are those five shapes.
+    const unignored = (files: Record<string, string>) =>
+      detectSecurityPack({ ...mockContext, tree: repo({ '.gitignore': '.promptci/', ...files }), files: [makeFile('# Rules')] })
+        .find((i) => i.id === 'security-pack-unignored-dirs');
+
+    it.each([
+      ['a CLI entry point', { 'package.json': '{"name":"x"}', 'bin/cli.mjs': '#!/usr/bin/env node' }],
+      ['the target of package.json "bin"', { 'package.json': '{"name":"x","bin":"bin/mcp-read-website.js"}', 'bin/mcp-read-website.js': '' }],
+      ['an extensionless CLI script', { 'package.json': '{"name":"s3p"}', 'bin/s3p': '#!/usr/bin/env node' }],
+      ['a shell entry point with no manifest', { 'bin/locca': '#!/bin/sh' }],
+      ['the WordPress test installer', { 'composer.json': '{}', 'bin/install-wp-tests.sh': '#!/usr/bin/env bash' }],
+    ])('does NOT report a source bin/ holding %s', (_label, files) => {
+      expect(unignored(files)).toBeUndefined();
+    });
+
+    it('still reports bin/ and obj/ next to a .NET project file', () => {
+      const issue = unignored({ 'App.csproj': '<Project />', 'bin/': '', 'obj/': '' });
+      expect(issue?.evidence).toEqual([
+        'Directory "bin" exists but is not ignored in .gitignore.',
+        'Directory "obj" exists but is not ignored in .gitignore.',
+      ]);
+    });
+
+    it('still reports bin/ next to a Gradle or Maven build, but not obj/', () => {
+      for (const build of ['build.gradle', 'build.gradle.kts', 'pom.xml']) {
+        const issue = unignored({ [build]: '', 'bin/': '', 'obj/': '' });
+        expect(issue?.evidence, build).toEqual(['Directory "bin" exists but is not ignored in .gitignore.']);
+      }
+    });
+
+    it.each([
+      ['a pom.xml', { 'pom.xml': '<project/>' }],
+      ['a .csproj', { 'App.csproj': '<Project />' }],
+      ['Directory.Build.props', { 'Directory.Build.props': '<Project />' }],
+    ])('does NOT report a bin/ that package.json names as a bin target, even beside %s', (_label, marker) => {
+      expect(unignored({ ...marker, 'package.json': '{"bin":{"x":"./bin/cli.js"}}', 'bin/cli': 'binary-looking' })).toBeUndefined();
+      expect(unignored({ ...marker, 'package.json': '{"bin":"bin/x"}', 'bin/x': 'MZ' })).toBeUndefined();
+    });
+
+    it.each([
+      ['a shebang script', { 'bin/tool': '#!/usr/bin/env node\nconsole.log(1)' }],
+      ['a script extension', { 'bin/build.sh': 'echo hi' }],
+      ['a Node entry point', { 'bin/cli.js': 'require("./x")' }],
+    ])('does NOT report a bin/ holding %s beside a .NET or JVM build file', (_label, files) => {
+      for (const marker of ['pom.xml', 'Directory.Build.props']) {
+        expect(unignored({ [marker]: '<x/>', ...files }), marker).toBeUndefined();
+      }
+    });
+
+    it.each([
+      ['malformed JSON', '{"bin": "bin/x",'],
+      ['a JSON array', '[]'],
+    ])('does NOT report bin/ beside a build file when package.json is %s (it may name bin/)', (_label, body) => {
+      expect(unignored({ 'pom.xml': '<project/>', 'package.json': body, 'bin/Debug/App.dll': 'MZ' })).toBeUndefined();
+    });
+
+    it('a package.json bin target that climbs out of bin/ does not make bin/ source', () => {
+      const issue = unignored({ 'pom.xml': '<project/>', 'package.json': '{"bin":{"x":"bin/../dist/cli.js"}}', 'bin/Debug/App.class': 'x' });
+      expect(issue?.evidence).toEqual(['Directory "bin" exists but is not ignored in .gitignore.']);
+      expect(unignored({ 'pom.xml': '<project/>', 'package.json': '{"bin":"./bin/./cli.js"}', 'bin/Debug/App.class': 'x' })).toBeUndefined();
+    });
+
+    it('does NOT report a bin/ beside a build file when its contents cannot be listed', () => {
+      const tree = repo({ '.gitignore': '.promptci/', 'pom.xml': '<project/>', 'bin/Debug/App.class': 'x' });
+      const list = tree.entries.bind(tree);
+      tree.entries = ((candidate: string) => (candidate === 'bin' ? 'unreadable' : list(candidate))) as typeof tree.entries;
+      const issues = detectSecurityPack({ ...mockContext, tree, files: [makeFile('# Rules')] });
+      expect(issues.find((i) => i.id === 'security-pack-unignored-dirs')).toBeUndefined();
+    });
+
+    it('an extensionless file without #! (a compiled apphost) does not make bin/ source', () => {
+      const issue = unignored({ 'App.csproj': '<Project />', 'bin/App': 'MZ\u0090\u0000' });
+      expect(issue?.evidence).toEqual(['Directory "bin" exists but is not ignored in .gitignore.']);
+    });
+
+    it('a well-formed package.json without a bin target does not block a build-output bin/', () => {
+      const issue = unignored({ 'pom.xml': '<project/>', 'package.json': '{"name":"x"}', 'bin/Debug/App.class': 'x' });
+      expect(issue?.evidence).toEqual(['Directory "bin" exists but is not ignored in .gitignore.']);
+    });
+
+    it('still reports a bin/ of build output (subdirectories, .dll) beside a .NET project file', () => {
+      const issue = unignored({ 'App.csproj': '<Project />', 'bin/Debug/net8.0/App.dll': 'MZ', 'bin/App.pdb': 'x' });
+      expect(issue?.evidence).toEqual(['Directory "bin" exists but is not ignored in .gitignore.']);
+      expect(issue?.autoApplySafe).toBe(true);
+    });
+
+    it('reports dist/ beside a source bin/ and proposes ignoring only dist/', () => {
+      const issue = unignored({ 'package.json': '{"name":"x","bin":"bin/cli.mjs"}', 'bin/cli.mjs': '', 'dist/': '' });
+      expect(issue?.evidence).toEqual(['Directory "dist" exists but is not ignored in .gitignore.']);
+      expect(issue?.fixRecipe).toBe('echo "dist/" >> .gitignore');
     });
 
     it('still recognizes a genuine exact "dist" gitignore entry as ignoring it', () => {

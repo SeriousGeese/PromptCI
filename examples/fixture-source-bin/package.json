@@ -1,0 +1,6 @@
+{
+  "name": "fixture-source-bin",
+  "private": true,
+  "bin": { "fixture-cli": "bin/cli.mjs" },
+  "scripts": { "test": "node --test" }
+}

@@ -1,0 +1,4 @@
+node_modules/
+**/.promptci/*
+!**/.promptci/baseline.json
+!**/.promptci/config.json
