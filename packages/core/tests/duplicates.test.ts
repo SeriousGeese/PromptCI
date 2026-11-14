@@ -1047,6 +1047,9 @@ describe('detectDuplicates — mirrored instruction files', () => {
       fs.cpSync(MIRROR_FIXTURE, root, { recursive: true });
       const report = await scan({ repoPath: root });
       const issue = report.issues.find((i) => i.title.startsWith('Possible mirrored instruction files'))!;
+      // Same id as the scan of the fixture in place: it hashes repo-relative paths, not the checkout location.
+      const inPlace = (await scan({ repoPath: MIRROR_FIXTURE })).issues.find((i) => i.title === issue.title)!;
+      expect(issue.id).toBe(inPlace.id);
       const changes = await applyFixRecipe(issue, root);
       expect(changes.map((c) => path.basename(c.filePath)).sort()).toEqual(['CLAUDE.md', 'GEMINI.md']);
       for (const change of changes) {
