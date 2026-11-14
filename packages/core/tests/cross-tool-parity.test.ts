@@ -246,6 +246,16 @@ describe('what is compared', () => {
     ).toHaveLength(1);
   });
 
+  it('keeps any other hidden directory as a scope of its own', () => {
+    expect(
+      detectCrossToolParity([
+        agents('Use `pnpm install`.\n'),
+        file('.config/tooling/CLAUDE.md', 'Use `npm install`.\n', 'claude'),
+        file('.devcontainer/AGENTS.md', 'Use `yarn install`.\n', 'agents'),
+      ]),
+    ).toEqual([]);
+  });
+
   it('puts a tool directory in the scope that holds it', () => {
     expect(detectCrossToolParity([agents('Use `pnpm install`.\n'), copilot('Use `npm install`.\n')])).toHaveLength(1);
   });

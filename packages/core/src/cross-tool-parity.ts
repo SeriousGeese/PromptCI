@@ -76,9 +76,16 @@ type FileFacts = {
 function scopeOf(file: InstructionFile): string {
   const segments = fileIdPath(file).split('/');
   const dirs = segments.slice(0, -1);
-  const dot = dirs.findIndex((s) => s.startsWith('.'));
-  return (dot === -1 ? dirs : dirs.slice(0, dot)).join('/');
+  const tool = dirs.findIndex((s) => TOOL_DIRS.has(s));
+  return (tool === -1 ? dirs : dirs.slice(0, tool)).join('/');
 }
+
+/**
+ * Directories that hold one tool's instruction files and belong to the scope
+ * above them. Any other hidden directory (`.config/`, `.devcontainer/`) is a
+ * scope of its own: stripping it would compare unrelated files.
+ */
+const TOOL_DIRS: ReadonlySet<string> = new Set(['.github', '.cursor', '.windsurf', '.clinerules', '.claude', '.gemini', '.codex']);
 
 /** Cursor `globs:` / Copilot `applyTo:` frontmatter: the rules cover part of the tree only. */
 function isGlobScoped(content: string): boolean {
