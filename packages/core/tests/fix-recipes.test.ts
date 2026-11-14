@@ -336,8 +336,11 @@ describe('command_validity: no rewrite where the surroundings change what the co
     await advisory('# Agents\n\nRun `cd site && npm run bulid` first.\n', { 'site/package.json': MANIFEST });
   });
 
-  it('with a directory flag', async () => {
+  it('with a directory flag, spaced, attached or with an equals sign', async () => {
     await advisory('# Agents\n\n```bash\nnpm run --prefix site bulid\n```\n', { 'site/package.json': MANIFEST });
+    await advisory('# Agents\n\n```bash\npnpm -Csite run bulid\n```\n', { 'site/package.json': MANIFEST });
+    await advisory('# Agents\n\n```bash\npnpm -C site run bulid\n```\n', { 'site/package.json': MANIFEST });
+    await advisory('# Agents\n\n```bash\nyarn --cwd=site bulid\n```\n', { 'site/package.json': MANIFEST });
   });
 
   it('near text that names the directory it runs from', async () => {

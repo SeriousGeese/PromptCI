@@ -61,7 +61,8 @@ function editBlocker(
   if (comments.has(cmd.line)) return 'inside an HTML comment';
   if (!cmd.fenced && /^(?: {4}|\t)/.test(lines[cmd.line - 1] ?? '')) return 'in an indented block';
   if (typeof cmd.cwd === 'string' && cmd.cwd !== '.' && cmd.cwd !== '') return 'run from another directory';
-  if (/\s(?:--cwd|--dir|--prefix|-C)(?:\s|=)/.test(cmd.text)) return 'run from another directory';
+  // `-C site`, `-Csite`, `--cwd site`, `--cwd=site`.
+  if (/\s(?:--cwd|--dir|--prefix)(?:\s|=)|\s-C/.test(cmd.text)) return 'run from another directory';
   if (textNamedDirs(lines, cmd.line, fileDir.startsWith('..') ? '.' : fileDir, tree).length > 0) {
     return 'near text that names a directory it may run from';
   }
