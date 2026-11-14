@@ -3,7 +3,7 @@
 ## Commands
 
 Install dependencies with `npm install`.
-Run the tests with `npm run test:unit`.
+Run the tests with `npx jest`.
 
 ## Layout
 

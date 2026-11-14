@@ -120,7 +120,7 @@ export const DETECTORS: DetectorDefinition[] = [
   },
   {
     id: 'cross-tool-parity',
-    run: (context) => detectCrossToolParity(context.files),
+    run: (context) => detectCrossToolParity(context.files, { manifestPackageManager: context.packageJson.packageManagerName }),
   },
   {
     id: 'ci-alignment',

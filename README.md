@@ -165,6 +165,9 @@ The score is self-reported by your own scan; regenerate the file in CI to keep i
 
 - Duplicate instruction sections, within and across files
 - Conflicting directives (do/don't pairs, competing framework or version choices)
+- Cross-tool disagreement: a tool's own instruction file (CLAUDE.md, `.cursorrules`, Copilot, Gemini)
+  that names a different package manager or test runner than AGENTS.md, or tells the reader to edit
+  a path AGENTS.md rules out. Reported as `info` and not counted in the health score.
 - Context bloat (file-size thresholds, token budget checks)
 - Stale instructions (old years, dated TODOs, deprecated wording, outdated versions)
 - Missing setup/validation commands and project-specific guidance
