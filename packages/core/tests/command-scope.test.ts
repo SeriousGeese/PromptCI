@@ -183,7 +183,7 @@ describe('a manifest that was listed but not read says nothing (hosted scans)', 
 
   it('offers no edit when the manifest walk hit its directory limit', async () => {
     const dirs: Record<string, string> = {};
-    for (let i = 0; i < 420; i++) dirs[`d${String(i).padStart(3, '0')}/keep.txt`] = 'x';
+    for (let i = 0; i < 1100; i++) dirs[`d${String(i).padStart(3, '0')}/keep.txt`] = 'x';
     const issues = await findings({ 'package.json': ROOT, ...dirs, 'CLAUDE.md': '# P\n\n```sh\nnpm run buil\n```\n' });
     expect(brief(issues)).toEqual(['warning:npm run buil']);
     noEdit(issues);
@@ -214,7 +214,8 @@ describe('a manifest that was listed but not read says nothing (hosted scans)', 
       'site/package.json': pkg({ dev: 'x' }, { padding }),
       'CLAUDE.md': '## Site (from `site/`)\n\n```sh\nnpm run dev\n```\n',
     });
-    expect(issues.every((i) => !i.summary.includes('does not appear'))).toBe(true);
+    // Oversized is treated like listed-but-not-downloaded: nothing to report, no warning that could fail a user's CI.
+    expect(issues).toEqual([]);
   });
 });
 
@@ -261,6 +262,110 @@ describe('placeholders, comments and cautionary text', () => {
   it('still rewrites an ordinary typo in a fence', async () => {
     const issues = await findings({ 'package.json': ROOT, 'CLAUDE.md': '## Checks\n\n```sh\nnpm run lintt\n```\n' });
     expect(issues[0]!.autoApplySafe).toBe(true);
+  });
+});
+
+describe('an unattended edit is default-deny (re-review of #170)', () => {
+  const base = { 'package.json': pkg({ build: 'x', lint: 'x' }), 'site/package.json': pkg({ deploy: 'x', dev: 'x' }) };
+
+  it.each([
+    ['a heading that names the directory and mentions the repo root', '## Site (from `site/`; paths are relative to the repo root)\n\n```sh\nnpm run buil\n```\n'],
+    ['a lead-in that says not the repo root', 'Run these from `site/`, not from the repo root:\n\n```sh\nnpm run buil\n```\n'],
+    ['a parent heading that names the directory', '# Site (`site/`)\n\n## Commands\n\n```sh\nnpm run buil\n```\n'],
+  ])('offers no edit under %s', async (_name, body) => {
+    const issues = await findings({ ...base, 'CLAUDE.md': body });
+    expect(brief(issues)).toEqual(['warning:npm run buil']);
+    noEdit(issues);
+  });
+
+  it.each([
+    ['a lead-in that says not the repo root', 'Run these from `site/`, not from the repo root:\n\n```sh\nnpm run dev\n```\n'],
+    ['a heading that says not the repo root', '### Site (from `site/` directory, not the repo root)\n\n```sh\nnpm run dev\n```\n'],
+    ['a heading that mentions the repo root in passing', '## Site (from `site/`; paths are relative to the repo root)\n\n```sh\nnpm run dev\n```\n'],
+  ])('reports nothing for a script the named directory defines, under %s', async (_name, body) => {
+    expect(await findings({ ...base, 'CLAUDE.md': body })).toEqual([]);
+  });
+
+  it.each([
+    ['a curly apostrophe', 'Don’t run `npm run bulid`.\n'],
+    ['a straight apostrophe', "Don't run `npm run bulid`.\n"],
+    ['a cross mark', '❌ `pnpm lnit`\n'],
+    ['"Not this:"', 'Not this: `pnpm typecheckk`\n'],
+    ['strikethrough', 'Old: ~~`pnpm lnit`~~\n'],
+    ['a comment above it in the block', '```sh\n# typo that breaks CI:\nnpm run bulid\n```\n'],
+    ['a lead-in sentence that warns', 'This is wrong:\n\n```sh\nnpm run bulid\n```\n'],
+  ])('offers no edit after %s', async (_name, body) => {
+    const issues = await findings({ 'package.json': pkg({ build: 'x', lint: 'x', typecheck: 'x' }), 'CLAUDE.md': `# P\n\n${body}` });
+    expect(issues.length).toBeGreaterThan(0);
+    noEdit(issues);
+  });
+
+  it('offers no edit after a cd earlier in the same block', async () => {
+    const issues = await findings({
+      ...base,
+      'CLAUDE.md': '# P\n\n```sh\ncd tools\nnpm install\ncd ..\nnpm run buil\n```\n',
+      'tools/package.json': pkg({ x: 'x' }),
+    });
+    expect(brief(issues)).toEqual(['warning:npm run buil']);
+    noEdit(issues);
+  });
+
+  it('offers no edit when another package defines the exact name, even said to run from the root', async () => {
+    const issues = await findings({
+      'package.json': pkg({ build: 'x' }),
+      'tools/package.json': pkg({ buld: 'x' }),
+      'CLAUDE.md': '# P\n\nFrom the repo root run `npm run buld`.\n',
+    });
+    expect(brief(issues)).toEqual(['warning:npm run buld']);
+    noEdit(issues);
+  });
+
+  it('keeps the edit for a plain typo with nothing to doubt', async () => {
+    const issues = await findings({ 'package.json': pkg({ build: 'x', lint: 'x' }), 'CLAUDE.md': '## Checks\n\nRun `npm run bild` before you push.\n' });
+    expect(issues[0]!.autoApplySafe).toBe(true);
+  });
+
+  it('is not turned off by a deep directory with a subdirectory (the walk depth is a bound, not an unread manifest)', async () => {
+    const issues = await findings({
+      'package.json': pkg({ build: 'x', lint: 'x' }),
+      'src/a/b/c/d/e/f.ts': 'x',
+      'CLAUDE.md': '## Checks\n\nRun `npm run bild` before you push.\n',
+    });
+    expect(issues[0]!.autoApplySafe).toBe(true);
+  });
+});
+
+describe('what a list lead-in, a cd and a subshell say about the directory (re-review of #170)', () => {
+  const base = { 'package.json': pkg({ build: 'x', lint: 'x' }), 'site/package.json': pkg({ deploy: 'x', dev: 'x' }) };
+
+  it('reads the sentence that introduces a bullet list', async () => {
+    const issues = await findings({ ...base, 'CLAUDE.md': '# P\n\nThese run from `site/`:\n\n- `npm run dev`\n- `npm run deploy`\n' });
+    expect(issues).toEqual([]);
+  });
+
+  it('carries a cd within one block, so the note does not claim nothing names the directory', async () => {
+    const issues = await findings({ ...base, 'CLAUDE.md': '# P\n\n```sh\ncd site\nnpm run dev\n```\n' });
+    expect(issues).toEqual([]);
+  });
+
+  it('does not carry a cd that was undone', async () => {
+    const issues = await findings({ ...base, 'CLAUDE.md': '# P\n\n```sh\ncd site\ncd ..\nnpm run dev\n```\n' });
+    expect(brief(issues)).toEqual(['info:npm run dev']);
+  });
+
+  it('strips the parentheses of a subshell: `(cd site && npm run dev)`', async () => {
+    const issues = await findings({ ...base, 'CLAUDE.md': '# P\n\n```sh\n(cd site && npm run dev)\n```\n' });
+    expect(issues).toEqual([]);
+  });
+
+  it('says a root phrase in the command\'s own sentence wins over a directory in another sentence', async () => {
+    const issues = await findings({ ...base, 'CLAUDE.md': '# P\n\nThe pages live in `site/`. At the repo root run `npm run dev`.\n' });
+    expect(brief(issues)).toEqual(['warning:npm run dev']);
+  });
+
+  it('does not count a negated root phrase', async () => {
+    const issues = await findings({ ...base, 'CLAUDE.md': '# P\n\nNot from the repo root, but from `site/`: `npm run dev`.\n' });
+    expect(issues).toEqual([]);
   });
 });
 

@@ -280,7 +280,7 @@ describe('command_validity: mistyped script with one close match', () => {
       expect(issues[0]!.autoApplySafe).toBeUndefined();
     });
 
-    it('still applies when every selected package defines the candidate', async () => {
+    it('names the candidate but offers no edit when every selected package defines it', async () => {
       const repo = repoWith({
         ...workspace,
         'packages/a/package.json': JSON.stringify({ name: 'a', scripts: { lint: 'eslint .' } }),
@@ -289,8 +289,11 @@ describe('command_validity: mistyped script with one close match', () => {
       });
       const issues = commandIssues(await issuesIn(repo));
       expect(issues).toHaveLength(1);
-      expect(issues[0]!.autoApplySafe).toBe(true);
-      expect(await applyAll(repo, issues, 'AGENTS.md')).toContain('pnpm --filter "packages/*" lint');
+      // Default-deny (pcic-1ik0.2): the closest name must come from the ROOT manifest, and here it
+      // comes from the selected workspaces, so it is named in the recommendation and never applied.
+      expect(issues[0]!.autoApplySafe).toBeUndefined();
+      expect(issues[0]!.fixEdits).toBeUndefined();
+      expect(issues[0]!.recommendation).toContain('lint');
     });
   });
 

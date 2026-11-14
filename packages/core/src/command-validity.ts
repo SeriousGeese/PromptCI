@@ -11,7 +11,7 @@ import { RepoTree, incompleteCheckIssue, isAbsoluteAnywhere, treeFor } from './r
 import { closestUniqueMatch, isMechanicalRename } from './close-match.js';
 import { htmlCommentLines } from './sample-text.js';
 import { commandContext, directoryTokens, lineStructure } from './command-context.js';
-import type { CommandContext } from './command-context.js';
+import type { CommandContext, LineStructure } from './command-context.js';
 import type { Lookup, UncheckedRef } from './repo-tree.js';
 
 /**
@@ -39,28 +39,41 @@ import type { Lookup, UncheckedRef } from './repo-tree.js';
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /**
- * pcic-1ik0.2: why an otherwise mechanical script rewrite must not be applied
- * unseen, in words that complete "this command is ..."; `undefined` when
- * nothing about where the command sits changes what it means. An edit is
- * applied without a person looking, on a repository that is not ours, so each
- * of these withholds it and leaves the finding with a hint.
+ * pcic-1ik0.2: why a script rewrite must NOT be applied unseen, as a clause that
+ * completes "it may be what was meant, but ...": `undefined` only when every
+ * condition for an unattended edit holds. An edit lands without a person looking,
+ * on a repository that is not ours, so the rule is default-deny: a missed fix
+ * costs nothing, a wrong one lands in a stranger's repo. The edit is offered only
+ * when ALL of these hold:
+ *  - the command is not in a comment or an indented block, and runs from the root:
+ *    no `cd` before it in its block, no `--cwd`/`--prefix`/`-C`;
+ *  - no directory is named in its own line, its introducing paragraph or list
+ *    lead-in, the comment lines above it, or any heading above it (whatever else
+ *    the text says about roots);
+ *  - nothing in that text is cautionary or negating (a bad example, a warning);
+ *  - every manifest was read and no other package defines the name;
+ *  - the single closest name is in the ROOT manifest.
  */
 function editBlocker(
   cmd: ExtractedCommand,
   lines: readonly string[],
   inComment: boolean,
   context: CommandContext,
-  hintDirs: readonly string[],
-  uncertain: boolean,
+  namedDirs: readonly string[],
+  earlierCd: boolean,
+  unsure: string | undefined,
+  viaRoot: boolean,
 ): string | undefined {
-  if (inComment) return 'inside an HTML comment';
-  if (!cmd.fenced && /^(?: {4}|\t)/.test(lines[cmd.line - 1] ?? '')) return 'in an indented block';
-  if (typeof cmd.cwd === 'string' && cmd.cwd !== '.' && cmd.cwd !== '') return 'run from another directory';
+  if (inComment) return 'this command is inside an HTML comment';
+  if (!cmd.fenced && /^(?: {4}|\t)/.test(lines[cmd.line - 1] ?? '')) return 'this command is in an indented block';
+  if (typeof cmd.cwd === 'string' && cmd.cwd !== '.' && cmd.cwd !== '') return 'this command runs from another directory';
   // `-C site`, `-Csite`, `--cwd site`, `--cwd=site`.
-  if (/\s(?:--cwd|--dir|--prefix)(?:\s|=)|\s-C/.test(cmd.text)) return 'run from another directory';
-  if (context.cautionary) return 'shown as an example not to follow, or as a warning';
-  if (!context.explicitRoot && hintDirs.length > 0) return 'near text that names a directory it may run from';
-  if (uncertain) return 'checked against a repository that was only partly read';
+  if (/\s(?:--cwd|--dir|--prefix)(?:\s|=)|\s-C/.test(cmd.text)) return 'this command runs from another directory';
+  if (earlierCd) return 'an earlier line of its block changes directory';
+  if (context.cautionary) return 'the text around this command reads as an example not to follow, or as a warning';
+  if (namedDirs.length > 0) return 'the text around this command names a directory it may run from';
+  if (unsure) return unsure;
+  if (!viaRoot) return 'the closest name is not in the root manifest';
   return undefined;
 }
 
@@ -106,6 +119,8 @@ type ScriptSuggestion = {
    * recommendation for a human to confirm.
    */
   mechanical: boolean;
+  /** The candidate came from the ROOT manifest. Only then may an edit be offered (pcic-1ik0.2: default-deny). */
+  viaRoot: boolean;
 };
 
 /**
@@ -122,6 +137,8 @@ type ScriptRewrite = {
   candidate: string;
   /** See {@link ScriptSuggestion.mechanical}. */
   mechanical: boolean;
+  /** See {@link ScriptSuggestion.viaRoot}. */
+  viaRoot: boolean;
 };
 
 /** Separators in a documented path: `/` everywhere, `\` too where the platform treats it as one. */
@@ -206,8 +223,10 @@ function readPackageScripts(
   // "cannot read" answers stay apart: `unreadable` is a real failure the scan
   // should name, `unfetched` is nothing to name (see RepoTree.readText).
   const read = tree.readText(packageJsonPath, { maxBytes: MAX_MANIFEST_BYTES });
-  if (read.state === 'unreadable' || read.state === 'too-large') return 'unreadable';
-  if (read.state === 'unfetched') return 'unfetched';
+  if (read.state === 'unreadable') return 'unreadable';
+  // Oversized is treated like listed-but-not-downloaded (pcic-1ik0.2): the scripts are unknown,
+  // not absent, and there is nothing a user could fix, so no finding and no warning.
+  if (read.state === 'unfetched' || read.state === 'too-large') return 'unfetched';
   if (read.state !== 'found') return null;
   try {
     const raw = read.content;
@@ -242,8 +261,8 @@ type ScriptScope = {
   explicitRoot?: boolean;
   /** Called with the other package directories that define the script, when only those do. */
   elsewhere?: (script: string, dirs: string[]) => void;
-  /** Called when the verdict rests on a repository that was only partly read (an unfetched or unreachable manifest). */
-  partial?: () => void;
+  /** Called with a clause saying why no edit may be offered: the verdict rests on a repository that was only partly read, or another package defines the name. */
+  noEdit?: (reason: string) => void;
 };
 
 /**
@@ -253,7 +272,7 @@ type ScriptScope = {
 const SCRIPT_PATTERN_RE = /[*?<>{}[\]$`]|%\w+%/;
 
 /** Directories walked looking for package.json files, and how deep: bounded so a huge repo cannot stall a scan. */
-const MAX_MANIFEST_DIRS = 400;
+const MAX_MANIFEST_DIRS = 1000;
 const MAX_MANIFEST_DEPTH = 5;
 
 type PackageIndex = {
@@ -298,10 +317,8 @@ function packageIndex(tree: RepoTree): PackageIndex {
       const entry = listing.get(name)!;
       if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
       if (name === 'node_modules' || name.startsWith('.')) continue;
-      if (depth >= MAX_MANIFEST_DEPTH) {
-        index.incomplete = true;
-        continue;
-      }
+      // The depth bound is a rule of the check, not a manifest it could not reach.
+      if (depth >= MAX_MANIFEST_DEPTH) continue;
       queue.push({ dir: dir ? `${dir}/${name}` : name, depth: depth + 1 });
     }
   }
@@ -537,6 +554,35 @@ function resolveCwd(current: string | null, target: string): string | null {
 }
 
 /**
+ * pcic-1ik0.2: what the earlier lines of the fenced block holding line `line` do to
+ * the working directory: whether any `cd`, `pushd` or `popd` came first, and the
+ * directory they leave (`null` when it cannot be known). The detector still judges
+ * each line from the root (CV6); this only feeds the text-names-a-directory logic
+ * and withholds edits.
+ */
+function earlierCd(s: LineStructure, line: number): { any: boolean; dir: string | null } {
+  const open = s.opener.get(line);
+  let dir: string | null = '.';
+  let any = false;
+  if (open === undefined) return { any, dir };
+  for (let n = open + 1; n < line; n++) {
+    const text = (s.lines[n - 1] ?? '').trim().replace(/^\$\s*/, '');
+    if (!text || text.startsWith('#')) continue;
+    for (const segment of splitOnAmpersand(text)) {
+      const change = /^(?:cd|pushd)\s+(.+)$/.exec(segment);
+      if (change) {
+        any = true;
+        dir = resolveCwd(dir, change[1]!.trim());
+      } else if (/^(?:cd|pushd|popd)$/.test(segment) || segment.startsWith('popd ')) {
+        any = true;
+        dir = null;
+      }
+    }
+  }
+  return { any, dir };
+}
+
+/**
  * Splits a command string on `&&`, `||`, `;`, and newlines, yielding
  * individual segments. This allows a single `run:` block or backtick
  * expression like `pnpm lint && pnpm test` — or `pnpm lint; pnpm bogus`, or
@@ -550,8 +596,16 @@ function resolveCwd(current: string | null, target: string): string | null {
 function splitOnAmpersand(cmd: string): string[] {
   return cmd
     .split(/&&|\|\||;|\n/)
-    .map((s) => s.trim())
+    .map((s) => unwrapSubshell(s.trim()))
     .filter(Boolean);
+}
+
+/** `(cd site` and `npm run dev)`: the parentheses of a subshell belong to the shell, not to a word of the command. */
+function unwrapSubshell(segment: string): string {
+  let out = segment;
+  while (out.startsWith('(')) out = out.slice(1).trim();
+  while (out.endsWith(')') && (out.match(/\)/g)?.length ?? 0) > (out.match(/\(/g)?.length ?? 0)) out = out.slice(0, -1).trim();
+  return out;
 }
 
 /** Returns true if a text looks like it could be a shell command to validate. */
@@ -823,11 +877,11 @@ function findMissingScript(
    * without discovered workspaces to resolve it against — the candidate pool
    * would then be the root manifest, which is not where the script would run.
    */
-  const propose = (name: string, pool: Iterable<string>): void => {
+  const propose = (name: string, pool: Iterable<string>, viaRoot = false): void => {
     if (!suggest || names.length !== 1) return;
     const candidate = closestUniqueMatch(name, pool);
     if (candidate !== undefined) {
-      suggest({ missing: name, candidate, mechanical: isMechanicalRename(name, candidate) });
+      suggest({ missing: name, candidate, mechanical: isMechanicalRename(name, candidate), viaRoot });
     }
   };
   const scopedToWorkspaces = selector !== undefined || allWorkspaces;
@@ -921,10 +975,14 @@ function findMissingScript(
           pendingElsewhere ??= { name, dirs: elsewhere };
           continue;
         }
+      } else if (packagesDefining(context, tree, name).length > 0) {
+        // Said to run at the root, and it is missing there: a warning. But the name exists in
+        // another package, so the closest root name is not a safe correction.
+        scope?.noEdit?.('another package defines a script of exactly that name');
       }
       // Defined nowhere that was read; a manifest that was not read could still define it.
-      if (manifestsPartlyRead(tree)) scope?.partial?.();
-      propose(name, Object.keys(context.packageJson.scripts));
+      if (manifestsPartlyRead(tree)) scope?.noEdit?.('part of the repository was not read');
+      propose(name, Object.keys(context.packageJson.scripts), true);
     }
     return `${tool} script "${name}" does not appear in package.json scripts`;
   }
@@ -1014,13 +1072,14 @@ function validatePackageManagerScript(
   // (`npm run bulid`, `pnpm --filter web lnit`) rather than a bare word.
   const prefix = parts.slice(0, nameIdx).join(' ');
   const onSuggestion = suggest
-    ? ({ missing, candidate, mechanical }: ScriptSuggestion): void =>
+    ? ({ missing, candidate, mechanical, viaRoot }: ScriptSuggestion): void =>
         suggest({
           find: prefix ? `${prefix} ${missing}` : missing,
           replace: prefix ? `${prefix} ${candidate}` : candidate,
           missing,
           candidate,
           mechanical,
+          viaRoot,
         })
     : undefined;
 
@@ -1321,13 +1380,21 @@ function computeCommandAnalysis(context: RepoContext): CommandAnalysis {
       const cwd = cmd.cwd === undefined ? '.' : cmd.cwd;
       let rewrite: ScriptRewrite | undefined;
       let elsewhere: { script: string; dirs: string[] } | undefined;
-      let partial = false;
+      let noEditReason: string | undefined;
       // pcic-1ik0.2: what the text around the command says, read only when it is needed.
+      const namesDirectory = (text: string): boolean => resolveHintDirs(directoryTokens([text]), nearDir, tree).length > 0;
       let framing: CommandContext | undefined;
-      const framingOf = (): CommandContext => (framing ??= commandContext(structure, cmd.line));
+      const framingOf = (): CommandContext =>
+        (framing ??= commandContext(structure, cmd.line, cmd.text, namesDirectory));
+      const blockCd = earlierCd(structure, cmd.line);
+      const blockDirs = (): string[] =>
+        blockCd.dir !== null && blockCd.dir !== '.' ? resolveHintDirs([blockCd.dir], nearDir, tree) : [];
       let hints: string[] | undefined;
       const hintDirs = (): string[] =>
-        (hints ??= cwd === '.' ? resolveHintDirs(directoryTokens(framingOf().text), nearDir, tree) : []);
+        (hints ??=
+          cwd === '.'
+            ? [...new Set([...blockDirs(), ...resolveHintDirs(directoryTokens(framingOf().text), nearDir, tree)])]
+            : []);
       const error = validateSegment(cmd.text, context, cwd, (name) => evaluated.add(`${cmd.line}:${name}`), {
         fenced: cmd.fenced === true,
         makefileFor,
@@ -1339,7 +1406,7 @@ function computeCommandAnalysis(context: RepoContext): CommandAnalysis {
           hintDirs,
           get explicitRoot() { return cwd === '.' && framingOf().explicitRoot; },
           elsewhere: (script, dirs) => { elsewhere = { script, dirs }; },
-          partial: () => { partial = true; },
+          noEdit: (reason) => { noEditReason ??= reason; },
         },
       });
       if (!error) continue;
@@ -1373,7 +1440,16 @@ function computeCommandAnalysis(context: RepoContext): CommandAnalysis {
       const mechanical =
         rewrite?.mechanical === true && countOnLine(contentLines[cmd.line - 1] ?? '', rewrite.find) === 1;
       const editContext = mechanical
-        ? editBlocker(cmd, contentLines, commentLines[cmd.line - 1] === true, framingOf(), hintDirs(), partial)
+        ? editBlocker(
+            cmd,
+            contentLines,
+            commentLines[cmd.line - 1] === true,
+            framingOf(),
+            [...new Set([...blockDirs(), ...resolveHintDirs(directoryTokens(framingOf().editText), nearDir, tree)])],
+            blockCd.any,
+            noEditReason,
+            rewrite?.viaRoot === true,
+          )
         : undefined;
       const fix = mechanical && editContext === undefined ? rewrite : undefined;
       // A candidate too close to a different script to apply is still worth
@@ -1383,7 +1459,7 @@ function computeCommandAnalysis(context: RepoContext): CommandAnalysis {
         rewrite && !fix
           ? ` The manifest defines "${rewrite.candidate}", which is close to "${rewrite.missing}"; ` +
             (editContext
-              ? `it may be what was meant, but this command is ${editContext}, so it was left unedited; check before changing it.`
+              ? `it may be what was meant, but ${editContext}, so it was left unedited; check before changing it.`
               : 'it may be what was meant, but it is near enough to be a different script, so check before changing it.')
           : '';
 
