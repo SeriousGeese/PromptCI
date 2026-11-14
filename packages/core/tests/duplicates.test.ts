@@ -1,5 +1,13 @@
 import { describe, it, expect } from 'vitest';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { detectDuplicates, normalizeSection } from '../src/duplicates.js';
+import { scan } from '../src/scan.js';
+import { applyFixRecipe } from '../src/fix-engine.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 import type { InstructionFile, InstructionSection } from '../src/types.js';
 
 // ---------------------------------------------------------------------------
@@ -36,6 +44,23 @@ function makeFile(
     charCount: content.length,
     estimatedTokens: Math.round(content.length / 4),
   };
+}
+
+/**
+ * A section only this file has, so a test about one shared section is not a
+ * whole-file mirror (which reports as one mirror finding since pcic-1ik0.5).
+ */
+function ownSection(filePath: string): InstructionSection {
+  return makeSection({
+    text:
+      `## Local notes for ${filePath}\n\nThis file keeps release checklists, on-call rotations and incident ` +
+      'runbook links that no other instruction file repeats, so it is not a copy of any of them.',
+    id: `own-${filePath}`,
+    heading: `Local notes for ${filePath}`,
+    filePath,
+    startLine: 100,
+    endLine: 104,
+  });
 }
 
 // A substantial block of text (>100 normalised chars)
@@ -137,7 +162,7 @@ describe('detectDuplicates', () => {
       startLine: 1,
       endLine: 7,
     });
-    const fileA = makeFile('/repo/CLAUDE.md', [secA]);
+    const fileA = makeFile('/repo/CLAUDE.md', [secA, ownSection('/repo/CLAUDE.md')]);
     const fileB = makeFile('/repo/AGENTS.md', [secB]);
 
     const issues = detectDuplicates([fileA, fileB]);
@@ -216,7 +241,7 @@ describe('detectDuplicates', () => {
       startLine: 5,
       endLine: 11,
     });
-    const fileA = makeFile('/repo/CLAUDE.md', [secA]);
+    const fileA = makeFile('/repo/CLAUDE.md', [secA, ownSection('/repo/CLAUDE.md')]);
     const fileB = makeFile('/repo/AGENTS.md', [secB]);
 
     const [issue] = detectDuplicates([fileA, fileB]);
@@ -264,7 +289,7 @@ describe('detectDuplicates', () => {
     const make3 = (filePath: string) =>
       makeSection({ text: LONG_TEXT_A, id: `s-${filePath}`, heading: 'Testing', filePath, startLine: 1, endLine: 7 });
 
-    const fileA = makeFile('/repo/CLAUDE.md',  [make3('/repo/CLAUDE.md')]);
+    const fileA = makeFile('/repo/CLAUDE.md',  [make3('/repo/CLAUDE.md'), ownSection('/repo/CLAUDE.md')]);
     const fileB = makeFile('/repo/AGENTS.md',  [make3('/repo/AGENTS.md')]);
     const fileC = makeFile('/repo/.github/copilot-instructions.md', [make3('/repo/.github/copilot-instructions.md')]);
 
@@ -893,7 +918,7 @@ describe('detectDuplicates — BUG-003 borderline info-level near-duplicate', ()
     });
 
     const issues = detectDuplicates([
-      makeFile('/repo/AGENTS.md', [secA]),
+      makeFile('/repo/AGENTS.md', [secA, ownSection('/repo/AGENTS.md')]),
       makeFile('/repo/.github/copilot-instructions.md', [secB]),
     ]);
 
@@ -949,12 +974,138 @@ describe('detectDuplicates — BUG-003 borderline info-level near-duplicate', ()
       startLine: 1,
       endLine: 7,
     });
-    const fileA = makeFile('/repo/CLAUDE.md', [secA]);
+    const fileA = makeFile('/repo/CLAUDE.md', [secA, ownSection('/repo/CLAUDE.md')]);
     const fileB = makeFile('/repo/AGENTS.md', [secB]);
 
     const issues = detectDuplicates([fileA, fileB]);
     expect(issues).toHaveLength(1);
     expect(issues[0].evidence.some(e => e.includes('Duplicated size: ~'))).toBe(true);
     expect(issues[0].recommendation).toContain('tokens per session');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// pcic-1ik0.5: mirrored instruction files are ONE warning, not one per section
+// ---------------------------------------------------------------------------
+
+describe('detectDuplicates — mirrored instruction files', () => {
+  const MIRROR_FIXTURE = path.resolve(__dirname, '../../../examples/fixture-mirrored-instructions');
+
+  // Distinct, long-enough section bodies for synthetic files: no two share
+  // enough words to count as near-duplicates of each other.
+  const BODIES: Record<string, string> = {
+    caching: 'Redis keys expire after ten minutes; namespace every key by tenant and never cache personal data or session tokens anywhere.',
+    logging: 'Structured JSON lines go to stdout through pino; include the request id, skip bodies, and redact authorization headers before writing.',
+    routing: 'Fastify plugins register routes under src/routes; each file exports one plugin, validates params with zod schemas, returns typed replies.',
+    billing: 'Stripe webhooks arrive at /hooks/stripe; verify signatures first, store event ids for idempotency, then enqueue invoice reconciliation jobs.',
+    search: 'Meilisearch indexes rebuild nightly from Postgres snapshots; query helpers live in lib/search and paginate with opaque cursor strings.',
+    uploads: 'Browser uploads use presigned S3 URLs that expire quickly; scan objects for malware asynchronously and reject archives over fifty megabytes.',
+    emails: 'Transactional mail renders from MJML templates in emails/; preview them locally with mailpit and localise subject lines through i18next.',
+    payments: 'Refunds require two-person approval recorded in audit_log; amounts are integer cents, currencies ISO codes, and rounding happens server-side only.',
+  };
+  // Said twice so each body clears the 150-character cross-file minimum.
+  const body = (topic: string) => `## ${topic}\n\n${BODIES[topic]}\n\nAgain: ${BODIES[topic]}`;
+  const sectionsFor = (filePath: string, topics: string[]) =>
+    topics.map((topic, i) =>
+      makeSection({ text: body(topic), id: `${filePath}-${topic}`, heading: topic, filePath, startLine: i * 10 + 1, endLine: i * 10 + 8 }),
+    );
+
+  it('reports byte-identical AGENTS.md, CLAUDE.md and GEMINI.md as one warning (fixture)', async () => {
+    const report = await scan({ repoPath: MIRROR_FIXTURE });
+    const dups = report.issues.filter((i) => i.category === 'duplicate');
+    const mirror = dups.filter((i) => i.title.startsWith('Possible mirrored instruction files'));
+    expect(mirror).toHaveLength(1);
+    const issue = mirror[0]!;
+    expect(issue.title).toBe('Possible mirrored instruction files: AGENTS.md, CLAUDE.md, GEMINI.md');
+    expect(issue.severity).toBe('warning');
+    expect(issue.id).toMatch(/^duplicate-[0-9a-f]{12}$/);
+    expect(issue.filePaths.map((p) => path.basename(p))).toEqual(['AGENTS.md', 'CLAUDE.md', 'GEMINI.md']);
+    expect(issue.evidence.slice(0, 3)).toEqual([
+      'AGENTS.md: 4 of 5 sections also appear in another listed file',
+      'CLAUDE.md: 4 of 5 sections also appear in another listed file',
+      'GEMINI.md: 4 of 5 sections also appear in another listed file',
+    ]);
+    expect(issue.recommendation).toContain('Follow AGENTS.md');
+    expect(issue.autoApplySafe).toBe(true);
+
+    // Nothing between the three mirrors is reported per section any more ...
+    const mirrorsOnly = dups.filter(
+      (i) => i !== issue && i.filePaths.length > 1 && i.filePaths.every((p) => /(AGENTS|CLAUDE|GEMINI)\.md$/.test(p)),
+    );
+    expect(mirrorsOnly).toEqual([]);
+    // ... but the section the README also repeats is still its own finding.
+    const readme = dups.find((i) => i.filePaths.some((p) => p.endsWith('README.md')));
+    expect(readme?.title).toBe('Possible duplicate: Contributing (4 files)');
+  });
+
+  it('the consolidation recipe points the copies at AGENTS.md', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'promptci-mirror-'));
+    try {
+      fs.cpSync(MIRROR_FIXTURE, root, { recursive: true });
+      const report = await scan({ repoPath: root });
+      const issue = report.issues.find((i) => i.title.startsWith('Possible mirrored instruction files'))!;
+      const changes = await applyFixRecipe(issue, root);
+      expect(changes.map((c) => path.basename(c.filePath)).sort()).toEqual(['CLAUDE.md', 'GEMINI.md']);
+      for (const change of changes) {
+        expect(change.newContent).toContain('See canonical instructions in [AGENTS.md](./AGENTS.md)');
+        expect(change.newContent).not.toContain('Drizzle ORM');
+      }
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('two files that share one section of several stay a per-section finding', () => {
+    const a = makeFile('/repo/CLAUDE.md', [
+      makeSection({ text: LONG_TEXT_A, id: 'shared-a', heading: 'Testing', filePath: '/repo/CLAUDE.md', startLine: 50, endLine: 57 }),
+      ...sectionsFor('/repo/CLAUDE.md', ['caching', 'logging', 'routing']),
+    ]);
+    const b = makeFile('/repo/AGENTS.md', [
+      makeSection({ text: LONG_TEXT_A, id: 'shared-b', heading: 'Testing', filePath: '/repo/AGENTS.md', startLine: 50, endLine: 57 }),
+      ...sectionsFor('/repo/AGENTS.md', ['billing', 'search', 'uploads']),
+    ]);
+    const issues = detectDuplicates([a, b]);
+    expect(issues).toHaveLength(1);
+    expect(issues[0]!.title).toBe('Possible duplicate: Testing');
+    expect(issues[0]!.severity).toBe('high');
+  });
+
+  it('a file that is mostly a copy of part of a longer one is a mirror', () => {
+    const copied = ['caching', 'logging', 'routing'];
+    const shortFile = makeFile('/repo/AGENTS.md', sectionsFor('/repo/AGENTS.md', copied));
+    const longFile = makeFile(
+      '/repo/CLAUDE.md',
+      sectionsFor('/repo/CLAUDE.md', [...copied, 'billing', 'search', 'uploads', 'emails', 'payments']),
+    );
+    const issues = detectDuplicates([shortFile, longFile]);
+    expect(issues).toHaveLength(1);
+    expect(issues[0]!.title).toBe('Possible mirrored instruction files: AGENTS.md, CLAUDE.md');
+    expect(issues[0]!.severity).toBe('warning');
+    expect(issues[0]!.evidence[0]).toBe('AGENTS.md: 3 of 3 sections also appear in another listed file');
+    expect(issues[0]!.evidence[1]).toBe('CLAUDE.md: 3 of 8 sections also appear in another listed file');
+  });
+
+  it('near-identical one-section files (sibling commands) are not a mirror', () => {
+    const variant = (filePath: string, verb: string) =>
+      makeFile(filePath, [
+        makeSection({
+          text: LONG_TEXT_B.replace('Always use Vitest', `Always ${verb} with Vitest`),
+          id: filePath,
+          heading: 'Testing',
+          filePath,
+        }),
+      ]);
+    const issues = detectDuplicates([variant('/repo/.claude/commands/a.md', 'write'), variant('/repo/.claude/commands/b.md', 'check')]);
+    expect(issues).toHaveLength(1);
+    expect(issues[0]!.title.startsWith('Possible duplicate')).toBe(true);
+  });
+
+  it('identical one-section files are a mirror', () => {
+    const one = (filePath: string) =>
+      makeFile(filePath, [makeSection({ text: LONG_TEXT_A, id: filePath, heading: 'Testing', filePath })]);
+    const issues = detectDuplicates([one('/repo/AGENTS.md'), one('/repo/CLAUDE.md')]);
+    expect(issues).toHaveLength(1);
+    expect(issues[0]!.title).toBe('Possible mirrored instruction files: AGENTS.md, CLAUDE.md');
+    expect(issues[0]!.severity).toBe('warning');
   });
 });
