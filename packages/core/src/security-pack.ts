@@ -112,6 +112,32 @@ const DESTRUCTIVE_COMMANDS = [
   },
 ];
 
+/** Names of the files (not directories) at the scan root. */
+function rootFileNames(tree: ReturnType<typeof treeFor>): string[] {
+  const entries = tree.entries(tree.root);
+  if (typeof entries === 'string') return [];
+  return [...entries.values()].filter((e) => !e.isDirectory()).map((e) => e.name);
+}
+
+const isDotnetBuildFile = (name: string) =>
+  /\.(?:sln|slnx|csproj|fsproj|vbproj)$/i.test(name) || name === 'Directory.Build.props';
+const isJvmBuildFile = (name: string) =>
+  ['pom.xml', 'build.gradle', 'build.gradle.kts', 'settings.gradle', 'settings.gradle.kts'].includes(name);
+
+/**
+ * Directories that are build output in some ecosystems and source in others
+ * (#161). `bin` is where .NET and Gradle/Maven builds write compiled output,
+ * but in Node, PHP and shell projects it holds hand-written, tracked entry
+ * scripts (a package.json `bin` target, `bin/install-wp-tests.sh`): ignoring
+ * it would silently keep the next script added there out of git. `obj` is
+ * .NET's intermediate output. Each is reported only next to a root build file
+ * of an ecosystem that writes it.
+ */
+const ECOSYSTEM_OUTPUT_DIRS: Record<string, (rootNames: string[]) => boolean> = {
+  bin: (names) => names.some((n) => isDotnetBuildFile(n) || isJvmBuildFile(n)),
+  obj: (names) => names.some(isDotnetBuildFile),
+};
+
 function issueId(checkId: string): string {
   const hash = crypto.createHash('sha1').update(checkId).digest('hex').slice(0, 12);
   return `security-pack-${hash}`;
@@ -367,8 +393,12 @@ export function detectSecurityPack(context: RepoContext): PromptCiIssue[] {
 
   // 7. Unignored build, output, or coverage directories (Cost 9)
   const commonDirs = ['coverage', 'dist', 'build', '.next', 'bin', 'obj', 'temp', 'tmp', 'logs'];
+  const rootNames = rootFileNames(tree);
   const unignoredDirs = gitignoreUnknown ? [] : commonDirs.filter((d) => {
     if (!tree.isDir(d)) return false;
+    // #161: `bin`/`obj` are build output only where the build that writes them lives.
+    const gate = ECOSYSTEM_OUTPUT_DIRS[d];
+    if (gate && !gate(rootNames)) return false;
     return !gitignoreLines.some((line) => gitignoreLineMatchesTarget(line, d));
   });
 
