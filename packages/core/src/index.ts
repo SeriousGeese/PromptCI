@@ -7,6 +7,7 @@ export { detectDuplicates, detectDuplicateHeadings, normalizeSection } from './d
 export { detectConflicts, detectVersionConflicts, detectCompetingTechConflicts } from './conflicts.js';
 export { detectDeadReferences } from './dead-references.js';
 export { detectAgentPractices, MISSING_PRACTICES_ISSUE_ID } from './agent-practices.js';
+export { detectCrossToolParity } from './cross-tool-parity.js';
 export { parseSuppressions, buildValidationIssues, applySuppressions } from './suppression.js';
 export type { SuppressionAnnotation } from './suppression.js';
 export { computeHealthScore, selectTopFixes, isScored, UNSCORED_TAG } from './health-score.js';

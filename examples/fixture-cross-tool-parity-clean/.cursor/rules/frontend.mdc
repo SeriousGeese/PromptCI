@@ -1,0 +1,6 @@
+---
+description: Frontend app only
+globs: apps/web/**
+---
+
+Install with `yarn install` and test with `yarn test`.

@@ -1,0 +1,6 @@
+---
+description: Style notes, attached when relevant
+alwaysApply: false
+---
+
+Install with `yarn install` and test with `jest`.

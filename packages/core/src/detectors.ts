@@ -1,6 +1,7 @@
 import { detectActionPinning } from './action-pinning.js';
 import { detectAgentPractices } from './agent-practices.js';
 import { detectCanonicalOwner } from './canonical-owner.js';
+import { detectCrossToolParity } from './cross-tool-parity.js';
 import { detectCiAlignment } from './ci-alignment.js';
 import { detectCompetingTechConflicts, detectConflicts, detectVersionConflicts } from './conflicts.js';
 import { detectCommandValidity } from './command-validity.js';
@@ -116,6 +117,10 @@ export const DETECTORS: DetectorDefinition[] = [
   {
     id: 'canonical-owner',
     run: (context) => detectCanonicalOwner(context.files),
+  },
+  {
+    id: 'cross-tool-parity',
+    run: (context) => detectCrossToolParity(context.files, { manifestPackageManager: context.packageJson.packageManagerName }),
   },
   {
     id: 'ci-alignment',
