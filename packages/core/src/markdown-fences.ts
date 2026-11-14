@@ -24,11 +24,15 @@
  * that map offsets back to the source file stay aligned.
  */
 
-/** Opening fence: up to 3 spaces of indent, then 3+ backticks or tildes. */
-const OPEN_FENCE_RE = /^ {0,3}([`~]{3,})\s*([^\s`]*)/;
+/**
+ * Opening fence: up to 3 spaces of indent, then 3+ backticks OR 3+ tildes. One
+ * repeated character: a line that starts `~~`code`~~` (a struck-through code
+ * span) opens nothing.
+ */
+const OPEN_FENCE_RE = /^ {0,3}(`{3,}|~{3,})\s*([^\s`]*)/;
 
 /** Closing fence: same shape, but nothing except whitespace may follow. */
-const CLOSE_FENCE_RE = /^ {0,3}([`~]{3,})\s*$/;
+const CLOSE_FENCE_RE = /^ {0,3}(`{3,}|~{3,})\s*$/;
 
 /** Inline code span: a backtick run, content, then a matching run. */
 const INLINE_CODE_RE = /(`+)([^`]+)\1/g;

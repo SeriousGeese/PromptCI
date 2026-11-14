@@ -1,0 +1,3 @@
+#!/bin/sh
+# Hand-written helper with no extension and no package.json entry (PromptCI #161).
+echo "fixture-tool"

@@ -311,7 +311,8 @@ function buildIssue(context: RepoContext, filePath: string, sites: Site[]): Prom
     evidence: sites.map((site) => evidenceLine(filePath, site)),
     // One identity per file whichever refs are unpinned in it, so pinning one
     // of several is not "resolved + new" in a baseline, review-diff or SARIF.
-    fingerprintKey: `action-pin:${filePath}`,
+    // Forward slashes, no leading ./, so the key is the same on every OS.
+    fingerprintKey: `action-pin:${filePath.replace(/\\/g, '/').replace(/^(?:\.\/)+/, '')}`,
     recommendation,
     // The refs are certainly mutable; whether that matters for this repo is
     // the heuristic part, so confidence stays below 1.

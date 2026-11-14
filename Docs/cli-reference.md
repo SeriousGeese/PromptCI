@@ -340,8 +340,8 @@ to `report.json` with the rest of the finding.
 
 Upgrading from 0.3.0: a baseline (or previous `report.json`) written by 0.3.0 has these findings
 under their old, per-practice and per-action form, so the first scan with the new version shows
-the agent-practice and action-pin findings as new once, and the old ones as resolved. They are `info`, so only
-`--fail-on-new info` trips on it; refresh the baseline with `--update-baseline`.
+the agent-practice and action-pin findings as new once, and the old ones as resolved. They are
+`info`, so only `--fail-on-new info` trips on it; refresh the baseline with `--update-baseline`.
 
 ## SARIF
 

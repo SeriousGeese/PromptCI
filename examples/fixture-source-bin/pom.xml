@@ -1,0 +1,7 @@
+<project>
+  <!-- A JVM build next to a Node CLI: bin/ is still source (PromptCI #161). -->
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>example</groupId>
+  <artifactId>fixture-source-bin</artifactId>
+  <version>0.0.0</version>
+</project>
