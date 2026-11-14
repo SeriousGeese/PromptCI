@@ -100,7 +100,7 @@ program
   .command('fix')
   .description('Resolve deterministic instruction and configuration issues interactively')
   .option('--path <dir>', 'target directory to scan and fix (default: current directory)')
-  .option('--issue <id>', 'fix a specific issue by its ID')
+  .option('--issue <id>', 'fix a specific issue by its ID; naming a mirrored-files finding opts in to its CLAUDE.md import edit')
   .option('--no-interactive', 'disable interactive prompting and apply all fixes')
   .option('--dry-run', 'print proposed changes without writing to disk')
   .action(async (opts: {

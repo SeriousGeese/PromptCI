@@ -6,7 +6,7 @@ import { renderPromptCiGitignore } from './promptci-gitignore.js';
 import { isWithinRoot, realPathWithinRoot } from './path-containment.js';
 import { gitignoreLineMatchesTarget } from './security-pack.js';
 import { MIRRORED_FILES_TAG } from './duplicates.js';
-import { MIRROR_CANONICAL_BASENAME, consolidateWithImport, importTarget, importingToolFor } from './mirror-import.js';
+import { MIRROR_CANONICAL_BASENAME, consolidateWithImport, importRecipeTarget } from './mirror-import.js';
 
 export interface FileChange {
   filePath: string; // Absolute path
@@ -117,7 +117,9 @@ async function applyLineEdits(edits: readonly FixEdit[], repoRoot: string): Prom
  */
 export async function applyFixRecipe(
   issue: PromptCiIssue,
-  repoRoot: string
+  repoRoot: string,
+  /** `optIn`: the caller named this finding (`promptci fix --issue <id>`); needed for an {@link isOptInRecipe} recipe. */
+  options: { optIn?: boolean } = {},
 ): Promise<FileChange[]> {
   const changes: FileChange[] = [];
 
@@ -212,26 +214,36 @@ export async function applyFixRecipe(
     return changes;
   }
 
-  // 4. Duplicate consolidation: only the mirrored-files finding, by import.
+  // 4. Duplicate consolidation: no unattended edit (pcic-1ik0.10).
   //
-  // pcic-1ik0.10: the old recipe replaced each copied section with a markdown
-  // link ("See canonical instructions in [AGENTS.md](./AGENTS.md)"), which no
-  // tool loads, so the guidance silently left the agent's context and the
-  // next scan scored the trimmed file lower. A per-section duplicate is now
-  // advisory (no edit here); a mirrored CLAUDE.md / GEMINI.md gets one `@`
-  // import of AGENTS.md and loses only the sections that are the same text as
-  // AGENTS.md. Everything is re-checked against the files on disk, and any
-  // doubt means no edit at all, for every file.
+  // The old recipe replaced each copied section with a markdown link ("See
+  // canonical instructions in [AGENTS.md](./AGENTS.md)"), which no tool
+  // loads, so the guidance silently left the agent's context. It is gone on
+  // every path. Per-section duplicates get no edit. A mirrored-files finding
+  // gets the CLAUDE.md import recipe ONLY when the caller opts in by naming
+  // it (`promptci fix --issue <id>`), because the import does not load in a
+  // session started in a subdirectory without a one-time approval (see
+  // mirror-import.ts). A caller that ignores `autoApplySafe` and calls this
+  // without the opt-in (a hosted autopilot) gets no edit.
   if (issue.category === 'duplicate') {
     // Every path the finding names must stay inside the repository; an
     // escaping one is an attack or a bug, so it throws, whatever the finding.
     for (const loc of issue.locations) resolveSafePath(repoRoot, loc.filePath);
     for (const p of issue.filePaths) resolveSafePath(repoRoot, p);
-    if (!(issue.tags ?? []).includes(MIRRORED_FILES_TAG)) return changes;
-    return consolidateMirrorWithImport(issue, repoRoot);
+    if (!options.optIn || !isOptInRecipe(issue)) return changes;
+    return (await planMirrorImport(issue, repoRoot)).changes;
   }
 
   return changes;
+}
+
+/**
+ * True for a finding whose recipe is applied only on an explicit opt-in
+ * (`promptci fix --issue <id>`), never by `promptci fix` on its own or by an
+ * autopilot: today, the mirrored-files finding's CLAUDE.md import.
+ */
+export function isOptInRecipe(issue: PromptCiIssue): boolean {
+  return issue.category === 'duplicate' && (issue.tags ?? []).includes(MIRRORED_FILES_TAG);
 }
 
 /**
@@ -254,19 +266,38 @@ function mayBeIgnored(relPath: string, gitignore: string): boolean {
     });
 }
 
-/** All-or-nothing import consolidation for one mirrored-files finding. */
-async function consolidateMirrorWithImport(issue: PromptCiIssue, repoRoot: string): Promise<FileChange[]> {
+export type MirrorImportPlan = {
+  /** The edits, empty when anything was refused (all or nothing). */
+  changes: FileChange[];
+  /** Why no edit is made, one line each; empty when `changes` is the plan. */
+  refusals: string[];
+  /** Group members the recipe never edits (anything but a root CLAUDE.md copy), with the reason. */
+  untouched: string[];
+};
+
+/**
+ * The CLAUDE.md import recipe for one mirrored-files finding, re-checked
+ * against the files on disk. Edits only a repo-root `CLAUDE.md` or
+ * `.claude/CLAUDE.md` copy of the repo-root `AGENTS.md` (see
+ * `importRecipeTarget`); every other member is left as it is. All or
+ * nothing: any refusal means no edit to any file.
+ */
+export async function planMirrorImport(issue: PromptCiIssue, repoRoot: string): Promise<MirrorImportPlan> {
   const root = path.resolve(repoRoot);
+  const rel = (abs: string) => path.relative(root, abs).split(path.sep).join('/');
+  const none = (...refusals: string[]): MirrorImportPlan => ({ changes: [], refusals, untouched: [] });
+  if (!isOptInRecipe(issue)) return none('not a mirrored-files finding');
   const [canonicalRaw, ...copiesRaw] = issue.filePaths;
-  if (canonicalRaw === undefined || copiesRaw.length === 0) return [];
+  if (canonicalRaw === undefined || copiesRaw.length === 0) return none('the finding names no copies');
   const canonicalPath = resolveSafePath(root, canonicalRaw);
   const copies = copiesRaw.map((p) => resolveSafePath(root, p));
-  // The canonical file is exactly one AGENTS.md; every copy is a file whose
-  // tool loads an import. Anything else (an ambiguous canonical file, a
-  // Copilot / Cursor / Windsurf copy) gets no edit.
-  if (path.basename(canonicalPath) !== MIRROR_CANONICAL_BASENAME) return [];
-  if (copies.some((c) => path.basename(c) === MIRROR_CANONICAL_BASENAME || c === canonicalPath)) return [];
-  if (new Set(copies).size !== copies.length) return [];
+  const canonicalRel = rel(canonicalPath);
+  if (canonicalRel !== MIRROR_CANONICAL_BASENAME) {
+    return none(`the canonical file is ${canonicalRel}, not the repository-root ${MIRROR_CANONICAL_BASENAME}`);
+  }
+  if (copies.some((c) => path.basename(c) === MIRROR_CANONICAL_BASENAME || c === canonicalPath)) {
+    return none(`more than one ${MIRROR_CANONICAL_BASENAME} in the group: the canonical file is ambiguous`);
+  }
 
   const read = async (p: string): Promise<string | undefined> => {
     if (!realPathWithinRoot(root, p)) return undefined;
@@ -277,27 +308,46 @@ async function consolidateMirrorWithImport(issue: PromptCiIssue, repoRoot: strin
     }
   };
   const canonicalContent = await read(canonicalPath);
-  if (canonicalContent === undefined || canonicalContent.trim() === '') return [];
-  // An import of a file other clones do not have would load nothing there:
-  // no edit when the root .gitignore may ignore the canonical file.
+  if (canonicalContent === undefined || canonicalContent.trim() === '') {
+    return none(`${canonicalRel} cannot be read (or is empty) here`);
+  }
+  // An import of a file other clones do not have would load nothing there.
   const gitignore = await read(path.join(root, '.gitignore'));
-  if (gitignore !== undefined && mayBeIgnored(path.relative(root, canonicalPath).split(path.sep).join('/'), gitignore)) {
-    return [];
+  if (gitignore !== undefined && mayBeIgnored(canonicalRel, gitignore)) {
+    return none(`the root .gitignore may ignore ${canonicalRel}`);
   }
 
   const changes: FileChange[] = [];
+  const refusals: string[] = [];
+  const untouched: string[] = [];
   for (const copy of copies) {
-    const tool = importingToolFor(copy);
-    if (tool === undefined) return [];
+    const copyRel = rel(copy);
+    const importPath = importRecipeTarget(copyRel, canonicalRel);
+    if (importPath === undefined) {
+      untouched.push(
+        path.basename(copy) === 'GEMINI.md'
+          ? `${copyRel}: not edited (an @ import in GEMINI.md does not load in every Gemini tool)`
+          : path.basename(copy) === 'CLAUDE.md'
+            ? `${copyRel}: not edited (a CLAUDE.md below the root imports AGENTS.md as an external file)`
+            : `${copyRel}: not edited (its tool loads no @ import)`,
+      );
+      continue;
+    }
     const content = await read(copy);
-    if (content === undefined) return [];
-    const result = consolidateWithImport(content, canonicalContent, tool, importTarget(copy, canonicalPath));
-    // Nothing to drop means the files no longer mirror each other: the
-    // finding is stale, so leave every file alone.
-    if (result === undefined) return [];
+    if (content === undefined) {
+      refusals.push(`${copyRel} cannot be read here`);
+      continue;
+    }
+    const result = consolidateWithImport(content, canonicalContent, { copyRel, canonicalRel, importPath });
+    if (!result.ok) {
+      refusals.push(result.reason);
+      continue;
+    }
     changes.push({ filePath: copy, originalContent: content, newContent: result.newContent });
   }
-  return changes;
+  if (refusals.length > 0) return { changes: [], refusals, untouched };
+  if (changes.length === 0) return { changes: [], refusals: ['no repository-root CLAUDE.md copy to edit'], untouched };
+  return { changes, refusals: [], untouched };
 }
 
 /**

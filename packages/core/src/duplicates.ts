@@ -20,7 +20,7 @@ import { fileIdPath, sectionIdPath } from './finding-id.js';
 import { sameSectionText } from './same-text.js';
 
 export { sameSectionText } from './same-text.js';
-import { MIRROR_CANONICAL_BASENAME, importingToolFor, isImportOnlySection } from './mirror-import.js';
+import { importRecipeTarget, isImportOnlySection } from './mirror-import.js';
 
 /** Tag on the mirrored-instruction-files finding; the fix engine's import recipe keys on it. */
 export const MIRRORED_FILES_TAG = 'mirrored-files';
@@ -640,29 +640,39 @@ function mirrorIssue(
   // replaced unattended: the pointer would delete the text that differs, and
   // with it the evidence of a conflict. Same rule as per-section findings.
   const drifted = groupClusters.filter((keys) => !allSameText(sectionsOf(keys))).map(heading);
-  // pcic-1ik0.10: the fix replaces each copy with one `@AGENTS.md` import, so
-  // it is offered only when the canonical file is exactly one AGENTS.md and
-  // every other member is a file whose tool loads an import (CLAUDE.md,
-  // GEMINI.md). A Copilot, Cursor or Windsurf copy has no import to point at.
-  const canonicalIsAgents =
-    path.basename(canonical) === MIRROR_CANONICAL_BASENAME &&
-    files.filter((f) => path.basename(f) === MIRROR_CANONICAL_BASENAME).length === 1;
-  const nonImporting = files.slice(1).filter((f) => importingToolFor(f) === undefined);
-  const importable = canonicalIsAgents && nonImporting.length === 0;
-  const importAdvice = importable
-    ? `In ${names.slice(1).join(' and ')}, replace the copied sections with one \`@${canonicalName}\` import line ` +
-      '(relative to the file), which Claude Code and Gemini CLI load in place; keep any section only that file has ' +
-      'below it. A markdown link is not loaded by either tool.'
-    : `keeping one canonical file (here ${canonicalName}). A CLAUDE.md or GEMINI.md copy of an AGENTS.md can be ` +
-      'replaced with one `@AGENTS.md` import line, which those tools load; tools without an import (Copilot, Cursor, ' +
-      'Windsurf) need their own copy or a symlink where the tool follows one. If a generator writes these files, ' +
-      'configure it accordingly.';
+  // pcic-1ik0.10: advisory. The suggested edit for a repo-root CLAUDE.md copy
+  // of the repo-root AGENTS.md is one import line; it is applied only on an
+  // explicit opt-in (`promptci fix --issue <id>`), because it changes what a
+  // Claude Code session started in a subdirectory loads (see mirror-import.ts).
+  const id = mirrorIssueId(files.map((f) => idPath.get(f) ?? f));
+  const rels = files.map((f) => idPath.get(f) ?? f);
+  const canonicalRel = rels[0]!;
+  const claudeTargets = rels
+    .slice(1)
+    .map((r) => ({ rel: r, importPath: importRecipeTarget(r, canonicalRel) }))
+    .filter((t): t is { rel: string; importPath: string } => t.importPath !== undefined);
+  const hasGemini = rels.slice(1).some((r) => path.posix.basename(r) === 'GEMINI.md');
+  const importAdvice =
+    claudeTargets.length > 0
+      ? `For ${claudeTargets.map((t) => t.rel).join(' and ')}: replace the sections it copies from ${canonicalName} with ` +
+        `the line ${claudeTargets.map((t) => `\`@${t.importPath}\``).join(' / ')} and keep any section only that file ` +
+        'has below it (`promptci fix --issue ' + id + '` makes this edit when every copied section is the same text ' +
+        'and nothing would move). Claude Code loads such an import when the session starts at the repository root; ' +
+        'started in a subdirectory, it treats the import as external, which needs a one-time approval, and a ' +
+        'headless session there may not load it, while copied text loads either way. A markdown link is not loaded.'
+      : `keeping one canonical file (here ${canonicalName}). A repository-root CLAUDE.md can import AGENTS.md with an ` +
+        '`@AGENTS.md` line (loaded when the session starts at the repository root); Copilot, Cursor and Windsurf ' +
+        'files load no import and need their own copy. If a generator writes these files, configure it accordingly.';
+  const geminiNote = hasGemini
+    ? ' GEMINI.md: keep its text; Gemini CLI documents `@file.md` imports, but Antigravity CLI, which replaced it ' +
+      'for many users, documents that `@filename` does not inline the file (it reads AGENTS.md itself).'
+    : '';
   const counts = files
     .map((f, i) => `${names[i]} ${shared(f)} of ${Math.max(shared(f), mirrors.comparable.get(f) ?? 0)}`)
     .join(', ');
 
   return {
-    id: mirrorIssueId(files.map((f) => idPath.get(f) ?? f)),
+    id,
     severity: 'warning',
     category: 'duplicate',
     title: `Possible mirrored instruction files: ${names.join(', ')}`,
@@ -686,12 +696,11 @@ function mirrorIssue(
         ? `Reconcile the sections that differ (${snippet(drifted.join(', '), 120)}) first: decide which text is ` +
           'right, since dropping a copy would discard the other. Then '
         : '') +
-      (importable ? importAdvice : `${drifted.length > 0 ? 'consider' : 'Consider'} ${importAdvice}`),
-    // The import recipe (mirror-import.ts) drops each section of a copy that
-    // is the same text as a section of the canonical file and adds one import
-    // line. Only when every copy is the same text and every copy's tool loads
-    // an import; otherwise advisory.
-    autoApplySafe: drifted.length === 0 && importable,
+      (claudeTargets.length > 0 ? importAdvice : `${drifted.length > 0 ? 'consider' : 'Consider'} ${importAdvice}`) +
+      geminiNote,
+    // Advisory everywhere (pcic-1ik0.10): no autopilot PR and nothing in a
+    // plain `promptci fix`. The CLAUDE.md import recipe is opt-in only.
+    autoApplySafe: false,
     tags: [MIRRORED_FILES_TAG],
     // One identity per mirror group, keyed on its canonical file: editing a
     // copied section, or the group gaining or losing a member, is the same

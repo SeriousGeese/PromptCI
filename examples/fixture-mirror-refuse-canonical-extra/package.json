@@ -1,5 +1,5 @@
 {
-  "name": "fixture-mirror-import-nested",
+  "name": "fixture-mirror-refuse-canonical-extra",
   "private": true,
   "packageManager": "pnpm@10.0.0",
   "scripts": {

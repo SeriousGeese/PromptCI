@@ -29,7 +29,7 @@ import { stripCodeBlocks } from './markdown-fences.js';
 import { fileIdPath } from './finding-id.js';
 import { aliasesWithNewType, groupAliasesByTarget } from './alias-files.js';
 import { UNSCORED_TAG } from './health-score.js';
-import { importTargets, importingToolFor } from './mirror-import.js';
+import { importingToolFor, resolvedImports } from './mirror-import.js';
 
 // ── Practice checks ──────────────────────────────────────────────────────────
 
@@ -437,17 +437,22 @@ function perFileBehaviorTarget(file: InstructionFile): { label: string; agent: s
   return undefined;
 }
 
-function isForwardingFile(file: InstructionFile): boolean {
-  // pcic-1ik0.10: an `@AGENTS.md` (or `@CLAUDE.md`) import line, anywhere in a
-  // file whose tool loads imports (CLAUDE.md, GEMINI.md), puts the canonical
-  // file's guidance in that tool's context: the file forwards, whatever else it
-  // holds. A markdown link does not count (no tool loads it), and neither does
-  // an import line in a file whose tool documents no import syntax.
-  if (
-    importingToolFor(file.path) !== undefined &&
-    importTargets(file.content).some((t) => /(?:^|\/)(?:AGENTS|CLAUDE)\.md$/.test(t))
-  ) {
-    return true;
+function isForwardingFile(file: InstructionFile, files: InstructionFile[] = []): boolean {
+  // pcic-1ik0.10: an import line in a file whose tool loads imports (CLAUDE.md,
+  // GEMINI.md) that resolves, from that file's directory, to a scanned
+  // AGENTS.md or CLAUDE.md puts that file's guidance in the tool's context:
+  // the file forwards. Not counted: a markdown link (no tool loads it), an
+  // import inside fenced code or an HTML comment (not loaded), an import whose
+  // path does not reach such a file (a wrong path loads nothing), and an
+  // import line in a file whose tool documents no import syntax.
+  if (importingToolFor(file.path) !== undefined) {
+    const self = fileIdPath(file);
+    const canonical = new Set(
+      files
+        .filter((f) => f !== file && /^(?:AGENTS|CLAUDE)\.md$/.test(path.basename(f.path)))
+        .map((f) => fileIdPath(f)),
+    );
+    if (resolvedImports(self, file.content).some((t) => canonical.has(t))) return true;
   }
   // AP6: A header forwarding pointer near the top ("Follow AGENTS.md for the
   // canonical instructions") delegates behavioral rules to the canonical file
@@ -584,7 +589,7 @@ export function detectAgentPractices(files: InstructionFile[], aliases: Instruct
     }
 
     // It lacks behavioral guidance. Is it a forwarding file?
-    if (isForwardingFile(file)) continue;
+    if (isForwardingFile(file, files)) continue;
 
     // At least one OTHER file must have behavioral guidance — otherwise the
     // combined-content check already fires and we'd be duplicating the finding.
@@ -628,7 +633,7 @@ export function detectAgentPractices(files: InstructionFile[], aliases: Instruct
       if (file === sourceFile) continue;
       const target = perFileBehaviorTarget(file);
       if (!target) continue;
-      if (isForwardingFile(file)) continue;
+      if (isForwardingFile(file, files)) continue;
       // AP4: already covered by the coarser "no behavioral guidance at all"
       // finding above — don't also pile on a granular per-check issue.
       if (filesWithNoGuidanceFinding.has(file.path)) continue;

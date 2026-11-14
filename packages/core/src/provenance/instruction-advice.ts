@@ -51,6 +51,8 @@ const PAGES = {
     title: 'GitHub Docs: Adding repository custom instructions for GitHub Copilot',
     readOn: '2026-11-14',
   },
+  ccMemoryExternal: { url: 'https://code.claude.com/docs/en/memory', title: 'Claude Code docs: How Claude remembers your project (external imports, load order)', readOn: '2026-11-14' },
+  antigravityRules: { url: 'https://antigravity.google/docs/rules.md', title: 'Antigravity docs: Rules', readOn: '2026-11-14' },
   windsurfMemories14: { url: 'https://docs.devin.ai/desktop/cascade/memories', title: 'Devin Local docs: Memories and rules (docs.windsurf.com/windsurf/cascade/memories redirects here)', readOn: '2026-11-14' },
 } as const;
 
@@ -607,13 +609,15 @@ export const INSTRUCTION_ADVICE_PROVENANCE: readonly CheckProvenance[] = [
   {
     id: 'duplicates/mirror-import',
     detector: 'duplicates',
-    title: 'A CLAUDE.md or GEMINI.md can load AGENTS.md with an @ import',
+    title: 'A repo-root CLAUDE.md can import AGENTS.md, with a subdirectory caveat',
     kind: 'tool-fact',
     claim:
-      'Claude Code (CLAUDE.md) and Gemini CLI (GEMINI.md) load the content of a file named on an `@path` line, ' +
-      'resolving a relative path from the importing file, so one import line replaces a copied AGENTS.md; a markdown ' +
-      'link is not loaded.',
-    appliesTo: ['claude-code', 'gemini-cli'],
+      'Claude Code loads the content of a file named on an `@path` line of a CLAUDE.md, resolving a relative path from ' +
+      'the importing file, so a repository-root CLAUDE.md with `@AGENTS.md` loads AGENTS.md in a session started at the ' +
+      'repository root; an import that resolves outside the session\'s working directory (the same line, in a session ' +
+      'started in a subdirectory) is external and needs a one-time approval, and stays disabled when declined, while a ' +
+      'markdown link is not loaded at all.',
+    appliesTo: ['claude-code'],
     sources: [
       src(
         'ccMemoryImports',
@@ -621,6 +625,30 @@ export const INSTRUCTION_ADVICE_PROVENANCE: readonly CheckProvenance[] = [
         'Says CLAUDE.md files can import files with @path/to/import syntax, relative paths resolve from the importing file, ' +
           'imports nest up to four hops and are skipped inside code spans and fences, and suggests @AGENTS.md in a CLAUDE.md to share AGENTS.md.',
       ),
+      src(
+        'ccMemoryExternal',
+        'supports',
+        'Says Claude Code loads CLAUDE.md from the working directory and every directory above it, that the first external ' +
+          'import in a project shows an approval dialog, and that declined imports stay disabled; it does not document a headless session.',
+      ),
+    ],
+    caveat:
+      'A reviewer observed (Claude Code 2.1.270, headless, 2026-11-14) that a root CLAUDE.md with @AGENTS.md is not loaded ' +
+      'when the session starts in a subdirectory, while the same text inline is. That is why the import edit is opt-in only.',
+    lastVerified: { date: '2026-11-14', by: 'Claude agent (pcic-1ik0.10), pending human review' },
+  },
+  {
+    id: 'duplicates/gemini-import-varies',
+    detector: 'duplicates',
+    title: 'Whether an @ line in GEMINI.md loads the file depends on the Gemini tool',
+    kind: 'tool-fact',
+    claim:
+      'Gemini CLI documents inlining a file named on an `@file.md` line of GEMINI.md (relative to the importing file, ' +
+      'five levels by default); Antigravity CLI, which replaced Gemini CLI for unpaid and Google One users, reads GEMINI.md ' +
+      'and AGENTS.md but documents that an `@filename` reference does not inline the file, so the import edit never ' +
+      'touches GEMINI.md.',
+    appliesTo: ['gemini-cli'],
+    sources: [
       src('geminiImports', 'supports', 'Says GEMINI.md can import content from other files with the @file.md syntax.'),
       src(
         'geminiMemport',
@@ -628,10 +656,14 @@ export const INSTRUCTION_ADVICE_PROVENANCE: readonly CheckProvenance[] = [
         'Documents @./file.md and @../file.md imports resolved from the importing file\'s directory, a default nesting limit of five, ' +
           'and imports inside code blocks and inline code ignored.',
       ),
+      src(
+        'antigravityRules',
+        'supports',
+        'Says a plain @filename reference does not inline file contents (a separate @[label](path) form does), and that ' +
+          'rules include AGENTS.md and GEMINI.md from the workspace folder up to the repository root.',
+      ),
     ],
-    caveat:
-      'The Gemini CLI page carries a banner that Gemini CLI was replaced by Antigravity CLI for unpaid tiers on 2026-06-18; ' +
-      'the import syntax is documented for GEMINI.md either way.',
+    caveat: 'The Gemini CLI page carries a banner that Antigravity CLI replaced Gemini CLI for unpaid and Google One users on 2026-06-18.',
     lastVerified: { date: '2026-11-14', by: 'Claude agent (pcic-1ik0.10), pending human review' },
   },
   {
@@ -641,7 +673,7 @@ export const INSTRUCTION_ADVICE_PROVENANCE: readonly CheckProvenance[] = [
     kind: 'tool-fact',
     claim:
       'A Cursor rule, a Copilot instructions file or a Windsurf rule does not load another file\'s content from an `@path` line, ' +
-      'so the import recipe makes no edit when a copy is one of these files.',
+      'so the import edit never touches one of these files.',
     appliesTo: ['cursor', 'copilot', 'windsurf'],
     sources: [
       src('cursorRules14', 'supports', 'Says a rule may mention a file with @filename but its contents are not inlined into the prompt; the agent reads it with its tools when needed.'),

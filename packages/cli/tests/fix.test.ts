@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -76,29 +76,63 @@ describe('runFix CLI command', () => {
     expect(content).toBe(original);
   });
 
-  it('replaces a CLAUDE.md that copies AGENTS.md with an @AGENTS.md import (pcic-1ik0.10)', async () => {
+  // pcic-1ik0.10: the CLAUDE.md import is opt-in only. A plain `fix` leaves a
+  // mirrored CLAUDE.md alone (an import does not load in a session started in
+  // a subdirectory without approval); naming the finding with --issue applies it.
+  it('leaves a mirrored CLAUDE.md alone by default and imports AGENTS.md when the finding is named', async () => {
     const agentsPath = path.join(tmpDir, 'AGENTS.md');
     const claudePath = path.join(tmpDir, 'CLAUDE.md');
-
-    const duplicateBody = 
+    const duplicateBody =
       '## Testing Conventions\n' +
       'Run all tests before saying work is done. Ensure coverage matches or exceeds 80%.\n' +
       'Always document design constraints in the codebase.\n';
-
     await fs.writeFile(agentsPath, duplicateBody, 'utf-8');
     await fs.writeFile(claudePath, duplicateBody, 'utf-8');
 
-    await runFix({ scanPath: tmpDir, interactive: false });
+    const logs: string[] = [];
+    const spy = vi.spyOn(console, 'log').mockImplementation((...m) => { logs.push(m.join(' ')); });
+    try {
+      await runFix({ scanPath: tmpDir, interactive: false });
+      expect(await fs.readFile(claudePath, 'utf-8')).toBe(duplicateBody);
+      const hint = logs.find((l) => l.startsWith('Opt-in fix available'));
+      expect(hint).toMatch(/promptci fix --issue (duplicate-[0-9a-f]{12})/);
+      const id = /--issue (duplicate-[0-9a-f]{12})/.exec(hint!)![1]!;
 
-    const agentsContent = await fs.readFile(agentsPath, 'utf-8');
-    const claudeContent = await fs.readFile(claudePath, 'utf-8');
+      await runFix({ scanPath: tmpDir, issueId: id, interactive: false });
+    } finally {
+      spy.mockRestore();
+    }
+    expect(await fs.readFile(agentsPath, 'utf-8')).toBe(duplicateBody);
+    expect(await fs.readFile(claudePath, 'utf-8')).toBe('@AGENTS.md\n');
+  });
 
-    // Canonical (AGENTS.md) should remain fully intact
-    expect(agentsContent).toContain('Run all tests before saying work is done.');
-    
-    // CLAUDE.md imports AGENTS.md, which Claude Code loads in place; a
-    // markdown link would not be loaded.
-    expect(claudeContent).toBe('@AGENTS.md\n');
+  it('prints why the opt-in import is refused and edits nothing', async () => {
+    const agentsPath = path.join(tmpDir, 'AGENTS.md');
+    const claudePath = path.join(tmpDir, 'CLAUDE.md');
+    const body =
+      '## Testing Conventions\n' +
+      'Run all tests before saying work is done. Ensure coverage matches or exceeds 80%.\n' +
+      'Always document design constraints in the codebase.\n' +
+      '\n## Style Conventions\n' +
+      'Format with Prettier defaults and keep imports sorted; never reformat files you did not change.\n' +
+      'Prefer named exports, and keep each module focused on one responsibility.\n';
+    const claude = `## Binding\nEverything below binds Claude.\n\n${body}`;
+    await fs.writeFile(agentsPath, body, 'utf-8');
+    await fs.writeFile(claudePath, claude, 'utf-8');
+    const { scan } = await import('@promptci/core');
+    const mirror = (await scan({ repoPath: tmpDir })).issues.find((i) => (i.tags ?? []).includes('mirrored-files'));
+    expect(mirror).toBeDefined();
+
+    const logs: string[] = [];
+    const spy = vi.spyOn(console, 'log').mockImplementation((...m) => { logs.push(m.join(' ')); });
+    try {
+      await runFix({ scanPath: tmpDir, issueId: mirror!.id, interactive: false });
+    } finally {
+      spy.mockRestore();
+    }
+    expect(await fs.readFile(claudePath, 'utf-8')).toBe(claude);
+    expect(logs).toContain(`No edit for ${mirror!.id}:`);
+    expect(logs.some((l) => l.includes('comes before "Testing Conventions"; it would move'))).toBe(true);
   });
 
   // pcic-1ik0.5 (PromptCI#160): a near-duplicate is two copies that have

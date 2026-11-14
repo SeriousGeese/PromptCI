@@ -116,15 +116,41 @@ perform as a mechanical, reviewable edit, and a finding opts in explicitly — t
 those with `autoApplySafe`. Everything else is reported and left alone, so on a healthy
 repository `fix` may well have nothing to offer.
 
-The five it can apply today:
+The four it can apply today:
 
 | Finding | What it does | Only when |
 | --- | --- | --- |
 | `security-pack-no-promptci-gitignore` | Appends the baseline-preserving `.promptci/` stanza to `.gitignore` | No active line already covers `.promptci` |
 | `security-pack-unignored-dirs` | Appends each flagged build/dependency directory to `.gitignore` | No active line already covers that directory |
-| `duplicate-*` (mirrored instruction files) | In each `CLAUDE.md` / `GEMINI.md` copy of `AGENTS.md`, drops every section that is the same text as one in `AGENTS.md` and adds one import line at the top (`@AGENTS.md` for Claude Code, `@./AGENTS.md` for Gemini CLI, relative to the file, e.g. `@../AGENTS.md` from `.claude/CLAUDE.md`); sections only the copy has stay below it | The finding is a mirror group; the canonical file is exactly one `AGENTS.md`, readable and not ignored by the root `.gitignore`; every other member is a `CLAUDE.md` or `GEMINI.md` (Copilot, Cursor and Windsurf files load no import, so a group with one gets no edit); no section has drifted (the same heading with different text). Per-section duplicates are advisory: replacing one section with a link drops it from every tool's context |
 | `cmd-validity-*` | Rewrites a **misspelled** package-manager script name to the one the manifest defines | Exactly one defined script is a close match **and** the difference is a misspelling rather than a different script — see below. The command must name a single script, and the text to replace must appear once on its line |
 | `dead-ref-*` | Re-points a broken relative markdown link at the file it names | Exactly one non-ignored file in the repository carries that basename, the scan could read the whole tree, every occurrence of that target is a plain inline **file** link outside any code fence or span, the path it would be rewritten to needs no escaping and is not the linking file itself, and each occurrence appears once on its line |
+
+### Opt-in: a mirrored CLAUDE.md
+
+A mirrored-instruction-files finding is advisory (`autoApplySafe: false`): `promptci fix` on its
+own lists it ("Opt-in fix available") and does not change it, and no autopilot applies it. Naming
+it, `promptci fix --issue <id>`, applies one edit: in a repository-root `CLAUDE.md` (or
+`.claude/CLAUDE.md`) that copies the repository-root `AGENTS.md`, it removes the copied sections
+and adds one line, `@AGENTS.md` (`@../AGENTS.md` from `.claude/CLAUDE.md`); sections only the
+copy has, at the end, stay below it.
+
+It is opt-in because of how Claude Code loads imports
+([memory docs](https://code.claude.com/docs/en/memory)): a session started at the repository
+root loads the import, but a session started in a subdirectory treats it as an external import,
+which needs a one-time approval and stays disabled when declined (a headless session there was
+observed not to load it), while copied text loads either way. A markdown link is never written:
+no tool loads one.
+
+`GEMINI.md` is never edited: Gemini CLI documents `@file.md` imports, but Antigravity CLI, which
+replaced it for many users, documents that `@filename` does not inline the file. Copilot, Cursor
+and Windsurf files are never edited either (no import loads content).
+
+No edit is made, to any file, unless every section of `AGENTS.md`, the text before its first
+heading included, is in the copy byte-identically (line endings, trailing whitespace, a BOM and
+edge blank lines aside); no section has drifted; no copy-only section comes before a copied one or
+sits under one; `AGENTS.md` does not import the copy; and `AGENTS.md` is readable and not ignored
+by the root `.gitignore`. `promptci fix --issue <id>` prints the reason when it refuses.
+Per-section duplicate findings are advisory and never edited.
 
 A close match is not enough to rewrite a script name, because most one-edit neighbours of a
 script name are a real sibling script: `test:api` → `test:app`, `test:unit` → `test:init`,
@@ -329,9 +355,10 @@ the category and that key.
   are `info` and do not count toward the health score. A workflow that gets its first unpinned
   action is a new finding.
 - Mirrored files: keyed on the group's canonical file, so editing a copied section, or a copy
-  turning into an import, keeps the finding. Its import fix (see the `fix` table) is offered only
-  when every copy is the same text; copies that have drifted are reported with the sections that
-  differ and must be reconciled by hand.
+  turning into an import, keeps the finding. It is advisory; its CLAUDE.md import edit is opt-in
+  (see "Opt-in: a mirrored CLAUDE.md"). Copies that have drifted are reported with the sections
+  that differ and must be reconciled by hand. The id hashes every member path, so a file joining
+  or leaving the group changes the id; the fingerprint does not change.
 - Exact per-section duplicates: keyed on the repeated text, so a copy being added or removed
   (for example by the mirror fix) keeps the finding. Upgrading from 0.4.0 shows each exact
   per-section duplicate as new once.

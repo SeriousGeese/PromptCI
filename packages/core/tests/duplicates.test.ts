@@ -1131,8 +1131,10 @@ describe('detectDuplicates — mirrored instruction files', () => {
     ]);
     expect(issue.summary).toContain('shared sections per file: AGENTS.md 4 of 5, CLAUDE.md 4 of 5, GEMINI.md 4 of 5');
     expect(issue.summary).not.toContain('already differ');
-    expect(issue.recommendation).toContain('replace the copied sections with one `@AGENTS.md` import line');
-    expect(issue.autoApplySafe).toBe(true);
+    expect(issue.recommendation).toContain('replace the sections it copies from AGENTS.md with the line `@AGENTS.md`');
+    expect(issue.recommendation).toContain('GEMINI.md: keep its text');
+    // pcic-1ik0.10: advisory; the CLAUDE.md import edit is opt-in only.
+    expect(issue.autoApplySafe).toBe(false);
     expect(issue.tags).toEqual(['mirrored-files']);
     expect(issue.fingerprintKey).toBe('duplicate-mirror:AGENTS.md');
 
@@ -1146,7 +1148,7 @@ describe('detectDuplicates — mirrored instruction files', () => {
     expect(readme?.title).toBe('Possible duplicate: Contributing (4 files)');
   });
 
-  it('the consolidation recipe replaces the copies with an @AGENTS.md import', async () => {
+  it('the opt-in recipe replaces the CLAUDE.md copy with an @AGENTS.md import and leaves GEMINI.md', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'promptci-mirror-'));
     try {
       fs.cpSync(MIRROR_FIXTURE, root, { recursive: true });
@@ -1155,13 +1157,12 @@ describe('detectDuplicates — mirrored instruction files', () => {
       // Same id as the scan of the fixture in place: it hashes repo-relative paths, not the checkout location.
       const inPlace = (await scan({ repoPath: MIRROR_FIXTURE })).issues.find((i) => i.title === issue.title)!;
       expect(issue.id).toBe(inPlace.id);
-      const changes = await applyFixRecipe(issue, root);
-      expect(changes.map((c) => path.basename(c.filePath)).sort()).toEqual(['CLAUDE.md', 'GEMINI.md']);
-      const byName = Object.fromEntries(changes.map((c) => [path.basename(c.filePath), c.newContent]));
+      expect(await applyFixRecipe(issue, root)).toEqual([]); // no opt-in, no edit
+      const changes = await applyFixRecipe(issue, root, { optIn: true });
+      expect(changes.map((c) => path.basename(c.filePath))).toEqual(['CLAUDE.md']);
       // The Contributing section is shared with README.md, so it is also in
       // AGENTS.md and is dropped too: every section is the same text.
-      expect(byName['CLAUDE.md']).toBe('@AGENTS.md\n');
-      expect(byName['GEMINI.md']).toBe('@./AGENTS.md\n');
+      expect(changes[0]!.newContent).toBe('@AGENTS.md\n');
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
@@ -1294,13 +1295,14 @@ describe('detectDuplicates — mirrored files after review', () => {
     }
   });
 
-  it('identical copies stay auto-applicable even when only trailing whitespace and line endings differ', async () => {
+  it('copies that differ only in trailing whitespace and line endings are not drift', async () => {
     const root = copyOf(MIRROR_FIXTURE);
     try {
       const claude = path.join(root, 'CLAUDE.md');
       fs.writeFileSync(claude, fs.readFileSync(claude, 'utf8').replace(/\n/g, ' \t\r\n'));
       const [issue] = (await scan({ repoPath: root })).issues.filter(isMirror);
-      expect(issue!.autoApplySafe).toBe(true);
+      expect(issue!.summary).not.toContain('already differ');
+      expect(issue!.autoApplySafe).toBe(false); // advisory either way (pcic-1ik0.10)
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }

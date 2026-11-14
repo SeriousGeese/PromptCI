@@ -973,6 +973,28 @@ describe('detectAgentPractices — AP5 read-before-edit word order', () => {
 
 // ── AP6: header forwarding pointers exempt stubs from missing-guidance ────────
 
+describe('detectAgentPractices — @ import lines as forwarding (pcic-1ik0.10)', () => {
+  const guidance =
+    '# Rules\nBefore saying done, run pnpm test. If tests fail, report the failure honestly.\n' +
+    'Always read a file before editing it. Prefer focused diffs.\n';
+  const agents = makeTypedFile(guidance, '/repo/AGENTS.md', 'agents');
+  const gap = (claude: InstructionFile) =>
+    detectAgentPractices([agents, claude]).filter((i) => i.title === `No behavioral guidance in CLAUDE.md`);
+
+  it('counts an @AGENTS.md line that reaches the scanned AGENTS.md', () => {
+    expect(gap(makeTypedFile('# Claude\n\n@AGENTS.md\n', '/repo/CLAUDE.md', 'claude'))).toEqual([]);
+    expect(gap(makeTypedFile('# Claude\n\n@../AGENTS.md\n', '/repo/.claude/CLAUDE.md', 'claude'))).toEqual([]);
+  });
+
+  it.each([
+    ['inside an HTML comment', '# Claude\n\n<!--\n@AGENTS.md\n-->\n\nUse /review.\n', '/repo/CLAUDE.md'],
+    ['inside fenced code', '# Claude\n\n```\n@AGENTS.md\n```\n\nUse /review.\n', '/repo/CLAUDE.md'],
+    ['with a path that does not reach AGENTS.md', '# Claude\n\n@AGENTS.md\n\nUse /review.\n', '/repo/.claude/CLAUDE.md'],
+  ])('does not count an import %s', (_label, content, filePath) => {
+    expect(gap(makeTypedFile(content, filePath, 'claude'))).toHaveLength(1);
+  });
+});
+
 describe('detectAgentPractices — AP6 forwarding pointers', () => {
   it('does not flag a stub that forwards to a canonical file for missing guidance', () => {
     const agents = makeTypedFile(
