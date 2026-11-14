@@ -1371,7 +1371,7 @@ function computeCommandAnalysis(context: RepoContext): CommandAnalysis {
       const mechanical =
         rewrite?.mechanical === true && countOnLine(contentLines[cmd.line - 1] ?? '', rewrite.find) === 1;
       const editContext = mechanical
-        ? editBlocker(cmd, contentLines, false, framingOf(), hintDirs(), partial)
+        ? editBlocker(cmd, contentLines, commentLines[cmd.line - 1] === true, framingOf(), hintDirs(), partial)
         : undefined;
       const fix = mechanical && editContext === undefined ? rewrite : undefined;
       // A candidate too close to a different script to apply is still worth
