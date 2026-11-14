@@ -175,6 +175,17 @@ describe('package manager', () => {
     ).toEqual([]);
   });
 
+  it('keeps a `cd` scoped to its own fenced block: a later block is checked again', () => {
+    // Review of this PR (bot): the scope must not leak into later blocks.
+    const issues = detect(
+      agents(`${FILLER}Use \`pnpm install\`.\n`),
+      claude(`${FILLER}\`\`\`bash\ncd docs\nnpm install\n\`\`\`\n\nThen, at the root:\n\n\`\`\`bash\nnpm install\n\`\`\`\n`),
+    );
+    expect(issues).toHaveLength(1);
+    // The finding points at the unscoped command, not the one after the `cd`.
+    expect(issues[0]!.locations.find((l) => l.filePath.endsWith('CLAUDE.md'))!.startLine).toBe(FILLER.split('\n').length + 8);
+  });
+
   it('defers to manifest-consistency when the manifest already names a manager', () => {
     const files = [agents(`${FILLER}Use \`pnpm install\`.\n`), claude(`${FILLER}Use \`npm install\`.\n`)];
     expect(detectCrossToolParity(files, { manifestPackageManager: 'unknown' })).toHaveLength(1);
@@ -245,6 +256,17 @@ describe('forbidden path', () => {
   ])('does not read "%s" as the opposite of "%s"', (forbid, instruct) => {
     expect(detect(agents(`${FILLER}${forbid}\n`), claude(`${FILLER}${instruct}\n`))).toEqual([]);
     expect(detect(agents(`${FILLER}${instruct}\n`), claude(`${FILLER}${forbid}\n`))).toEqual([]);
+  });
+
+  it('reports one finding for one forbidden path however many descendant paths the other file names', () => {
+    const issues = detect(
+      agents(`${FILLER}Never edit \`src/generated/\`.\n`),
+      claude(`${FILLER}Add schemas under \`src/generated/api/\`.\nAdd clients under \`src/generated/clients/\`.\nAdd types under \`src/generated/types/\`.\n`),
+    );
+    expect(issues).toHaveLength(1);
+    expect(new Set(issues.map((i) => i.id)).size).toBe(1);
+    // Every place the other file says to edit is listed as evidence.
+    expect(issues[0]!.evidence.filter((e) => e.startsWith('CLAUDE.md'))).toHaveLength(3);
   });
 
   it('stays quiet when the prohibition is only about editing by hand', () => {

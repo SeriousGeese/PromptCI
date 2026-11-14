@@ -457,8 +457,23 @@ export function detectCrossToolParity(files: InstructionFile[], options: CrossTo
     }
   }
 
+  // One finding per (file, fact): several descendant paths of one forbidden directory, or two
+  // lines of one disagreement, are one finding that lists every place.
+  const merged = new Map<string, Finding>();
+  for (const f of found) {
+    const id = issueId(f.dimension, f.scope, f.key);
+    const existing = merged.get(id);
+    if (!existing) {
+      merged.set(id, { ...f, mentions: [...f.mentions] });
+      continue;
+    }
+    for (const m of f.mentions) {
+      if (!existing.mentions.some((e) => e.facts === m.facts && e.place.line === m.place.line)) existing.mentions.push(m);
+    }
+  }
+
   const issues: PromptCiIssue[] = [];
-  for (const g of found.sort((x, y) => (issueId(x.dimension, x.scope, x.key) < issueId(y.dimension, y.scope, y.key) ? -1 : 1))) {
+  for (const g of [...merged.values()].sort((x, y) => (issueId(x.dimension, x.scope, x.key) < issueId(y.dimension, y.scope, y.key) ? -1 : 1))) {
     const mentions = [...g.mentions].sort((x, y) => (x.facts.label === y.facts.label ? x.place.line - y.place.line : x.facts.label < y.facts.label ? -1 : 1));
     issues.push({
       id: issueId(g.dimension, g.scope, g.key),
