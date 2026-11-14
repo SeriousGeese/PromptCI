@@ -1,0 +1,11 @@
+{
+  "name": "fixture-mirror-refuse-canonical-dup",
+  "private": true,
+  "packageManager": "pnpm@10.0.0",
+  "scripts": {
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "db:migrate": "drizzle-kit migrate"
+  }
+}

@@ -164,8 +164,8 @@ The score is self-reported by your own scan; regenerate the file in CI to keep i
 ## What gets detected
 
 - Duplicate instruction sections, within and across files; mirrored files (`AGENTS.md`,
-  `CLAUDE.md`, `GEMINI.md` kept in step) once per group. Only identical copies are auto-fixed;
-  near-duplicates are advisory
+  `CLAUDE.md`, `GEMINI.md` kept in step) once per group, advisory; `fix --issue` can opt in to
+  one import line of `AGENTS.md` in a root `CLAUDE.md`
 - Conflicting directives (do/don't pairs, competing framework or version choices)
 - Context bloat (file-size thresholds, token budget checks)
 - Stale instructions (old years, dated TODOs, deprecated wording, outdated versions)

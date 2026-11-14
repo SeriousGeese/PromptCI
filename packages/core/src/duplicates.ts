@@ -17,6 +17,27 @@ import * as path from 'node:path';
 import type { InstructionFile, InstructionSection, PromptCiIssue } from './types.js';
 import { snippet } from './evidence.js';
 import { fileIdPath, sectionIdPath } from './finding-id.js';
+import { sameSectionText } from './same-text.js';
+
+export { sameSectionText } from './same-text.js';
+import { importRecipeTarget, isImportOnlySection } from './mirror-import.js';
+
+/** Tag on the mirrored-instruction-files finding; the fix engine's import recipe keys on it. */
+export const MIRRORED_FILES_TAG = 'mirrored-files';
+
+/**
+ * The pointer sentence the pre-0.4.1 consolidation recipe wrote under each
+ * heading. A section holding only that (or only an `@` import) is a pointer,
+ * not content, and is never duplicate-eligible: otherwise one fix PR's own
+ * pointers read as new duplicates of each other on the next scan.
+ */
+const LEGACY_POINTER_RE = /^see canonical instructions in \[[^\]]+\]\([^)]+\) for details\.$/i;
+
+function isPointerOnlySection(section: InstructionSection): boolean {
+  if (isImportOnlySection(section)) return true;
+  const body = section.text.split(/\r?\n/).slice(section.heading !== undefined ? 1 : 0).map((l) => l.trim()).filter(Boolean);
+  return body.length > 0 && body.every((l) => LEGACY_POINTER_RE.test(l));
+}
 
 /**
  * Cross-file: sections shorter than this (normalised chars) are too noisy to flag.
@@ -111,36 +132,6 @@ function isBoilerplateHeading(heading: string | undefined): boolean {
   return false;
 }
 
-/**
- * The ONE definition of "the same text" for an UNATTENDED consolidation edit,
- * shared by per-section duplicate findings, mirrored-file findings and the
- * import recipe (pcic-1ik0.5, pcic-1ik0.10). Two sections are the same text
- * only when they are byte-identical after normalising exactly these, and
- * nothing else:
- *
- * - line endings (CRLF and CR become LF);
- * - trailing whitespace at the end of each line;
- * - a leading byte-order mark;
- * - leading and trailing blank lines of the section.
- *
- * No interior whitespace is collapsed, no indentation is trimmed, no reflow is
- * treated as equal and no Markdown is modelled: a nested list, `<pre>` or
- * inline-code spacing, a reflowed paragraph, tabs versus spaces, or a
- * different Unicode normalisation all count as different, and the finding is
- * then advisory. That costs a few auto-fixes and removes the whole class of
- * "equal after normalising, different in meaning" wrong edits.
- */
-export function sameSectionText(section: Pick<InstructionSection, 'text'>): string {
-  const lines = section.text
-    .replace(/^\uFEFF/, '')
-    .replace(/\r\n?/g, '\n')
-    .split('\n')
-    .map((line) => line.replace(/[ \t\f\v]+$/, ''));
-  while (lines.length > 0 && lines[0] === '') lines.shift();
-  while (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
-  return lines.join('\n');
-}
-
 /** True when every section in the list has the same text (see {@link sameSectionText}). */
 function allSameText(sections: Array<Pick<InstructionSection, 'text'>>): boolean {
   return new Set(sections.map(sameSectionText)).size === 1;
@@ -199,6 +190,7 @@ export function detectDuplicates(files: InstructionFile[]): PromptCiIssue[] {
     for (const section of file.sections) {
       const norm = normalizeSection(section.text);
       if (norm.length < WITHIN_FILE_MIN_SECTION_LENGTH) continue;  // BUG-001: lower global floor
+      if (isPointerOnlySection(section)) continue;  // pcic-1ik0.10: a pointer is not content
       if (tokenize(norm).size < MIN_TOKEN_COUNT) continue;
       eligible.push({ ...section, normalizedText: norm });
     }
@@ -370,8 +362,9 @@ export function detectDuplicates(files: InstructionFile[]): PromptCiIssue[] {
     const duplicateTokens = sections.slice(1).reduce((sum, s) => sum + Math.round(s.text.length / 4), 0);
     // Copies that are similar but not the same text (near-duplicates) must not
     // be consolidated unattended: the pointer would replace the text that
-    // differs, and with it the evidence of a conflict. Same text = equal after
-    // collapsing whitespace and line endings (pcic-1ik0.5, PromptCI#160).
+    // differs, and with it the evidence of a conflict. Same text = byte-identical
+    // after the normalisation in same-text.ts (line endings, trailing
+    // whitespace, a leading BOM, edge blank lines only; pcic-1ik0.5, PromptCI#160).
     const identical = allSameText(sections);
     const summary =
       (fileCount > 2
@@ -401,14 +394,23 @@ export function detectDuplicates(files: InstructionFile[]): PromptCiIssue[] {
         (identical
           ? ''
           : 'The copies differ: decide which text is right before consolidating, since a pointer would discard the other. Then ') +
-        `${identical ? 'Consolidate' : 'consolidate'} these sections into one canonical location (e.g. AGENTS.md) and use forwarding pointers to save ~${duplicateTokens} tokens per session. If both are intentional, add a comment clarifying the distinction.`,
-      // `applyFixRecipe` can consolidate a duplicate that spans MULTIPLE files
-      // (pick a canonical file, replace the copies with a forwarding pointer),
-      // but only copies that are the same text: a near-duplicate stays
-      // advisory. A cluster confined to one file has no other file to point
-      // at, so it stays advisory too. Same-file duplicate *headings* are
-      // handled by the other detectors below and are never auto-applied.
-      autoApplySafe: fileCount >= 2 && identical,
+        `${identical ? 'Consolidate' : 'consolidate'} these sections into one canonical location (e.g. AGENTS.md) to save ~${duplicateTokens} tokens per session. ` +
+        'A repository-root CLAUDE.md can load AGENTS.md with an `@AGENTS.md` line, but only a session started at the ' +
+        'repository root loads it without asking (from a subdirectory it is an external import that needs a one-time ' +
+        'approval); a markdown link is not loaded at all. If both copies are intentional, add a comment clarifying the distinction.',
+      // pcic-1ik0.10: advisory. Replacing ONE section of a file with a pointer
+      // drops it from the agent's context (no tool loads a markdown link), and
+      // an import would load the whole canonical file, not just this section.
+      // The only edit for duplicates is the mirrored-files finding's opt-in
+      // CLAUDE.md import (see mirrorIssue and mirror-import.ts).
+      autoApplySafe: false,
+      // pcic-1ik0.10: an exact duplicate's identity is the repeated text, not
+      // the list of files that repeat it, so a copy being removed (the import
+      // fix on a mirror) or added keeps the finding in the baseline, the trend
+      // and SARIF. Near-duplicates keep the default fingerprint.
+      ...(identical
+        ? { fingerprintKey: `duplicate-section:${crypto.createHash('sha1').update(sameSectionText(sections[0]!)).digest('hex')}` }
+        : {}),
       confidence,
     });
   }
@@ -639,12 +641,43 @@ function mirrorIssue(
   // replaced unattended: the pointer would delete the text that differs, and
   // with it the evidence of a conflict. Same rule as per-section findings.
   const drifted = groupClusters.filter((keys) => !allSameText(sectionsOf(keys))).map(heading);
+  // pcic-1ik0.10: advisory. The suggested edit for a repo-root CLAUDE.md copy
+  // of the repo-root AGENTS.md is one import line; it is applied only on an
+  // explicit opt-in (`promptci fix --issue <id>`), because it changes what a
+  // Claude Code session started in a subdirectory loads (see mirror-import.ts).
+  const id = mirrorIssueId(files.map((f) => idPath.get(f) ?? f));
+  const rels = files.map((f) => idPath.get(f) ?? f);
+  const canonicalRel = rels[0]!;
+  const claudeTargets = rels
+    .slice(1)
+    .map((r) => ({ rel: r, importPath: importRecipeTarget(r, canonicalRel) }))
+    .filter((t): t is { rel: string; importPath: string } => t.importPath !== undefined);
+  const hasGemini = rels.slice(1).some((r) => path.posix.basename(r) === 'GEMINI.md');
+  const importAdvice =
+    claudeTargets.length > 0
+      ? `For ${claudeTargets.map((t) => t.rel).join(' and ')}: replace the sections it copies from ${canonicalName} with ` +
+        `the line ${claudeTargets.map((t) => `\`@${t.importPath}\``).join(' / ')} and keep any section only that file ` +
+        'has below it (`promptci fix --issue ' + id + '` makes this edit when every copied section is the same text ' +
+        'and nothing would move). Claude Code loads such an import when the session starts at the repository root; ' +
+        'started in a subdirectory, it treats the import as external, which needs a one-time approval, and a ' +
+        'headless session there may not load it, while copied text loads either way. A markdown link is not loaded.'
+      : `keeping one canonical file (here ${canonicalName}). A repository-root CLAUDE.md can import AGENTS.md with an ` +
+        '`@AGENTS.md` line (loaded when the session starts at the repository root); Copilot, Cursor and Windsurf ' +
+        'files load no import and need their own copy. If a generator writes these files, configure it accordingly.';
+  const dotClaudeNote = rels.slice(1).includes('.claude/CLAUDE.md')
+    ? ' .claude/CLAUDE.md is not edited by `promptci fix`: it is not in the same directory as AGENTS.md, so relative ' +
+      '@ paths in the shared text would resolve from another directory after the edit.'
+    : '';
+  const geminiNote = hasGemini
+    ? ' GEMINI.md: keep its text; Gemini CLI documents `@file.md` imports, but Antigravity CLI, which replaced it ' +
+      'for many users, documents that `@filename` does not inline the file (its rules page lists AGENTS.md among the files it reads).'
+    : '';
   const counts = files
     .map((f, i) => `${names[i]} ${shared(f)} of ${Math.max(shared(f), mirrors.comparable.get(f) ?? 0)}`)
     .join(', ');
 
   return {
-    id: mirrorIssueId(files.map((f) => idPath.get(f) ?? f)),
+    id,
     severity: 'warning',
     category: 'duplicate',
     title: `Possible mirrored instruction files: ${names.join(', ')}`,
@@ -666,16 +699,15 @@ function mirrorIssue(
     recommendation:
       (drifted.length > 0
         ? `Reconcile the sections that differ (${snippet(drifted.join(', '), 120)}) first: decide which text is ` +
-          'right, since a pointer would discard the other. Then consider '
-        : 'Consider ') +
-      `keeping one canonical file (here ${canonicalName}) and replacing the others with a short pointer ` +
-      `such as "Follow ${path.basename(canonicalName)}", or a symlink where the tool follows one. If a generator ` +
-      'writes these files, configure it to write the pointer instead. Keep only genuinely tool-specific guidance ' +
-      'in the other files.',
-    // The consolidation recipe replaces each copied section outside the
-    // canonical (first-listed) file with a pointer to it. Only safe when every
-    // copy is the same text; otherwise advisory.
-    autoApplySafe: drifted.length === 0,
+          'right, since dropping a copy would discard the other. Then '
+        : '') +
+      (claudeTargets.length > 0 ? importAdvice : `${drifted.length > 0 ? 'consider' : 'Consider'} ${importAdvice}`) +
+      dotClaudeNote +
+      geminiNote,
+    // Advisory everywhere (pcic-1ik0.10): no autopilot PR and nothing in a
+    // plain `promptci fix`. The CLAUDE.md import recipe is opt-in only.
+    autoApplySafe: false,
+    tags: [MIRRORED_FILES_TAG],
     // One identity per mirror group, keyed on its canonical file: editing a
     // copied section, or the group gaining or losing a member, is the same
     // finding (baseline, trend, SARIF), not "resolved + new".

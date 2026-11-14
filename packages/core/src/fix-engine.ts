@@ -1,9 +1,12 @@
 import * as path from 'node:path';
 import * as fs from 'node:fs/promises';
+import micromatch from 'micromatch';
 import type { FixEdit, PromptCiIssue } from './types.js';
 import { renderPromptCiGitignore } from './promptci-gitignore.js';
 import { isWithinRoot, realPathWithinRoot } from './path-containment.js';
 import { gitignoreLineMatchesTarget } from './security-pack.js';
+import { MIRRORED_FILES_TAG } from './duplicates.js';
+import { MIRROR_CANONICAL_BASENAME, consolidateWithImport, importRecipeTarget } from './mirror-import.js';
 
 export interface FileChange {
   filePath: string; // Absolute path
@@ -114,7 +117,9 @@ async function applyLineEdits(edits: readonly FixEdit[], repoRoot: string): Prom
  */
 export async function applyFixRecipe(
   issue: PromptCiIssue,
-  repoRoot: string
+  repoRoot: string,
+  /** `optIn`: the caller named this finding (`promptci fix --issue <id>`); needed for an {@link isOptInRecipe} recipe. */
+  options: { optIn?: boolean } = {},
 ): Promise<FileChange[]> {
   const changes: FileChange[] = [];
 
@@ -209,80 +214,151 @@ export async function applyFixRecipe(
     return changes;
   }
 
-  // 4. Duplicate Markdown Section Consolidation
-  if (issue.category === 'duplicate' && issue.locations.length >= 2) {
-    // 4a. Identify canonical path: AGENTS.md preferred, otherwise the first in location list
-    let canonicalLoc = issue.locations.find(loc =>
-      path.basename(loc.filePath).toLowerCase() === 'agents.md'
-    );
-    if (!canonicalLoc) {
-      canonicalLoc = issue.locations[0];
-    }
-    const canonicalPath = resolveSafePath(repoRoot, canonicalLoc.filePath);
-    const canonicalBase = path.basename(canonicalPath);
-
-    // 4b. Group the non-canonical locations by file. A single file can contain
-    // the duplicated section more than once; computing one FileChange per
-    // location from the original content and writing them in sequence would
-    // clobber all but the last, so each file is rewritten exactly once with
-    // every one of its duplicate ranges replaced (BUG: same-file collision).
-    const byFile = new Map<string, Array<{ startLine?: number; endLine?: number }>>();
-    for (const loc of issue.locations) {
-      const filePath = resolveSafePath(repoRoot, loc.filePath);
-      if (filePath === canonicalPath) continue; // skip canonical file
-      const list = byFile.get(filePath) ?? [];
-      list.push(loc);
-      byFile.set(filePath, list);
-    }
-
-    for (const [filePath, locs] of byFile) {
-      let content: string;
-      try {
-        content = await fs.readFile(filePath, 'utf-8');
-      } catch {
-        continue;
-      }
-
-      const lines = content.split(/\r?\n/);
-      const lineEnding = content.includes('\r\n') ? '\r\n' : '\n';
-
-      // Relative path from this file to the canonical file for a clean link.
-      const relPath = path.relative(path.dirname(filePath), canonicalPath).replace(/\\/g, '/');
-      const linkTarget = relPath.startsWith('.') ? relPath : `./${relPath}`;
-      const pointerText = `See canonical instructions in [${canonicalBase}](${linkTarget}) for details.`;
-
-      // Replace each duplicate range bottom-up so an earlier (higher-line)
-      // replacement never shifts the indices of ranges still to be processed.
-      const ranges = locs
-        .map(loc => ({
-          startIdx: (loc.startLine ?? 1) - 1,
-          endIdx: (loc.endLine ?? lines.length) - 1,
-        }))
-        .sort((a, b) => b.startIdx - a.startIdx);
-
-      let working = lines;
-      for (const { startIdx, endIdx } of ranges) {
-        const sectionLines = working.slice(startIdx, endIdx + 1);
-        // Preserve a leading heading line (e.g. "## Deployment") and replace
-        // only the body below it; otherwise replace the whole range.
-        const hasHeading = sectionLines.length > 0 && sectionLines[0].trim().startsWith('#');
-        const replaceStartIdx = hasHeading ? startIdx + 1 : startIdx;
-        working = [
-          ...working.slice(0, replaceStartIdx),
-          pointerText,
-          ...working.slice(endIdx + 1),
-        ];
-      }
-
-      changes.push({
-        filePath,
-        originalContent: content,
-        newContent: working.join(lineEnding),
-      });
-    }
+  // 4. Duplicate consolidation: no unattended edit (pcic-1ik0.10).
+  //
+  // The old recipe replaced each copied section with a markdown link ("See
+  // canonical instructions in [AGENTS.md](./AGENTS.md)"), which no tool
+  // loads, so the guidance silently left the agent's context. It is gone on
+  // every path. Per-section duplicates get no edit. A mirrored-files finding
+  // gets the CLAUDE.md import recipe ONLY when the caller opts in by naming
+  // it (`promptci fix --issue <id>`), because the import does not load in a
+  // session started in a subdirectory without a one-time approval (see
+  // mirror-import.ts). A caller that ignores `autoApplySafe` and calls this
+  // without the opt-in (a hosted autopilot) gets no edit.
+  if (issue.category === 'duplicate') {
+    // Every path the finding names must stay inside the repository; an
+    // escaping one is an attack or a bug, so it throws, whatever the finding.
+    for (const loc of issue.locations) resolveSafePath(repoRoot, loc.filePath);
+    for (const p of issue.filePaths) resolveSafePath(repoRoot, p);
+    if (!options.optIn || !isOptInRecipe(issue)) return changes;
+    return (await planMirrorImport(issue, repoRoot)).changes;
   }
 
   return changes;
+}
+
+/**
+ * True for a finding whose recipe is applied only on an explicit opt-in
+ * (`promptci fix --issue <id>`), never by `promptci fix` on its own or by an
+ * autopilot: today, the mirrored-files finding's CLAUDE.md import.
+ */
+export function isOptInRecipe(issue: PromptCiIssue): boolean {
+  return issue.category === 'duplicate' && (issue.tags ?? []).includes(MIRRORED_FILES_TAG);
+}
+
+/**
+ * True when any active pattern of a .gitignore could match `relPath` or one of
+ * its parent directories. Negations are not applied: when in doubt the path
+ * counts as ignored, the safe side for an edit that relies on the file.
+ */
+function mayBeIgnored(relPath: string, gitignore: string): boolean {
+  const parts = relPath.split('/');
+  const candidates = parts.map((_, i) => parts.slice(0, i + 1).join('/'));
+  return gitignore
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l !== '' && !l.startsWith('#') && !l.startsWith('!'))
+    .some((line) => {
+      const pattern = line.replace(/^\/+/, '').replace(/\/+$/, '');
+      if (pattern === '') return false;
+      const glob = pattern.includes('/') ? pattern : `**/${pattern}`;
+      return candidates.some((c) => micromatch.isMatch(c, glob, { dot: true }));
+    });
+}
+
+export type MirrorImportPlan = {
+  /** The edits, empty when anything was refused (all or nothing). */
+  changes: FileChange[];
+  /** Why no edit is made, one line each; empty when `changes` is the plan. */
+  refusals: string[];
+  /** Group members the recipe never edits (anything but a root CLAUDE.md copy), with the reason. */
+  untouched: string[];
+};
+
+/**
+ * The CLAUDE.md import recipe for one mirrored-files finding, re-checked
+ * against the files on disk. Edits only a repo-root `CLAUDE.md`
+ * copy of the repo-root `AGENTS.md` (never `.claude/CLAUDE.md`; see
+ * `importRecipeTarget`); every other member is left as it is. All or
+ * nothing: any refusal means no edit to any file.
+ *
+ * Calling this IS naming the recipe: unlike `applyFixRecipe`, it has no
+ * `optIn` gate and returns the edits for any mirrored-files finding it can
+ * apply. Call it only for a finding the user picked (as
+ * `promptci fix --issue <id>` does), never from an autopilot.
+ */
+export async function planMirrorImport(issue: PromptCiIssue, repoRoot: string): Promise<MirrorImportPlan> {
+  const root = path.resolve(repoRoot);
+  const rel = (abs: string) => path.relative(root, abs).split(path.sep).join('/');
+  const none = (...refusals: string[]): MirrorImportPlan => ({ changes: [], refusals, untouched: [] });
+  if (!isOptInRecipe(issue)) return none('not a mirrored-files finding');
+  const [canonicalRaw, ...copiesRaw] = issue.filePaths;
+  if (canonicalRaw === undefined || copiesRaw.length === 0) return none('the finding names no copies');
+  const canonicalPath = resolveSafePath(root, canonicalRaw);
+  const copies = copiesRaw.map((p) => resolveSafePath(root, p));
+  const canonicalRel = rel(canonicalPath);
+  if (canonicalRel !== MIRROR_CANONICAL_BASENAME) {
+    return none(`the canonical file is ${canonicalRel}, not the repository-root ${MIRROR_CANONICAL_BASENAME}`);
+  }
+  if (copies.some((c) => path.basename(c) === MIRROR_CANONICAL_BASENAME || c === canonicalPath)) {
+    return none(`more than one ${MIRROR_CANONICAL_BASENAME} in the group: the canonical file is ambiguous`);
+  }
+
+  const read = async (p: string): Promise<string | undefined> => {
+    if (!realPathWithinRoot(root, p)) return undefined;
+    try {
+      return await fs.readFile(p, 'utf-8');
+    } catch {
+      return undefined;
+    }
+  };
+  const canonicalContent = await read(canonicalPath);
+  if (canonicalContent === undefined || canonicalContent.trim() === '') {
+    return none(`${canonicalRel} cannot be read (or is empty) here`);
+  }
+  // An import of a file other clones do not have would load nothing there.
+  const gitignore = await read(path.join(root, '.gitignore'));
+  if (gitignore !== undefined && mayBeIgnored(canonicalRel, gitignore)) {
+    return none(`the root .gitignore may ignore ${canonicalRel}`);
+  }
+
+  const changes: FileChange[] = [];
+  const refusals: string[] = [];
+  const untouched: string[] = [];
+  for (const copy of copies) {
+    const copyRel = rel(copy);
+    const importPath = importRecipeTarget(copyRel, canonicalRel);
+    if (importPath === undefined) {
+      untouched.push(
+        path.basename(copy) === 'GEMINI.md'
+          ? `${copyRel}: not edited (an @ import in GEMINI.md does not load in every Gemini tool)`
+          : copyRel === '.claude/CLAUDE.md'
+            ? `${copyRel}: not edited (it is not in AGENTS.md's directory, so relative @ paths in the shared text would resolve from another directory after the edit)`
+            : path.basename(copy) === 'CLAUDE.md'
+              ? `${copyRel}: not edited (a CLAUDE.md below the root imports AGENTS.md as an external file)`
+              : `${copyRel}: not edited (its tool loads no @ import)`,
+      );
+      continue;
+    }
+    const content = await read(copy);
+    if (content === undefined) {
+      refusals.push(`${copyRel} cannot be read here`);
+      continue;
+    }
+    const result = consolidateWithImport(content, canonicalContent, { copyRel, canonicalRel, importPath });
+    if (!result.ok) {
+      refusals.push(result.reason);
+      continue;
+    }
+    changes.push({ filePath: copy, originalContent: content, newContent: result.newContent });
+  }
+  if (refusals.length > 0) return { changes: [], refusals, untouched };
+  if (changes.length === 0) {
+    // Say why a CLAUDE.md in the group was not edited, not just that none was.
+    const claudeReasons = untouched.filter((u) => /(^|\/)CLAUDE\.md: /.test(u));
+    return { changes: [], refusals: claudeReasons.length > 0 ? claudeReasons : ['no repository-root CLAUDE.md copy to edit'], untouched };
+  }
+  return { changes, refusals: [], untouched };
 }
 
 /**
