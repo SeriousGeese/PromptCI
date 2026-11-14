@@ -75,8 +75,20 @@ describe('a closing quote, backtick or bracket is not part of a script name (pci
         fs.writeFileSync(change.filePath, change.newContent, 'utf-8');
       }
     }
-    const after = fs.readFileSync(path.join(repo, 'AGENTS.md'), 'utf-8');
-    expect(after).toContain('"npm run build && npm run build-fronte');
-    expect(after).toMatch(/npm run build-front(edn|end)"`/);
+    expect(issues[0]!.autoApplySafe).toBe(true);
+    expect(fs.readFileSync(path.join(repo, 'AGENTS.md'), 'utf-8')).toBe(
+      '# Agents\n\nBuild: `beforeBuildCommand: "npm run build && npm run build-frontend"`\n',
+    );
+  });
+
+  it('never offers an edit for a quoted script name, which only punctuation would "fix"', async () => {
+    const repo = repoWith({
+      'package.json': MANIFEST,
+      'AGENTS.md': '# Agents\n\n```bash\nnpm run "bulid"\n```\n',
+    });
+    for (const issue of (await commandIssues(repo)).filter((i) => i.category === 'command_validity')) {
+      expect(issue.fixEdits).toBeUndefined();
+      expect(issue.autoApplySafe).toBeUndefined();
+    }
   });
 });
