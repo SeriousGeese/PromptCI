@@ -152,6 +152,40 @@ describe('package manager', () => {
     ).toHaveLength(1);
   });
 
+  // Review of PR 167, third round: a reminder that names the manager is not a ban on it.
+  it.each([
+    "Don't forget to run `pnpm install` after pulling.",
+    'Do not skip `pnpm install` after switching branches.',
+    'Never push before running `pnpm test`.',
+    "Don't forget to install dependencies first:\n\n```bash\npnpm install\n```",
+    'Never commit without running the checks:\n\n```bash\npnpm lint && pnpm test\n```',
+  ])('does not read a reminder as a ban on the manager both files use: %s', (reminder) => {
+    const plain = `${FILLER}Install with \`pnpm install\`.\n`;
+    expect(detect(agents(plain), claude(`${FILLER}${reminder}\n`))).toEqual([]);
+    expect(detect(claude(plain), agents(`${FILLER}${reminder}\n`))).toEqual([]);
+    expect(detect(agents(plain), cursor(`${FILLER}${reminder}\n`))).toEqual([]);
+    expect(detect(agents(`${FILLER}${reminder}\n`), copilot(plain))).toEqual([]);
+  });
+
+  it('still reads "never use / run / instead of" directly before the manager as a ban', () => {
+    const plainConfidence = detect(agents(`${FILLER}Use \`pnpm install\`.\n`), claude(`${FILLER}Use \`npm install\`.\n`))[0]!.confidence;
+    for (const ban of ['Never use `npm install` here.', "Don't run `npm install`.", 'Run `pnpm install` instead of `npm install`.', 'Do not use `npm`.']) {
+      const issues = detect(agents(`${FILLER}Use \`pnpm install\`.\n${ban}\n`), claude(`${FILLER}Use \`npm install\`.\n`));
+      expect(issues, ban).toHaveLength(1);
+      // The ban is recorded: the finding is the more confident "explicit" one.
+      expect(issues[0]!.confidence, ban).toBeGreaterThan(plainConfidence);
+    }
+    expect(titles(detect(agents(`${FILLER}Never run \`yarn install\`.\n`), claude(`${FILLER}Install with \`yarn install\`.\n`)))).toEqual([
+      'Possible package manager disagreement with AGENTS.md: yarn is used in CLAUDE.md and ruled out in AGENTS.md',
+    ]);
+  });
+
+  it('leaves a contradiction inside one file to the single-file detector, even when another file repeats it', () => {
+    const selfContradicting = `${FILLER}Install with \`yarn install\`.\n\nSecond section:\n\nNever use \`yarn install\`.\n`;
+    expect(detect(agents(selfContradicting), claude(`${FILLER}Install with \`yarn install\`.\n`))).toEqual([]);
+    expect(detect(agents(`${FILLER}Install with \`yarn install\`.\n`), claude(selfContradicting))).toEqual([]);
+  });
+
   it('skips a file that mirrors AGENTS.md exactly or nearly', () => {
     const body = 'Avoid npm here.\nRun `pnpm install` instead of `npm install`.\n';
     expect(detect(agents(body), claude(body))).toEqual([]);

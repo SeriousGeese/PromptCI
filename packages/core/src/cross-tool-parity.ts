@@ -215,7 +215,9 @@ const PM_VERBS = 'install|i|ci|add|run|test|start|build|dev|lint|remove|update|u
 const PM_COMMAND_RE = new RegExp(`(?:^|[\\s(;&|])(${PM_ALT})\\s+(?:${PM_VERBS})\\b([^\\n;&|]*)`, 'gi');
 const NOT_A_PM_NOUN = '(?!\\s+(?:packages?|modules?|registry|scripts?|workspaces?|dependenc\\w+|audit|lockfile|cache))';
 const PM_USE_RE = new RegExp(`\\b(?:use|uses|using|prefer|stick\\s+to|always\\s+use|run\\s+with|managed\\s+(?:by|with))\\s+(?:the\\s+)?(${PM_ALT})\\b${NOT_A_PM_NOUN}`, 'gi');
-const PM_FORBID_RE = new RegExp(`\\b(?:never|don'?t|do\\s+not|must\\s+not|should\\s+not|shouldn'?t|avoid|instead\\s+of|rather\\s+than|not)\\s+(?:use\\s+|using\\s+|run\\s+|with\\s+)?(?:the\\s+)?(${PM_ALT})\\b${NOT_A_PM_NOUN}`, 'gi');
+const PM_FORBID_RE = new RegExp(`\\b(?:never|don'?t|do\\s+not|must\\s+not|should\\s+not|shouldn'?t|avoid|instead\\s+of|rather\\s+than|not)\\s+(?:use\\s+|using\\s+|run\\s+|with\\s+)?(?:the\\s+)?\`?(${PM_ALT})\\b${NOT_A_PM_NOUN}`, 'gi');
+/** What directly precedes a command span that rules its manager out: "never run `", "instead of `". */
+const SPAN_FORBID_RE = /\b(?:never|don'?t|do\s+not|must\s+not|should\s+not|shouldn'?t|avoid|instead\s+of|rather\s+than|not)\s+(?:(?:use|using|run|running|with)\s+)?(?:the\s+)?`*$/i;
 const GLOBAL_RE = /(?:\s-g\b|--global\b)/;
 
 function collectPackageManagers(lines: ScannedLine[], facts: FileFacts): void {
@@ -227,9 +229,14 @@ function collectPackageManagers(lines: ScannedLine[], facts: FileFacts): void {
       for (const m of seg.text.matchAll(PM_COMMAND_RE)) {
         if (GLOBAL_RE.test(m[0])) continue; // a global tool install is not the project's package manager
         const pm = m[1]!.toLowerCase();
-        const ctx = mentionContext(line, seg.at + m.index + m[0].toLowerCase().indexOf(pm));
-        if (ctx.negated) first(facts.pmForbidden, pm, line);
-        else if (!ctx.scoped) first(facts.pmUsed, pm, line);
+        if (line.negatedBlock) continue; // an example of what not to do is neither usage nor a ban
+        const at = seg.at + m.index + m[0].toLowerCase().indexOf(pm);
+        const ctx = mentionContext(line, at);
+        if (ctx.negated) {
+          // A reminder ("Don't forget to run `pnpm install`") is not a ban: only a negation that
+          // directly governs the manager ("never run `npm install`") rules it out.
+          if (!line.fence && SPAN_FORBID_RE.test(line.text.slice(0, at))) first(facts.pmForbidden, pm, line);
+        } else if (!ctx.scoped) first(facts.pmUsed, pm, line);
       }
     }
     if (line.fence) continue;
@@ -364,6 +371,7 @@ function compareToAnchor(anchor: FileFacts, other: FileFacts, scope: string, man
   } else {
     for (const [x, y] of [[anchor, other], [other, anchor]] as const) {
       for (const pm of x.pmForbidden.keys()) {
+        if (x.pmUsed.has(pm)) continue; // x contradicts itself: that is the single-file conflict detector's finding
         const used = y.pmUsed.get(pm);
         if (!used || manifestCovers(pm, used)) continue;
         found.push({
