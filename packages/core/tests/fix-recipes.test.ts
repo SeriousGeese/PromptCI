@@ -108,6 +108,8 @@ describe('isMechanicalRename', () => {
     ['Build', 'build', 'a case difference'],
     ['buidl', 'build', 'a transposition at the end of the word (pcic-1ik0.11)'],
     ['comit', 'commit', 'one letter of a double dropped'],
+    ['buld', 'build', 'a letter dropped inside the word'],
+    ['bild', 'build', 'a letter dropped inside the word'],
     ['buildd', 'build', 'a doubled character'],
     ['deploy-stagign', 'deploy-staging', 'a transposition in one hyphen-separated word'],
     ['release:pacth', 'release:patch', 'a transposition in one colon-separated word'],
@@ -137,7 +139,7 @@ describe('isMechanicalRename', () => {
     ['review', 'preview', 'a letter added at the start'],
     ['rebuild', 'prebuild', 'a lifecycle hook, not a typo'],
     ['build', 'builds', 'a plural'],
-    ['buld', 'build', 'a dropped letter that is not a double'],
+    ['buil', 'build', 'a letter dropped at the end'],
     ['a:', 'b:', 'an empty word on both sides'],
     ['x-', 'x-y', 'an empty word on one side'],
   ])('refuses %s -> %s (%s)', (missing, candidate) => {

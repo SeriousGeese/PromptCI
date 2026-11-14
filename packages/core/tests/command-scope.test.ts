@@ -90,14 +90,14 @@ describe('a typo fix follows the directory the text names', () => {
     const issues = await findings({
       'package.json': ROOT,
       'site/package.json': SITE,
-      'CLAUDE.md': '## Site (from `site/`)\n\n```sh\nnpm run buil\n```\n',
+      'CLAUDE.md': '## Site (from `site/`)\n\n```sh\nnpm run bild\n```\n',
     });
-    expect(brief(issues)).toEqual(['warning:npm run buil']);
+    expect(brief(issues)).toEqual(['warning:npm run bild']);
     noEdit(issues);
   });
 
   it('still rewrites the same typo with no directory in sight', async () => {
-    const issues = await findings({ 'package.json': ROOT, 'CLAUDE.md': '# P\n\n```sh\nnpm run buil\n```\n' });
+    const issues = await findings({ 'package.json': ROOT, 'CLAUDE.md': '# P\n\n```sh\nnpm run bild\n```\n' });
     expect(issues[0]!.autoApplySafe).toBe(true);
   });
 });
@@ -174,18 +174,18 @@ describe('a manifest that was listed but not read says nothing (hosted scans)', 
 
   it('offers no edit when any manifest in the repository was listed but not read', async () => {
     const issues = await findings(
-      { 'package.json': ROOT, 'CLAUDE.md': '# P\n\n```sh\nnpm run buil\n```\n' },
+      { 'package.json': ROOT, 'CLAUDE.md': '# P\n\n```sh\nnpm run bild\n```\n' },
       { knownPaths: [...inventory, 'tools/package.json'] },
     );
-    expect(brief(issues)).toEqual(['warning:npm run buil']);
+    expect(brief(issues)).toEqual(['warning:npm run bild']);
     noEdit(issues);
   });
 
   it('offers no edit when the manifest walk hit its directory limit', async () => {
     const dirs: Record<string, string> = {};
     for (let i = 0; i < 2100; i++) dirs[`d${String(i).padStart(3, '0')}/keep.txt`] = 'x';
-    const issues = await findings({ 'package.json': ROOT, ...dirs, 'CLAUDE.md': '# P\n\n```sh\nnpm run buil\n```\n' });
-    expect(brief(issues)).toEqual(['warning:npm run buil']);
+    const issues = await findings({ 'package.json': ROOT, ...dirs, 'CLAUDE.md': '# P\n\n```sh\nnpm run bild\n```\n' });
+    expect(brief(issues)).toEqual(['warning:npm run bild']);
     noEdit(issues);
   }, 60000);
 
@@ -207,9 +207,9 @@ describe('a manifest that was listed but not read says nothing (hosted scans)', 
     const unnamed = await findings({
       'package.json': ROOT,
       'tools/package.json': '[1, 2]',
-      'CLAUDE.md': '# P\n\n```sh\nnpm run buil\n```\n',
+      'CLAUDE.md': '# P\n\n```sh\nnpm run bild\n```\n',
     });
-    expect(brief(unnamed)).toEqual(['warning:npm run buil']);
+    expect(brief(unnamed)).toEqual(['warning:npm run bild']);
     noEdit(unnamed);
   });
 
@@ -275,12 +275,12 @@ describe('an unattended edit is default-deny (re-review of #170)', () => {
   const base = { 'package.json': pkg({ build: 'x', lint: 'x' }), 'site/package.json': pkg({ deploy: 'x', dev: 'x' }) };
 
   it.each([
-    ['a heading that names the directory and mentions the repo root', '## Site (from `site/`; paths are relative to the repo root)\n\n```sh\nnpm run buil\n```\n'],
-    ['a lead-in that says not the repo root', 'Run these from `site/`, not from the repo root:\n\n```sh\nnpm run buil\n```\n'],
-    ['a parent heading that names the directory', '# Site (`site/`)\n\n## Commands\n\n```sh\nnpm run buil\n```\n'],
+    ['a heading that names the directory and mentions the repo root', '## Site (from `site/`; paths are relative to the repo root)\n\n```sh\nnpm run bild\n```\n'],
+    ['a lead-in that says not the repo root', 'Run these from `site/`, not from the repo root:\n\n```sh\nnpm run bild\n```\n'],
+    ['a parent heading that names the directory', '# Site (`site/`)\n\n## Commands\n\n```sh\nnpm run bild\n```\n'],
   ])('offers no edit under %s', async (_name, body) => {
     const issues = await findings({ ...base, 'CLAUDE.md': body });
-    expect(brief(issues)).toEqual(['warning:npm run buil']);
+    expect(brief(issues)).toEqual(['warning:npm run bild']);
     noEdit(issues);
   });
 
@@ -309,10 +309,10 @@ describe('an unattended edit is default-deny (re-review of #170)', () => {
   it('offers no edit after a cd earlier in the same block', async () => {
     const issues = await findings({
       ...base,
-      'CLAUDE.md': '# P\n\n```sh\ncd tools\nnpm install\ncd ..\nnpm run buil\n```\n',
+      'CLAUDE.md': '# P\n\n```sh\ncd tools\nnpm install\ncd ..\nnpm run bild\n```\n',
       'tools/package.json': pkg({ x: 'x' }),
     });
-    expect(brief(issues)).toEqual(['warning:npm run buil']);
+    expect(brief(issues)).toEqual(['warning:npm run bild']);
     noEdit(issues);
   });
 
@@ -346,14 +346,14 @@ describe('RULE 1: an edit only in a repository that is certainly one package (th
   const multi = { 'package.json': root, 'site/package.json': pkg({ deploy: 'x', dev: 'x' }), 'apps/web/package.json': pkg({ deploy: 'x', dev: 'x' }) };
 
   it.each([
-    ['a directory in a parent list item', '# P\n\nScripts per package:\n\n- From `site/`:\n  - `npm run buil`\n'],
-    ['a <details> summary', '<details>\n<summary>Site (from `site/`)</summary>\n\nBuild:\n\n```sh\nnpm run buil\n```\n\n</details>\n'],
-    ['a table header', '| Run from `site/` | What |\n| --- | --- |\n| a | b |\n| c | d |\n| e | `npm run buil` |\n'],
-    ['a cd in an earlier block', '```sh\ncd site\nnpm install\n```\n\nThen:\n\n```sh\nnpm run buil\n```\n'],
-    ['a directory without backticks or a slash', 'From apps/web:\n\n```sh\nnpm run buil\n```\n'],
-    ['a heading naming the folder in words', '## Site (run inside the site folder)\n\n```sh\nnpm run buil\n```\n'],
-    ['a sentence naming the folder in words', '# P\n\nInside site, run npm run buil\n'],
-    ['a table cell', '| site | `npm run buil` |\n'],
+    ['a directory in a parent list item', '# P\n\nScripts per package:\n\n- From `site/`:\n  - `npm run bild`\n'],
+    ['a <details> summary', '<details>\n<summary>Site (from `site/`)</summary>\n\nBuild:\n\n```sh\nnpm run bild\n```\n\n</details>\n'],
+    ['a table header', '| Run from `site/` | What |\n| --- | --- |\n| a | b |\n| c | d |\n| e | `npm run bild` |\n'],
+    ['a cd in an earlier block', '```sh\ncd site\nnpm install\n```\n\nThen:\n\n```sh\nnpm run bild\n```\n'],
+    ['a directory without backticks or a slash', 'From apps/web:\n\n```sh\nnpm run bild\n```\n'],
+    ['a heading naming the folder in words', '## Site (run inside the site folder)\n\n```sh\nnpm run bild\n```\n'],
+    ['a sentence naming the folder in words', '# P\n\nInside site, run npm run bild\n'],
+    ['a table cell', '| site | `npm run bild` |\n'],
   ])('offers no edit with a second package.json, after %s', async (_name, body) => {
     const issues = await findings({ ...multi, 'CLAUDE.md': body });
     expect(issues.length).toBeGreaterThan(0);
@@ -381,9 +381,9 @@ describe('RULE 1: an edit only in a repository that is certainly one package (th
     const issues = await findings({
       ...oneBuild,
       '.github/actions/release/package.json': pkg({ start: 'x' }),
-      'CLAUDE.md': '## Release action (in `.github/actions/release/`)\n\n```sh\nnpm run buil\n```\n',
+      'CLAUDE.md': '## Release action (in `.github/actions/release/`)\n\n```sh\nnpm run bild\n```\n',
     });
-    expect(brief(issues)).toEqual(['warning:npm run buil']);
+    expect(brief(issues)).toEqual(['warning:npm run bild']);
     noEdit(issues);
   });
 
@@ -398,9 +398,9 @@ describe('RULE 1: an edit only in a repository that is certainly one package (th
     const issues = await findings({
       ...oneBuild,
       '.gitmodules': '[submodule "site"]\n\tpath = site\n\turl = https://example.com/site.git\n',
-      'CLAUDE.md': '### Site (from `site/` directory)\n\n```sh\nnpm run buil\n```\n',
+      'CLAUDE.md': '### Site (from `site/` directory)\n\n```sh\nnpm run bild\n```\n',
     });
-    expect(brief(issues)).toEqual(['warning:npm run buil']);
+    expect(brief(issues)).toEqual(['warning:npm run bild']);
     noEdit(issues);
   });
 
