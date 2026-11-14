@@ -45,11 +45,26 @@ function normalizeName(name: string): string {
   return name.toLowerCase().replace(/[-_:./\s]/g, '');
 }
 
-/** Shortest name a two-edit difference may be judged a typo rather than a different script. */
+/**
+ * @deprecated pcic-1ik0.11: no longer consulted. A two-edit difference is never
+ * mechanical (`major-release` -> `minor-release` is two edits inside one word,
+ * and a different word). Kept exported so the public API does not break.
+ */
 export const MECHANICAL_TWO_EDIT_MIN_LENGTH = 8;
 
-/** Shortest differing segment that may be corrected by an arbitrary single edit. */
+/** Shortest differing word that may be corrected by dropping or adding one character. */
 export const MECHANICAL_SEGMENT_MIN_LENGTH = 5;
+
+/** The separators a script name is split into words on. */
+const WORD_SEPARATORS = /([-_:./])/;
+
+/** True when `longer` is `shorter` with exactly one character inserted somewhere. */
+function isSingleInsertion(shorter: string, longer: string): boolean {
+  if (longer.length !== shorter.length + 1) return false;
+  let i = 0;
+  while (i < shorter.length && shorter[i] === longer[i]) i++;
+  return shorter.slice(i) === longer.slice(i + 1);
+}
 
 /** True when `a` and `b` are the same characters with one adjacent pair swapped. */
 function isAdjacentTransposition(a: string, b: string): boolean {
@@ -85,24 +100,23 @@ function isDigitForDigitSubstitution(a: string, b: string): boolean {
  *
  *  1. A pure case / separator difference (`type-check` → `typecheck`) is always
  *     mechanical: the two names denote the same thing in different styles.
- *  2. Otherwise both names must have the SAME number of `:`-separated segments,
- *     with the difference confined to exactly one of them. A command that
- *     gains, loses or re-scopes a segment is a different command.
- *  3. That segment pair must be within one edit, or two only when the whole
- *     name is at least {@link MECHANICAL_TWO_EDIT_MIN_LENGTH} characters —
- *     two edits on a short name reaches too far (`test` → `dist`).
- *  4. A trailing-digit variant suffix is never corrected: `v1` → `v2`,
+ *  2. Otherwise both names are split into words on `- _ : . /`, and must have
+ *     the same separators in the same places, with the difference confined to
+ *     exactly one word. A command that gains, loses or re-scopes a word is a
+ *     different command.
+ *  3. A trailing-digit variant suffix is never corrected: `v1` → `v2`,
  *     `py2` → `py3`, `1` → `2` select a version or a target, and the digit is
  *     the whole point of the name.
- *  5. In a differing segment shorter than
- *     {@link MECHANICAL_SEGMENT_MIN_LENGTH} characters, only a transposition
- *     or a mid-name digit swap counts. A single substituted LETTER in a short
- *     name usually spells another real token (`api`/`app`, `test`/`best`,
- *     `unit`/`init`), and no deterministic rule can tell which was meant — but
- *     `e3e`/`e2e` is not two words, and `bulid`/`build` is a slip of the
- *     fingers. (A dictionary would separate these more sharply; the repository
- *     has no dictionary and detectors make no network call, so the test is
- *     structural.)
+ *  4. The differing word must be a plausible slip of the fingers on the SAME
+ *     word: an adjacent transposition (`bulid`/`build`), a digit swapped for a
+ *     digit (`e3e`/`e2e`), or — in a word of at least
+ *     {@link MECHANICAL_SEGMENT_MIN_LENGTH} characters — one dropped or
+ *     doubled character (`buld`/`build`, `typecheeck`/`typecheck`). A
+ *     substituted letter, or any two edits, usually spells another real word
+ *     (`api`/`app`, `unit`/`init`, `major`/`minor`, pcic-1ik0.11), and no
+ *     deterministic rule can tell which was meant. (A dictionary would
+ *     separate these more sharply; the repository has no dictionary and
+ *     detectors make no network call, so the test is structural.)
  *
  * Anything this rejects is still reported — with the candidate named
  * cautiously in the recommendation — just never rewritten automatically.
@@ -112,29 +126,24 @@ export function isMechanicalRename(missing: string, candidate: string): boolean 
   // 1. Same name, different convention.
   if (normalizeName(missing) === normalizeName(candidate)) return true;
 
-  // 2. One differing `:` segment.
-  const from = missing.split(':');
-  const to = candidate.split(':');
+  // 2. One differing word; separators (odd indexes after the split) must match too.
+  const from = missing.split(WORD_SEPARATORS);
+  const to = candidate.split(WORD_SEPARATORS);
   if (from.length !== to.length) return false;
-  const differing = from.map((seg, i) => (seg === to[i] ? -1 : i)).filter((i) => i !== -1);
-  if (differing.length !== 1) return false;
+  const differing = from.map((part, i) => (part === to[i] ? -1 : i)).filter((i) => i !== -1);
+  if (differing.length !== 1 || differing[0]! % 2 === 1) return false;
   const a = from[differing[0]!]!;
   const b = to[differing[0]!]!;
+  if (a.length === 0 || b.length === 0) return false;
 
-  // 3. Within the edit budget for this name's length.
-  const distance = damerauLevenshtein(a, b);
-  if (distance < 1 || distance > CLOSE_MATCH_MAX_DISTANCE) return false;
-  if (distance === 2 && missing.length < MECHANICAL_TWO_EDIT_MIN_LENGTH) return false;
-
-  // 4. A trailing-digit variant is a choice, not a typo.
-  const stem = (seg: string): string => seg.replace(/\d+$/, '');
+  // 3. A trailing-digit variant is a choice, not a typo.
+  const stem = (word: string): string => word.replace(/\d+$/, '');
   if (stem(a) === stem(b)) return false;
 
-  // 5. A short segment may only be transposed, or have a mid-name digit swapped.
-  if (Math.max(a.length, b.length) < MECHANICAL_SEGMENT_MIN_LENGTH) {
-    return isAdjacentTransposition(a, b) || isDigitForDigitSubstitution(a, b);
-  }
-  return true;
+  // 4. A slip of the fingers on the same word, never a different word.
+  if (isAdjacentTransposition(a, b) || isDigitForDigitSubstitution(a, b)) return true;
+  if (Math.max(a.length, b.length) < MECHANICAL_SEGMENT_MIN_LENGTH) return false;
+  return isSingleInsertion(a, b) || isSingleInsertion(b, a);
 }
 
 /**

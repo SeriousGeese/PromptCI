@@ -106,6 +106,11 @@ describe('isMechanicalRename', () => {
     ['test:e3e', 'test:e2e', 'a mid-name digit in one segment'],
     ['type-check', 'typecheck', 'a separator difference'],
     ['Build', 'build', 'a case difference'],
+    ['buidl', 'build', 'a transposition at the end of the word (pcic-1ik0.11)'],
+    ['buld', 'build', 'a dropped character'],
+    ['buildd', 'build', 'a doubled character'],
+    ['deploy-stagign', 'deploy-staging', 'a transposition in one hyphen-separated word'],
+    ['release:minr', 'release:minor', 'a dropped character in one colon-separated word'],
   ])('accepts %s -> %s (%s)', (missing, candidate) => {
     expect(isMechanicalRename(missing, candidate)).toBe(true);
   });
@@ -120,6 +125,13 @@ describe('isMechanicalRename', () => {
     ['test:py2', 'test:py3', 'a trailing-digit target suffix'],
     ['build', 'build:web', 'a different number of segments'],
     ['test:unit', 'lint:unit', 'a difference in the scoping segment, short'],
+    // pcic-1ik0.11: a whole word replaced by a different word, even when the
+    // name is long enough that two edits used to count as a typo.
+    ['major-release', 'minor-release', 'a different word in a hyphen-separated name'],
+    ['release:major', 'release:minor', 'a different word in a colon-separated name'],
+    ['test:unit', 'test:e2e', 'a different word in the last segment'],
+    ['majorrelease', 'minorrelease', 'two substitutions inside one long word'],
+    ['deploy-staging', 'deploy-stating', 'one substituted letter in a long word'],
   ])('refuses %s -> %s (%s)', (missing, candidate) => {
     expect(isMechanicalRename(missing, candidate)).toBe(false);
   });
@@ -203,6 +215,17 @@ describe('command_validity: mistyped script with one close match', () => {
     expect(await applyAll(repo, issues, 'AGENTS.md')).toContain('pnpm test:e2e');
   });
 
+  it('keeps buidl -> build auto-applicable beside release scripts (pcic-1ik0.11)', async () => {
+    const repo = repoWith({
+      'package.json': JSON.stringify({ name: 'app', scripts: { build: 'tsc', 'minor-release': 'x', 'release:minor': 'y' } }),
+      'AGENTS.md': '# Agents\n\n```bash\nnpm run buidl\n```\n',
+    });
+    const issues = commandIssues(await issuesIn(repo));
+    expect(issues).toHaveLength(1);
+    expect(issues[0]!.autoApplySafe).toBe(true);
+    expect(await applyAll(repo, issues, 'AGENTS.md')).toContain('npm run build\n');
+  });
+
   /**
    * Review finding M1 end to end: each of these is a unique nearest neighbour,
    * so the old rule would have rewritten the command to a DIFFERENT, real
@@ -221,6 +244,9 @@ describe('command_validity: mistyped script with one close match', () => {
     ['lint', 'dist'],
     ['build:v1', 'build:v2'],
     ['test:py2', 'test:py3'],
+    // pcic-1ik0.11: erikvullings/mithril-materialized, CLAUDE.md line 69.
+    ['major-release', 'minor-release'],
+    ['release:major', 'release:minor'],
   ])('stays advisory for %s when the manifest only defines the sibling %s', async (missing, defined) => {
     const repo = repoWith({
       'package.json': JSON.stringify({ name: 'app', scripts: { [defined]: 'echo hi' } }),
