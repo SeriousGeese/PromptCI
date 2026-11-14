@@ -1,0 +1,7 @@
+{
+  "name": "docs",
+  "private": true,
+  "scripts": {
+    "test:e2e": "echo docs e2e"
+  }
+}
