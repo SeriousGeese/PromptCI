@@ -4,6 +4,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { applyFixRecipe, isRepairable, resolveSafePath } from '../src/fix-engine.js';
 import type { PromptCiIssue } from '../src/types.js';
+import { MIRRORED_FILES_TAG } from '../src/duplicates.js';
 
 function staleIssue(overrides: Partial<PromptCiIssue> = {}): PromptCiIssue {
   return {
@@ -131,69 +132,124 @@ describe('applyFixRecipe — .gitignore recipes', () => {
   });
 });
 
-describe('applyFixRecipe — duplicate consolidation', () => {
+describe('applyFixRecipe — duplicate consolidation (pcic-1ik0.10: import, never a link)', () => {
   let dir: string;
   beforeEach(async () => { dir = await makeTempDir(); });
   afterEach(async () => { await fs.rm(dir, { recursive: true, force: true }); });
 
-  function dupIssue(locations: PromptCiIssue['locations']): PromptCiIssue {
+  async function write(files: Record<string, string>): Promise<void> {
+    for (const [rel, body] of Object.entries(files)) {
+      await fs.mkdir(path.dirname(path.join(dir, rel)), { recursive: true });
+      await fs.writeFile(path.join(dir, rel), body, 'utf-8');
+    }
+  }
+
+  /** A mirrored-files finding over these files, canonical first. */
+  function mirror(...files: string[]): PromptCiIssue {
     return issue({
-      id: 'dup-1',
+      id: 'duplicate-mirror',
       category: 'duplicate',
-      filePaths: [...new Set(locations.map((l) => l.filePath))],
-      locations,
+      filePaths: files,
+      locations: files.map((filePath) => ({ filePath, startLine: 1, endLine: 2 })),
+      tags: [MIRRORED_FILES_TAG],
+      autoApplySafe: true,
     });
   }
 
-  it('replaces the non-canonical copy with a pointer to AGENTS.md', async () => {
-    const body = '## Testing\nRun all tests before done.\n';
-    await fs.writeFile(path.join(dir, 'AGENTS.md'), body, 'utf-8');
-    await fs.writeFile(path.join(dir, 'CLAUDE.md'), body, 'utf-8');
+  const apply = async (finding: PromptCiIssue) =>
+    Object.fromEntries((await applyFixRecipe(finding, dir)).map((c) => [path.relative(dir, c.filePath).replace(/\\/g, '/'), c.newContent]));
 
-    const changes = await applyFixRecipe(
-      dupIssue([
-        { filePath: 'AGENTS.md', startLine: 1, endLine: 2 },
-        { filePath: 'CLAUDE.md', startLine: 1, endLine: 2 },
-      ]),
-      dir,
-    );
-
-    // Only the non-canonical file is rewritten.
-    expect(changes).toHaveLength(1);
-    expect(path.basename(changes[0]!.filePath)).toBe('CLAUDE.md');
-    expect(changes[0]!.newContent).toContain('See canonical instructions in [AGENTS.md]');
-    expect(changes[0]!.newContent).toContain('## Testing'); // heading preserved
-    expect(changes[0]!.newContent).not.toContain('Run all tests before done.');
+  it('replaces a CLAUDE.md that copies AGENTS.md with one @AGENTS.md import', async () => {
+    const body = '# Guide\n\n## Testing\nRun all tests before done.\n';
+    await write({ 'AGENTS.md': body, 'CLAUDE.md': body, '.gitignore': 'node_modules/\n*.log\n.promptci/*\n!AGENTS.md\n' });
+    expect(await apply(mirror('AGENTS.md', 'CLAUDE.md'))).toEqual({ 'CLAUDE.md': '@AGENTS.md\n' });
   });
 
-  // Item 3: two duplicate ranges in the SAME file must merge into ONE change.
-  // Computing one change per location from the original content and writing
-  // them in sequence would clobber all but the last.
-  it('merges multiple same-file duplicate ranges into a single change', async () => {
-    await fs.writeFile(path.join(dir, 'AGENTS.md'), '## Alpha\nalpha body\n', 'utf-8');
-    await fs.writeFile(
-      path.join(dir, 'CLAUDE.md'),
-      '## Alpha\nalpha body\n## Beta\nbeta body\n## Gamma\ngamma body\n',
-      'utf-8',
-    );
+  it('keeps a section only the copy has, below the import, with one blank line', async () => {
+    await write({
+      'AGENTS.md': '## Alpha\nalpha body\n\n## Gamma\ngamma body\n',
+      'CLAUDE.md': '## Alpha\nalpha body\n\n## Beta\nbeta body (Claude only)\n\n## Gamma\ngamma body\n',
+    });
+    expect(await apply(mirror('AGENTS.md', 'CLAUDE.md'))).toEqual({
+      'CLAUDE.md': '@AGENTS.md\n\n## Beta\nbeta body (Claude only)\n',
+    });
+  });
 
-    const changes = await applyFixRecipe(
-      dupIssue([
-        { filePath: 'AGENTS.md', startLine: 1, endLine: 2 },
-        { filePath: 'CLAUDE.md', startLine: 1, endLine: 2 }, // Alpha
-        { filePath: 'CLAUDE.md', startLine: 5, endLine: 6 }, // Gamma
-      ]),
-      dir,
-    );
+  it('writes the import Gemini CLI documents for GEMINI.md, and a relative path for a nested copy', async () => {
+    const body = '## Testing\nRun all tests before done.\n';
+    await write({ 'AGENTS.md': body, 'GEMINI.md': body, '.claude/CLAUDE.md': body, 'docs/GEMINI.md': body });
+    expect(await apply(mirror('AGENTS.md', 'GEMINI.md', '.claude/CLAUDE.md', 'docs/GEMINI.md'))).toEqual({
+      'GEMINI.md': '@./AGENTS.md\n',
+      '.claude/CLAUDE.md': '@../AGENTS.md\n',
+      'docs/GEMINI.md': '@../AGENTS.md\n',
+    });
+  });
 
-    // Exactly one merged change for CLAUDE.md, not two conflicting rewrites.
-    expect(changes).toHaveLength(1);
-    const out = changes[0]!.newContent;
-    expect(out.match(/See canonical instructions in \[AGENTS\.md\]/g)).toHaveLength(2);
-    expect(out).toContain('## Beta');
-    expect(out).toContain('beta body'); // untouched middle section survives
-    expect(out).not.toContain('alpha body');
-    expect(out).not.toContain('gamma body');
+  it('makes no edit at all when one section has drifted (same heading, different text)', async () => {
+    await write({
+      'AGENTS.md': '## Rules\nMigrations are never edited after merge.\n\n## Tests\nRun pnpm test.\n',
+      'CLAUDE.md': '## Rules\nMigrations are always edited after merge.\n\n## Tests\nRun pnpm test.\n',
+    });
+    expect(await apply(mirror('AGENTS.md', 'CLAUDE.md'))).toEqual({});
+  });
+
+  it('keeps a section whose fenced code lost its indentation', async () => {
+    const fence = (i: string) => `## Run\n\`\`\`python\nif x:\n${i}run()\n\`\`\`\n`;
+    await write({ 'AGENTS.md': fence('    '), 'CLAUDE.md': fence('') });
+    expect(await apply(mirror('AGENTS.md', 'CLAUDE.md'))).toEqual({});
+  });
+
+  it('does not add a second import, keeps front matter on top and keeps CRLF', async () => {
+    await write({
+      'AGENTS.md': '## Alpha\nalpha body\n',
+      'CLAUDE.md': '@AGENTS.md\n\n## Alpha\nalpha body\n',
+      'GEMINI.md': '---\ntitle: x\n---\r\n## Alpha\r\nalpha body\r\n',
+    });
+    expect(await apply(mirror('AGENTS.md', 'CLAUDE.md', 'GEMINI.md'))).toEqual({
+      'CLAUDE.md': '@AGENTS.md\n',
+      'GEMINI.md': '---\r\ntitle: x\r\n---\r\n@./AGENTS.md\r\n',
+    });
+  });
+
+  it.each([
+    ['a per-section duplicate (no mirrored-files tag)', async () => {
+      await write({ 'AGENTS.md': '## A\na\n', 'CLAUDE.md': '## A\na\n' });
+      return { ...mirror('AGENTS.md', 'CLAUDE.md'), tags: [] };
+    }],
+    ['a copy whose tool has no import (Copilot)', async () => {
+      await write({ 'AGENTS.md': '## A\na\n', 'CLAUDE.md': '## A\na\n', '.github/copilot-instructions.md': '## A\na\n' });
+      return mirror('AGENTS.md', 'CLAUDE.md', '.github/copilot-instructions.md');
+    }],
+    ['a canonical file that is not AGENTS.md', async () => {
+      await write({ 'CLAUDE.md': '## A\na\n', 'GEMINI.md': '## A\na\n' });
+      return mirror('CLAUDE.md', 'GEMINI.md');
+    }],
+    ['two AGENTS.md candidates', async () => {
+      await write({ 'AGENTS.md': '## A\na\n', 'sub/AGENTS.md': '## A\na\n', 'CLAUDE.md': '## A\na\n' });
+      return mirror('AGENTS.md', 'sub/AGENTS.md', 'CLAUDE.md');
+    }],
+    ['a canonical file missing on disk (unfetched)', async () => {
+      await write({ 'CLAUDE.md': '## A\na\n' });
+      return mirror('AGENTS.md', 'CLAUDE.md');
+    }],
+    ['a copy that no longer repeats anything', async () => {
+      await write({ 'AGENTS.md': '## A\na\n', 'CLAUDE.md': '## B\nb\n' });
+      return mirror('AGENTS.md', 'CLAUDE.md');
+    }],
+    ['a canonical file the .gitignore ignores by name', async () => {
+      await write({ 'AGENTS.md': '## A\na\n', 'CLAUDE.md': '## A\na\n', '.gitignore': 'node_modules/\nAGENTS.md\n' });
+      return mirror('AGENTS.md', 'CLAUDE.md');
+    }],
+    ['a canonical file the .gitignore ignores by glob or directory', async () => {
+      await write({ 'pkg/AGENTS.md': '## A\na\n', 'pkg/CLAUDE.md': '## A\na\n', '.gitignore': '/pkg/\n' });
+      return mirror('pkg/AGENTS.md', 'pkg/CLAUDE.md');
+    }],
+    ['one copy fine and one stale (all or nothing)', async () => {
+      await write({ 'AGENTS.md': '## A\na\n', 'CLAUDE.md': '## A\na\n', 'GEMINI.md': '## B\nb\n' });
+      return mirror('AGENTS.md', 'CLAUDE.md', 'GEMINI.md');
+    }],
+  ])('makes no edit for %s', async (_label, setup) => {
+    expect(await applyFixRecipe(await setup(), dir)).toEqual([]);
   });
 });
 

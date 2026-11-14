@@ -1010,12 +1010,13 @@ describe('detectDuplicates — auto-fix only for identical copies', () => {
     expect(issue.recommendation).toMatch(/^The copies differ: decide which text is right before consolidating/);
   });
 
-  it('an identical pair keeps the auto-fix', () => {
+  it('an identical pair is advisory too: one section is never replaced unattended (pcic-1ik0.10)', () => {
     const [issue] = pair(LONG_TEXT_A, LONG_TEXT_A);
     expect(issue!.severity).toBe('high');
-    expect(issue!.autoApplySafe).toBe(true);
+    expect(issue!.autoApplySafe).toBe(false);
     expect(issue!.summary).not.toContain('not identical');
     expect(issue!.recommendation).toMatch(/^Consolidate these sections/);
+    expect(issue!.recommendation).toContain('`@AGENTS.md` import line; a markdown link is not loaded');
   });
 
   describe('sameSectionText, the one "same text" rule for every consolidation auto-fix', () => {
@@ -1087,9 +1088,9 @@ describe('detectDuplicates — auto-fix only for identical copies', () => {
     expect(mirror!.summary).toContain('The copies already differ in 1 section(s): Database rules.');
   });
 
-  it('copies that differ only in whitespace and line endings count as identical', () => {
+  it('copies that differ only in whitespace and line endings count as identical (no "differ" wording)', () => {
     const [issue] = pair(LONG_TEXT_A, LONG_TEXT_A.replace(/\n/g, '\r\n').replace(/ the /g, '  the '));
-    expect(issue!.autoApplySafe).toBe(true);
+    expect(issue!.summary).not.toContain('not identical');
   });
 });
 
@@ -1139,8 +1140,9 @@ describe('detectDuplicates — mirrored instruction files', () => {
     ]);
     expect(issue.summary).toContain('shared sections per file: AGENTS.md 4 of 5, CLAUDE.md 4 of 5, GEMINI.md 4 of 5');
     expect(issue.summary).not.toContain('already differ');
-    expect(issue.recommendation).toContain('Follow AGENTS.md');
+    expect(issue.recommendation).toContain('replace the copied sections with one `@AGENTS.md` import line');
     expect(issue.autoApplySafe).toBe(true);
+    expect(issue.tags).toEqual(['mirrored-files']);
     expect(issue.fingerprintKey).toBe('duplicate-mirror:AGENTS.md');
 
     // Nothing between the three mirrors is reported per section any more ...
@@ -1153,7 +1155,7 @@ describe('detectDuplicates — mirrored instruction files', () => {
     expect(readme?.title).toBe('Possible duplicate: Contributing (4 files)');
   });
 
-  it('the consolidation recipe points the copies at AGENTS.md', async () => {
+  it('the consolidation recipe replaces the copies with an @AGENTS.md import', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'promptci-mirror-'));
     try {
       fs.cpSync(MIRROR_FIXTURE, root, { recursive: true });
@@ -1164,10 +1166,11 @@ describe('detectDuplicates — mirrored instruction files', () => {
       expect(issue.id).toBe(inPlace.id);
       const changes = await applyFixRecipe(issue, root);
       expect(changes.map((c) => path.basename(c.filePath)).sort()).toEqual(['CLAUDE.md', 'GEMINI.md']);
-      for (const change of changes) {
-        expect(change.newContent).toContain('See canonical instructions in [AGENTS.md](./AGENTS.md)');
-        expect(change.newContent).not.toContain('Drizzle ORM');
-      }
+      const byName = Object.fromEntries(changes.map((c) => [path.basename(c.filePath), c.newContent]));
+      // The Contributing section is shared with README.md, so it is also in
+      // AGENTS.md and is dropped too: every section is the same text.
+      expect(byName['CLAUDE.md']).toBe('@AGENTS.md\n');
+      expect(byName['GEMINI.md']).toBe('@./AGENTS.md\n');
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }

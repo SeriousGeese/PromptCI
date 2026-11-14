@@ -29,6 +29,7 @@ import { stripCodeBlocks } from './markdown-fences.js';
 import { fileIdPath } from './finding-id.js';
 import { aliasesWithNewType, groupAliasesByTarget } from './alias-files.js';
 import { UNSCORED_TAG } from './health-score.js';
+import { importTargets, importingToolFor } from './mirror-import.js';
 
 // ── Practice checks ──────────────────────────────────────────────────────────
 
@@ -437,6 +438,17 @@ function perFileBehaviorTarget(file: InstructionFile): { label: string; agent: s
 }
 
 function isForwardingFile(file: InstructionFile): boolean {
+  // pcic-1ik0.10: an `@AGENTS.md` (or `@CLAUDE.md`) import line, anywhere in a
+  // file whose tool loads imports (CLAUDE.md, GEMINI.md), puts the canonical
+  // file's guidance in that tool's context: the file forwards, whatever else it
+  // holds. A markdown link does not count (no tool loads it), and neither does
+  // an import line in a file whose tool documents no import syntax.
+  if (
+    importingToolFor(file.path) !== undefined &&
+    importTargets(file.content).some((t) => /(?:^|\/)(?:AGENTS|CLAUDE)\.md$/.test(t))
+  ) {
+    return true;
+  }
   // AP6: A header forwarding pointer near the top ("Follow AGENTS.md for the
   // canonical instructions") delegates behavioral rules to the canonical file
   // regardless of the stub's total length — this is the exact remedy the

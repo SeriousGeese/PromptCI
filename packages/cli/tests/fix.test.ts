@@ -76,7 +76,7 @@ describe('runFix CLI command', () => {
     expect(content).toBe(original);
   });
 
-  it('consolidates duplicate sections across files, replacing secondary sections with links', async () => {
+  it('replaces a CLAUDE.md that copies AGENTS.md with an @AGENTS.md import (pcic-1ik0.10)', async () => {
     const agentsPath = path.join(tmpDir, 'AGENTS.md');
     const claudePath = path.join(tmpDir, 'CLAUDE.md');
 
@@ -96,10 +96,9 @@ describe('runFix CLI command', () => {
     // Canonical (AGENTS.md) should remain fully intact
     expect(agentsContent).toContain('Run all tests before saying work is done.');
     
-    // Non-canonical (CLAUDE.md) should be replaced with a markdown link pointer
-    expect(claudeContent).toContain('See canonical instructions in [AGENTS.md]');
-    expect(claudeContent).toContain('./AGENTS.md');
-    expect(claudeContent).not.toContain('Ensure coverage matches or exceeds 80%.');
+    // CLAUDE.md imports AGENTS.md, which Claude Code loads in place; a
+    // markdown link would not be loaded.
+    expect(claudeContent).toBe('@AGENTS.md\n');
   });
 
   // pcic-1ik0.5 (PromptCI#160): a near-duplicate is two copies that have

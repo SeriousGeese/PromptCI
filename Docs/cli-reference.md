@@ -122,7 +122,7 @@ The five it can apply today:
 | --- | --- | --- |
 | `security-pack-no-promptci-gitignore` | Appends the baseline-preserving `.promptci/` stanza to `.gitignore` | No active line already covers `.promptci` |
 | `security-pack-unignored-dirs` | Appends each flagged build/dependency directory to `.gitignore` | No active line already covers that directory |
-| `duplicate-*` (cross-file) | Keeps one canonical copy (`AGENTS.md` if it is one of them) and replaces the others with a link to it | The duplicate spans at least two files |
+| `duplicate-*` (mirrored instruction files) | In each `CLAUDE.md` / `GEMINI.md` copy of `AGENTS.md`, drops every section that is the same text as one in `AGENTS.md` and adds one import line at the top (`@AGENTS.md` for Claude Code, `@./AGENTS.md` for Gemini CLI, relative to the file, e.g. `@../AGENTS.md` from `.claude/CLAUDE.md`); sections only the copy has stay below it | The finding is a mirror group; the canonical file is exactly one `AGENTS.md`, readable and not ignored by the root `.gitignore`; every other member is a `CLAUDE.md` or `GEMINI.md` (Copilot, Cursor and Windsurf files load no import, so a group with one gets no edit); no section has drifted (the same heading with different text). Per-section duplicates are advisory: replacing one section with a link drops it from every tool's context |
 | `cmd-validity-*` | Rewrites a **misspelled** package-manager script name to the one the manifest defines | Exactly one defined script is a close match **and** the difference is a misspelling rather than a different script — see below. The command must name a single script, and the text to replace must appear once on its line |
 | `dead-ref-*` | Re-points a broken relative markdown link at the file it names | Exactly one non-ignored file in the repository carries that basename, the scan could read the whole tree, every occurrence of that target is a plain inline **file** link outside any code fence or span, the path it would be rewritten to needs no escaping and is not the linking file itself, and each occurrence appears once on its line |
 
@@ -329,9 +329,12 @@ the category and that key.
   are `info` and do not count toward the health score. A workflow that gets its first unpinned
   action is a new finding.
 - Mirrored files: keyed on the group's canonical file, so editing a copied section, or a copy
-  turning into a pointer, keeps the finding. Its consolidation fix is offered only when every
-  copy is the same text; copies that have drifted are reported with the sections that differ and
-  must be reconciled by hand.
+  turning into an import, keeps the finding. Its import fix (see the `fix` table) is offered only
+  when every copy is the same text; copies that have drifted are reported with the sections that
+  differ and must be reconciled by hand.
+- Exact per-section duplicates: keyed on the repeated text, so a copy being added or removed
+  (for example by the mirror fix) keeps the finding. Upgrading from 0.4.0 shows each exact
+  per-section duplicate as new once.
 
 `review-diff --fail-on-regression`, the scan trend
 (`trend.newIssueIds`, `trend.resolvedIssueIds` and their counts) and SARIF `partialFingerprints`

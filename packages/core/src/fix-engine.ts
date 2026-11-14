@@ -1,9 +1,12 @@
 import * as path from 'node:path';
 import * as fs from 'node:fs/promises';
+import micromatch from 'micromatch';
 import type { FixEdit, PromptCiIssue } from './types.js';
 import { renderPromptCiGitignore } from './promptci-gitignore.js';
 import { isWithinRoot, realPathWithinRoot } from './path-containment.js';
 import { gitignoreLineMatchesTarget } from './security-pack.js';
+import { MIRRORED_FILES_TAG } from './duplicates.js';
+import { MIRROR_CANONICAL_BASENAME, consolidateWithImport, importTarget, importingToolFor } from './mirror-import.js';
 
 export interface FileChange {
   filePath: string; // Absolute path
@@ -209,79 +212,91 @@ export async function applyFixRecipe(
     return changes;
   }
 
-  // 4. Duplicate Markdown Section Consolidation
-  if (issue.category === 'duplicate' && issue.locations.length >= 2) {
-    // 4a. Identify canonical path: AGENTS.md preferred, otherwise the first in location list
-    let canonicalLoc = issue.locations.find(loc =>
-      path.basename(loc.filePath).toLowerCase() === 'agents.md'
-    );
-    if (!canonicalLoc) {
-      canonicalLoc = issue.locations[0];
-    }
-    const canonicalPath = resolveSafePath(repoRoot, canonicalLoc.filePath);
-    const canonicalBase = path.basename(canonicalPath);
-
-    // 4b. Group the non-canonical locations by file. A single file can contain
-    // the duplicated section more than once; computing one FileChange per
-    // location from the original content and writing them in sequence would
-    // clobber all but the last, so each file is rewritten exactly once with
-    // every one of its duplicate ranges replaced (BUG: same-file collision).
-    const byFile = new Map<string, Array<{ startLine?: number; endLine?: number }>>();
-    for (const loc of issue.locations) {
-      const filePath = resolveSafePath(repoRoot, loc.filePath);
-      if (filePath === canonicalPath) continue; // skip canonical file
-      const list = byFile.get(filePath) ?? [];
-      list.push(loc);
-      byFile.set(filePath, list);
-    }
-
-    for (const [filePath, locs] of byFile) {
-      let content: string;
-      try {
-        content = await fs.readFile(filePath, 'utf-8');
-      } catch {
-        continue;
-      }
-
-      const lines = content.split(/\r?\n/);
-      const lineEnding = content.includes('\r\n') ? '\r\n' : '\n';
-
-      // Relative path from this file to the canonical file for a clean link.
-      const relPath = path.relative(path.dirname(filePath), canonicalPath).replace(/\\/g, '/');
-      const linkTarget = relPath.startsWith('.') ? relPath : `./${relPath}`;
-      const pointerText = `See canonical instructions in [${canonicalBase}](${linkTarget}) for details.`;
-
-      // Replace each duplicate range bottom-up so an earlier (higher-line)
-      // replacement never shifts the indices of ranges still to be processed.
-      const ranges = locs
-        .map(loc => ({
-          startIdx: (loc.startLine ?? 1) - 1,
-          endIdx: (loc.endLine ?? lines.length) - 1,
-        }))
-        .sort((a, b) => b.startIdx - a.startIdx);
-
-      let working = lines;
-      for (const { startIdx, endIdx } of ranges) {
-        const sectionLines = working.slice(startIdx, endIdx + 1);
-        // Preserve a leading heading line (e.g. "## Deployment") and replace
-        // only the body below it; otherwise replace the whole range.
-        const hasHeading = sectionLines.length > 0 && sectionLines[0].trim().startsWith('#');
-        const replaceStartIdx = hasHeading ? startIdx + 1 : startIdx;
-        working = [
-          ...working.slice(0, replaceStartIdx),
-          pointerText,
-          ...working.slice(endIdx + 1),
-        ];
-      }
-
-      changes.push({
-        filePath,
-        originalContent: content,
-        newContent: working.join(lineEnding),
-      });
-    }
+  // 4. Duplicate consolidation: only the mirrored-files finding, by import.
+  //
+  // pcic-1ik0.10: the old recipe replaced each copied section with a markdown
+  // link ("See canonical instructions in [AGENTS.md](./AGENTS.md)"), which no
+  // tool loads, so the guidance silently left the agent's context and the
+  // next scan scored the trimmed file lower. A per-section duplicate is now
+  // advisory (no edit here); a mirrored CLAUDE.md / GEMINI.md gets one `@`
+  // import of AGENTS.md and loses only the sections that are the same text as
+  // AGENTS.md. Everything is re-checked against the files on disk, and any
+  // doubt means no edit at all, for every file.
+  if (issue.category === 'duplicate') {
+    // Every path the finding names must stay inside the repository; an
+    // escaping one is an attack or a bug, so it throws, whatever the finding.
+    for (const loc of issue.locations) resolveSafePath(repoRoot, loc.filePath);
+    for (const p of issue.filePaths) resolveSafePath(repoRoot, p);
+    if (!(issue.tags ?? []).includes(MIRRORED_FILES_TAG)) return changes;
+    return consolidateMirrorWithImport(issue, repoRoot);
   }
 
+  return changes;
+}
+
+/**
+ * True when any active pattern of a .gitignore could match `relPath` or one of
+ * its parent directories. Negations are not applied: when in doubt the path
+ * counts as ignored, the safe side for an edit that relies on the file.
+ */
+function mayBeIgnored(relPath: string, gitignore: string): boolean {
+  const parts = relPath.split('/');
+  const candidates = parts.map((_, i) => parts.slice(0, i + 1).join('/'));
+  return gitignore
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l !== '' && !l.startsWith('#') && !l.startsWith('!'))
+    .some((line) => {
+      const pattern = line.replace(/^\/+/, '').replace(/\/+$/, '');
+      if (pattern === '') return false;
+      const glob = pattern.includes('/') ? pattern : `**/${pattern}`;
+      return candidates.some((c) => micromatch.isMatch(c, glob, { dot: true }));
+    });
+}
+
+/** All-or-nothing import consolidation for one mirrored-files finding. */
+async function consolidateMirrorWithImport(issue: PromptCiIssue, repoRoot: string): Promise<FileChange[]> {
+  const root = path.resolve(repoRoot);
+  const [canonicalRaw, ...copiesRaw] = issue.filePaths;
+  if (canonicalRaw === undefined || copiesRaw.length === 0) return [];
+  const canonicalPath = resolveSafePath(root, canonicalRaw);
+  const copies = copiesRaw.map((p) => resolveSafePath(root, p));
+  // The canonical file is exactly one AGENTS.md; every copy is a file whose
+  // tool loads an import. Anything else (an ambiguous canonical file, a
+  // Copilot / Cursor / Windsurf copy) gets no edit.
+  if (path.basename(canonicalPath) !== MIRROR_CANONICAL_BASENAME) return [];
+  if (copies.some((c) => path.basename(c) === MIRROR_CANONICAL_BASENAME || c === canonicalPath)) return [];
+  if (new Set(copies).size !== copies.length) return [];
+
+  const read = async (p: string): Promise<string | undefined> => {
+    if (!realPathWithinRoot(root, p)) return undefined;
+    try {
+      return await fs.readFile(p, 'utf-8');
+    } catch {
+      return undefined;
+    }
+  };
+  const canonicalContent = await read(canonicalPath);
+  if (canonicalContent === undefined || canonicalContent.trim() === '') return [];
+  // An import of a file other clones do not have would load nothing there:
+  // no edit when the root .gitignore may ignore the canonical file.
+  const gitignore = await read(path.join(root, '.gitignore'));
+  if (gitignore !== undefined && mayBeIgnored(path.relative(root, canonicalPath).split(path.sep).join('/'), gitignore)) {
+    return [];
+  }
+
+  const changes: FileChange[] = [];
+  for (const copy of copies) {
+    const tool = importingToolFor(copy);
+    if (tool === undefined) return [];
+    const content = await read(copy);
+    if (content === undefined) return [];
+    const result = consolidateWithImport(content, canonicalContent, tool, importTarget(copy, canonicalPath));
+    // Nothing to drop means the files no longer mirror each other: the
+    // finding is stale, so leave every file alone.
+    if (result === undefined) return [];
+    changes.push({ filePath: copy, originalContent: content, newContent: result.newContent });
+  }
   return changes;
 }
 

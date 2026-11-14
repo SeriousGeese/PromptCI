@@ -17,6 +17,27 @@ import * as path from 'node:path';
 import type { InstructionFile, InstructionSection, PromptCiIssue } from './types.js';
 import { snippet } from './evidence.js';
 import { fileIdPath, sectionIdPath } from './finding-id.js';
+import { sameSectionText } from './same-text.js';
+
+export { sameSectionText } from './same-text.js';
+import { MIRROR_CANONICAL_BASENAME, importingToolFor, isImportOnlySection } from './mirror-import.js';
+
+/** Tag on the mirrored-instruction-files finding; the fix engine's import recipe keys on it. */
+export const MIRRORED_FILES_TAG = 'mirrored-files';
+
+/**
+ * The pointer sentence the pre-0.4.1 consolidation recipe wrote under each
+ * heading. A section holding only that (or only an `@` import) is a pointer,
+ * not content, and is never duplicate-eligible: otherwise one fix PR's own
+ * pointers read as new duplicates of each other on the next scan.
+ */
+const LEGACY_POINTER_RE = /^see canonical instructions in \[[^\]]+\]\([^)]+\) for details\.$/i;
+
+function isPointerOnlySection(section: InstructionSection): boolean {
+  if (isImportOnlySection(section)) return true;
+  const body = section.text.split(/\r?\n/).slice(section.heading !== undefined ? 1 : 0).map((l) => l.trim()).filter(Boolean);
+  return body.length > 0 && body.every((l) => LEGACY_POINTER_RE.test(l));
+}
 
 /**
  * Cross-file: sections shorter than this (normalised chars) are too noisy to flag.
@@ -111,73 +132,6 @@ function isBoilerplateHeading(heading: string | undefined): boolean {
   return false;
 }
 
-/** A fence opener or closer: three or more backticks or tildes, up to three spaces in. */
-const FENCE_RE = /^ {0,3}(`{3,}|~{3,})/;
-/** A line that starts a new prose block: a list item, heading, blockquote or table row. */
-const BLOCK_START_RE = /^(?:[-*+]\s|\d+[.)]\s|#{1,6}\s|>|\|)/;
-
-/**
- * The ONE definition of "the same text" for the consolidation auto-fix,
- * shared by per-section duplicate findings and mirrored-file findings (and by
- * any recipe that drops a copy in favour of its canonical text). Two sections
- * count as the same text when their canonical forms below are equal; anything
- * else, a near-duplicate, is advisory only.
- *
- * - Line endings are normalised and trailing spaces and tabs dropped
- *   everywhere.
- * - Code is compared verbatim otherwise: lines inside a fenced block (``` or
- *   ~~~), and lines indented by four or more columns or a tab (indented code,
- *   and nested list items, where indentation also carries meaning). Their
- *   leading whitespace, tabs versus spaces included, must match.
- * - Prose is compared modulo reflow: runs of spaces collapse, and the lines
- *   of one paragraph or one list item join. A blank line, a list item, a
- *   heading, a blockquote or a table row starts a new block, so a reflowed
- *   list never equals a paragraph, and block order matters.
- * - Nothing else changes: case, punctuation, numbers, flags and link targets
- *   all count.
- */
-export function sameSectionText(section: Pick<InstructionSection, 'text'>): string {
-  const blocks: string[] = [];
-  let prose: string[] = [];
-  const flush = () => {
-    if (prose.length > 0) blocks.push(`P:${prose.join(' ').replace(/[ \t]+/g, ' ')}`);
-    prose = [];
-  };
-  let fence: { char: string; length: number } | undefined;
-  for (const raw of section.text.replace(/\r\n?/g, '\n').split('\n')) {
-    const line = raw.replace(/[ \t]+$/, '');
-    if (fence) {
-      blocks.push(`C:${line}`);
-      const close = FENCE_RE.exec(line);
-      if (close && close[1]![0] === fence.char && close[1]!.length >= fence.length && line.trim() === close[1]) {
-        fence = undefined;
-      }
-      continue;
-    }
-    const open = FENCE_RE.exec(line);
-    if (open) {
-      flush();
-      fence = { char: open[1]![0]!, length: open[1]!.length };
-      blocks.push(`C:${line.trimStart()}`);
-      continue;
-    }
-    if (line === '') {
-      flush();
-      continue;
-    }
-    if (/^(?: {4}|\t)/.test(line) || /^ {0,3}\t/.test(line)) {
-      flush();
-      blocks.push(`C:${line}`);
-      continue;
-    }
-    const text = line.trimStart();
-    if (BLOCK_START_RE.test(text)) flush();
-    prose.push(text);
-  }
-  flush();
-  return blocks.join('\n');
-}
-
 /** True when every section in the list has the same text (see {@link sameSectionText}). */
 function allSameText(sections: Array<Pick<InstructionSection, 'text'>>): boolean {
   return new Set(sections.map(sameSectionText)).size === 1;
@@ -236,6 +190,7 @@ export function detectDuplicates(files: InstructionFile[]): PromptCiIssue[] {
     for (const section of file.sections) {
       const norm = normalizeSection(section.text);
       if (norm.length < WITHIN_FILE_MIN_SECTION_LENGTH) continue;  // BUG-001: lower global floor
+      if (isPointerOnlySection(section)) continue;  // pcic-1ik0.10: a pointer is not content
       if (tokenize(norm).size < MIN_TOKEN_COUNT) continue;
       eligible.push({ ...section, normalizedText: norm });
     }
@@ -438,14 +393,22 @@ export function detectDuplicates(files: InstructionFile[]): PromptCiIssue[] {
         (identical
           ? ''
           : 'The copies differ: decide which text is right before consolidating, since a pointer would discard the other. Then ') +
-        `${identical ? 'Consolidate' : 'consolidate'} these sections into one canonical location (e.g. AGENTS.md) and use forwarding pointers to save ~${duplicateTokens} tokens per session. If both are intentional, add a comment clarifying the distinction.`,
-      // `applyFixRecipe` can consolidate a duplicate that spans MULTIPLE files
-      // (pick a canonical file, replace the copies with a forwarding pointer),
-      // but only copies that are the same text: a near-duplicate stays
-      // advisory. A cluster confined to one file has no other file to point
-      // at, so it stays advisory too. Same-file duplicate *headings* are
-      // handled by the other detectors below and are never auto-applied.
-      autoApplySafe: fileCount >= 2 && identical,
+        `${identical ? 'Consolidate' : 'consolidate'} these sections into one canonical location (e.g. AGENTS.md) to save ~${duplicateTokens} tokens per session. ` +
+        'A CLAUDE.md or GEMINI.md can load AGENTS.md with an `@AGENTS.md` import line; a markdown link is not loaded by any of these tools. ' +
+        'If both copies are intentional, add a comment clarifying the distinction.',
+      // pcic-1ik0.10: advisory. Replacing ONE section of a file with a pointer
+      // drops it from the agent's context (no tool loads a markdown link), and
+      // an import would load the whole canonical file, not just this section.
+      // The unattended fix is the mirrored-files finding's import recipe,
+      // offered only when a whole file is a copy (see mirrorIssue).
+      autoApplySafe: false,
+      // pcic-1ik0.10: an exact duplicate's identity is the repeated text, not
+      // the list of files that repeat it, so a copy being removed (the import
+      // fix on a mirror) or added keeps the finding in the baseline, the trend
+      // and SARIF. Near-duplicates keep the default fingerprint.
+      ...(identical
+        ? { fingerprintKey: `duplicate-section:${crypto.createHash('sha1').update(sameSectionText(sections[0]!)).digest('hex')}` }
+        : {}),
       confidence,
     });
   }
@@ -676,6 +639,23 @@ function mirrorIssue(
   // replaced unattended: the pointer would delete the text that differs, and
   // with it the evidence of a conflict. Same rule as per-section findings.
   const drifted = groupClusters.filter((keys) => !allSameText(sectionsOf(keys))).map(heading);
+  // pcic-1ik0.10: the fix replaces each copy with one `@AGENTS.md` import, so
+  // it is offered only when the canonical file is exactly one AGENTS.md and
+  // every other member is a file whose tool loads an import (CLAUDE.md,
+  // GEMINI.md). A Copilot, Cursor or Windsurf copy has no import to point at.
+  const canonicalIsAgents =
+    path.basename(canonical) === MIRROR_CANONICAL_BASENAME &&
+    files.filter((f) => path.basename(f) === MIRROR_CANONICAL_BASENAME).length === 1;
+  const nonImporting = files.slice(1).filter((f) => importingToolFor(f) === undefined);
+  const importable = canonicalIsAgents && nonImporting.length === 0;
+  const importAdvice = importable
+    ? `In ${names.slice(1).join(' and ')}, replace the copied sections with one \`@${canonicalName}\` import line ` +
+      '(relative to the file), which Claude Code and Gemini CLI load in place; keep any section only that file has ' +
+      'below it. A markdown link is not loaded by either tool.'
+    : `keeping one canonical file (here ${canonicalName}). A CLAUDE.md or GEMINI.md copy of an AGENTS.md can be ` +
+      'replaced with one `@AGENTS.md` import line, which those tools load; tools without an import (Copilot, Cursor, ' +
+      'Windsurf) need their own copy or a symlink where the tool follows one. If a generator writes these files, ' +
+      'configure it accordingly.';
   const counts = files
     .map((f, i) => `${names[i]} ${shared(f)} of ${Math.max(shared(f), mirrors.comparable.get(f) ?? 0)}`)
     .join(', ');
@@ -703,16 +683,15 @@ function mirrorIssue(
     recommendation:
       (drifted.length > 0
         ? `Reconcile the sections that differ (${snippet(drifted.join(', '), 120)}) first: decide which text is ` +
-          'right, since a pointer would discard the other. Then consider '
-        : 'Consider ') +
-      `keeping one canonical file (here ${canonicalName}) and replacing the others with a short pointer ` +
-      `such as "Follow ${path.basename(canonicalName)}", or a symlink where the tool follows one. If a generator ` +
-      'writes these files, configure it to write the pointer instead. Keep only genuinely tool-specific guidance ' +
-      'in the other files.',
-    // The consolidation recipe replaces each copied section outside the
-    // canonical (first-listed) file with a pointer to it. Only safe when every
-    // copy is the same text; otherwise advisory.
-    autoApplySafe: drifted.length === 0,
+          'right, since dropping a copy would discard the other. Then '
+        : '') +
+      (importable ? importAdvice : `${drifted.length > 0 ? 'consider' : 'Consider'} ${importAdvice}`),
+    // The import recipe (mirror-import.ts) drops each section of a copy that
+    // is the same text as a section of the canonical file and adds one import
+    // line. Only when every copy is the same text and every copy's tool loads
+    // an import; otherwise advisory.
+    autoApplySafe: drifted.length === 0 && importable,
+    tags: [MIRRORED_FILES_TAG],
     // One identity per mirror group, keyed on its canonical file: editing a
     // copied section, or the group gaining or losing a member, is the same
     // finding (baseline, trend, SARIF), not "resolved + new".

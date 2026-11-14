@@ -41,6 +41,17 @@ const PAGES = {
   },
   ghConcept: { url: 'https://docs.github.com/en/copilot/concepts/prompting-and-context/custom-instructions', title: 'GitHub Docs: About customizing GitHub Copilot responses', readOn: '2026-11-14' },
   gemini: { url: 'https://geminicli.com/docs/cli/gemini-md/', title: 'Gemini CLI docs: GEMINI.md context files', readOn: '2026-11-13' },
+  // Re-read on 2026-11-14 for the import recipe (pcic-1ik0.10).
+  ccMemoryImports: { url: 'https://code.claude.com/docs/en/memory', title: 'Claude Code docs: How Claude remembers your project (imports)', readOn: '2026-11-14' },
+  geminiImports: { url: 'https://geminicli.com/docs/cli/gemini-md', title: 'Gemini CLI docs: GEMINI.md context files (imports)', readOn: '2026-11-14' },
+  geminiMemport: { url: 'https://geminicli.com/docs/reference/memport/', title: 'Gemini CLI docs: Memory Import Processor', readOn: '2026-11-14' },
+  cursorRules14: { url: 'https://cursor.com/docs/rules', title: 'Cursor docs: Rules (file references)', readOn: '2026-11-14' },
+  ghRepoInstr14: {
+    url: 'https://docs.github.com/en/copilot/how-tos/configure-custom-instructions/add-repository-instructions',
+    title: 'GitHub Docs: Adding repository custom instructions for GitHub Copilot',
+    readOn: '2026-11-14',
+  },
+  windsurfMemories14: { url: 'https://docs.devin.ai/desktop/cascade/memories', title: 'Devin Local docs: Memories and rules (docs.windsurf.com/windsurf/cascade/memories redirects here)', readOn: '2026-11-14' },
 } as const;
 
 const src = (page: keyof typeof PAGES, stance: SourceStance, note: string): ProvenanceSource => ({ ...PAGES[page], stance, note });
@@ -591,6 +602,53 @@ export const INSTRUCTION_ADVICE_PROVENANCE: readonly CheckProvenance[] = [
       src('ghRepo', 'context', 'Advises avoiding conflicting sets of instructions and says all relevant sets are provided to Copilot.'),
     ],
     lastVerified: V13,
+  },
+
+  {
+    id: 'duplicates/mirror-import',
+    detector: 'duplicates',
+    title: 'A CLAUDE.md or GEMINI.md can load AGENTS.md with an @ import',
+    kind: 'tool-fact',
+    claim:
+      'Claude Code (CLAUDE.md) and Gemini CLI (GEMINI.md) load the content of a file named on an `@path` line, ' +
+      'resolving a relative path from the importing file, so one import line replaces a copied AGENTS.md; a markdown ' +
+      'link is not loaded.',
+    appliesTo: ['claude-code', 'gemini-cli'],
+    sources: [
+      src(
+        'ccMemoryImports',
+        'supports',
+        'Says CLAUDE.md files can import files with @path/to/import syntax, relative paths resolve from the importing file, ' +
+          'imports nest up to four hops and are skipped inside code spans and fences, and suggests @AGENTS.md in a CLAUDE.md to share AGENTS.md.',
+      ),
+      src('geminiImports', 'supports', 'Says GEMINI.md can import content from other files with the @file.md syntax.'),
+      src(
+        'geminiMemport',
+        'supports',
+        'Documents @./file.md and @../file.md imports resolved from the importing file\'s directory, a default nesting limit of five, ' +
+          'and imports inside code blocks and inline code ignored.',
+      ),
+    ],
+    caveat:
+      'The Gemini CLI page carries a banner that Gemini CLI was replaced by Antigravity CLI for unpaid tiers on 2026-06-18; ' +
+      'the import syntax is documented for GEMINI.md either way.',
+    lastVerified: { date: '2026-11-14', by: 'Claude agent (pcic-1ik0.10), pending human review' },
+  },
+  {
+    id: 'duplicates/no-import-elsewhere',
+    detector: 'duplicates',
+    title: 'Cursor, Copilot and Windsurf rule files have no import that loads another file',
+    kind: 'tool-fact',
+    claim:
+      'A Cursor rule, a Copilot instructions file or a Windsurf rule does not load another file\'s content from an `@path` line, ' +
+      'so the import recipe makes no edit when a copy is one of these files.',
+    appliesTo: ['cursor', 'copilot', 'windsurf'],
+    sources: [
+      src('cursorRules14', 'supports', 'Says a rule may mention a file with @filename but its contents are not inlined into the prompt; the agent reads it with its tools when needed.'),
+      src('ghRepoInstr14', 'context', 'Documents copilot-instructions.md, path-specific .instructions.md files and root AGENTS.md / CLAUDE.md / GEMINI.md, and no import or include syntax.'),
+      src('windsurfMemories14', 'context', 'Documents AGENTS.md, .devin/rules and the legacy .windsurfrules and .windsurf/rules files, and no @ import syntax.'),
+    ],
+    lastVerified: { date: '2026-11-14', by: 'Claude agent (pcic-1ik0.10), pending human review' },
   },
 
   // ───────────────────────────── duplicate-headings ─────────────────────────────
