@@ -109,6 +109,16 @@ describe('computeFingerprint for every other finding is unchanged', () => {
     expect(computeFingerprint(issue)).toBe(expected);
   });
 
+  it('a keyed fingerprint cannot be produced by a normal finding', () => {
+    const keyed = computeFingerprint({ category: 'security', title: 'x', filePaths: [], evidence: [], fingerprintKey: 'k' });
+    // The same parts joined the way the normal path joins them hash differently.
+    const lookalike = computeFingerprint({ category: 'promptci-fingerprint-key/v1', title: 'security', filePaths: [], evidence: ['k'] });
+    expect(keyed).not.toBe(lookalike);
+    expect(keyed).toBe(
+      crypto.createHash('sha256').update('promptci-fingerprint-key/v1\u0000security\u0000k').digest('hex'),
+    );
+  });
+
   it('only the two grouped families set fingerprintKey on the fixture corpus', async () => {
     const report = await scan({ repoPath: TRIGGER });
     const keyed = report.issues.filter((i) => i.fingerprintKey !== undefined).map((i) => i.id.replace(/-[0-9a-f]{12}$/, ''));

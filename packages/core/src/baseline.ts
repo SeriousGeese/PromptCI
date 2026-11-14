@@ -115,9 +115,11 @@ export type FingerprintableIssue = {
  */
 export function computeFingerprint(issue: FingerprintableIssue, repoRoot?: string): string {
   if (issue.fingerprintKey !== undefined) {
+    // NUL-separated with a domain prefix: the `|`-joined content below can
+    // never produce this input, whatever a title or evidence line contains.
     return crypto
       .createHash('sha256')
-      .update(['key', issue.category, issue.fingerprintKey].join('|'))
+      .update(['promptci-fingerprint-key/v1', issue.category, issue.fingerprintKey].join('\u0000'))
       .digest('hex');
   }
   const normalizedFilePaths = issue.filePaths
