@@ -92,6 +92,10 @@ describe('provenanceExpiringSoon', () => {
     const fresh = record({ id: 'fresh', lastVerified: { date: '2026-11-01', by: 't' } });
     const fact = record({ id: 'fact', kind: 'repo-fact', appliesTo: 'all', lastVerified: { date: '2025-01-01', by: 't' } });
     expect(provenanceExpiringSoon([soon, fresh, fact], today).map((r) => r.id)).toEqual(['soon']);
+    // The window is inclusive: exactly 30 days left (60 days old) counts, 31 days left does not.
+    const edge = record({ id: 'edge', lastVerified: { date: '2026-09-14', by: 't' } }); // 60 days old
+    const before = record({ id: 'before', lastVerified: { date: '2026-09-15', by: 't' } }); // 59 days old
+    expect(provenanceExpiringSoon([edge, before], today).map((r) => r.id)).toEqual(['edge']);
   });
 });
 

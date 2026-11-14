@@ -77,6 +77,7 @@ export function provenanceExpiringSoon(
   return records.filter((record) => {
     if (record.kind === 'repo-fact') return false;
     const age = daysSince(record.lastVerified.date, today);
-    return age !== undefined && age > PROVENANCE_MAX_AGE_DAYS - withinDays;
+    // Inclusive: a record with exactly `withinDays` days left is within the window.
+    return age !== undefined && age >= PROVENANCE_MAX_AGE_DAYS - withinDays;
   });
 }
