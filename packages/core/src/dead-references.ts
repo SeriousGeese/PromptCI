@@ -25,8 +25,10 @@
  * named in one "check incomplete" warning instead of reported as broken.
  *
  * When a dead reference's last segment names exactly one file (or directory)
- * in the repository, the finding says so (pcic-1ik0.4) and, for a code-span
- * path that is only missing leading directories, carries a mechanical edit.
+ * in the repository, outside fixture, test, example and vendor trees, the
+ * finding says so (pcic-1ik0.4). That is text only: only an inline markdown
+ * link is ever rewritten, and never one in a fence, code span, indented code
+ * block or HTML comment.
  *
  * Findings are heuristic — wording is intentionally cautious.
  */
@@ -39,6 +41,7 @@ import { fencedBlocks, scanFencedLines } from './markdown-fences.js';
 import { createGitIgnoreChecker } from './gitignore.js';
 import type { IgnoreVerdict } from './gitignore.js';
 import { isWithinRoot } from './path-containment.js';
+import { htmlCommentRanges, indentedCodeLines, inRanges } from './sample-text.js';
 import { RepoTree, errorCode, incompleteCheckIssue, isAbsoluteAnywhere } from './repo-tree.js';
 import type { Lookup } from './repo-tree.js';
 
@@ -603,6 +606,8 @@ function collectRefs(
   const found: CollectedRef[] = [];
   const lineOffsets = buildLineOffsets(content);
   const fenceLines = scanFencedLines(content);
+  const indentedLines = indentedCodeLines(content);
+  const commentRanges = htmlCommentRanges(content);
   // `handlers[type](payload)` in a code fence or `a[i](b)` in a code span has
   // the shape of a link without being one. Checkable-extension targets keep
   // their historical behavior; the extension-less check only reads real prose.
@@ -617,8 +622,13 @@ function collectRefs(
     const line = lineForOffset(lineOffsets, index);
     // pcic-oonz: a link written inside a fence or a code span is sample text.
     // It is still CHECKED (a stale example is worth reporting), but the
-    // mechanical fix must leave it alone.
-    const inCodeContext = fenceLines[line - 1]?.inFence === true || inCode(index);
+    // mechanical fix must leave it alone. So is a link on an indented code
+    // line or inside an HTML comment (pcic-1ik0.4 review): sample-text.ts.
+    const inCodeContext =
+      fenceLines[line - 1]?.inFence === true ||
+      inCode(index) ||
+      indentedLines[line - 1] === true ||
+      inRanges(commentRanges, index);
     if (hasCheckableExtension(ref)) found.push({ ref, evidence, line, kind: 'file', linkRaw, inCodeContext });
     else if (isExtensionlessPathRef(ref) && !inCode(index)) {
       found.push({ ref, evidence, line, kind: 'linkPath', linkRaw, inCodeContext });
@@ -681,15 +691,12 @@ function collectRefs(
       const ext = path.extname(ref).toLowerCase();
       const rooted =
         opts.skipSourceBackticks && BACKTICK_SKIP_SOURCE_EXTENSIONS.has(ext) && !STALE_SOURCE_REF_RE.test(ref);
-      const line = lineForOffset(lineOffsets, m.index);
       found.push({
         ref,
         evidence: `\`${ref}\``,
-        line,
+        line: lineForOffset(lineOffsets, m.index),
         kind: rooted ? 'rootedSource' : 'file',
         codeSpan: true,
-        // pcic-1ik0.4: backticks inside a fenced block are sample text, never rewritten.
-        inCodeContext: fenceLines[line - 1]?.inFence === true,
       });
     }
   }
@@ -1081,7 +1088,9 @@ function movedLinkEdit(
 
   const index = ctx.nameIndex();
   if (!index.complete) return undefined;
-  const candidates = (index.paths.get(base) ?? []).filter((rel) => ctx.isIgnored(rel) !== true);
+  // Same candidate rule as the hint: positively not ignored, and not a copy under a fixture,
+  // test, example or vendor tree (pcic-1ik0.4 review).
+  const candidates = (index.paths.get(base) ?? []).filter((rel) => isCandidatePath(rel, targetPath, ctx, false));
   if (candidates.length !== 1) return undefined;
 
   const absCandidate = path.resolve(ctx.tree.root, candidates[0]!);
@@ -1110,12 +1119,42 @@ function movedLinkEdit(
 // ── Candidate for a reference that names something that moved (pcic-1ik0.4) ──
 
 /**
+ * Directories whose contents are fixtures, samples or someone else's code: a
+ * file of the same name in one of them is a copy used by tests or a vendored
+ * dependency, not where the real file moved to. Matched as whole path segments.
+ */
+const NON_CANDIDATE_DIRS: ReadonlySet<string> = new Set([
+  'test', 'tests', '__tests__', 'spec', 'specs', 'fixtures', 'fixture', '__fixtures__', 'testdata',
+  'example', 'examples', 'sample', 'samples', 'vendor', 'vendors', 'third_party', 'third-party', 'external',
+]);
+
+/**
+ * Can `rel` (a repo-relative file or directory) be named as where `ref` went?
+ *
+ *  - It must be positively NOT ignored. `isIgnored` answers `'unfetched'` for a
+ *    file the caller never fetched and `'unreadable'` when the rules could not
+ *    be read; judgeReference treats the first as ignored and the second as
+ *    unjudged, so neither can be offered as a candidate here.
+ *  - It must not sit under a fixture, test, example or vendor directory,
+ *    unless the reference itself already points into one by that name.
+ */
+function isCandidatePath(rel: string, ref: string, ctx: JudgeContext, asDir: boolean): boolean {
+  const written = new Set(segmentsOf(ref).map((s) => s.toLowerCase()));
+  const parents = rel.split('/').slice(0, asDir ? undefined : -1);
+  if (parents.some((s) => NON_CANDIDATE_DIRS.has(s.toLowerCase()) && !written.has(s.toLowerCase()))) return false;
+  return ctx.isIgnored(asDir ? `${rel}/${DIR_PROBE}` : rel) === false;
+}
+
+/**
  * pcic-1ik0.4: the ONE file (or, for a directory reference, the one directory)
  * in the repository that carries the last segment of a dead reference, or
  * `undefined` when there are none, several, or the walk behind the answer was
  * incomplete. It is only ever used as TEXT in the finding ("the only file named
  * x is y"): a basename match says where the thing may have gone, not what the
- * author meant, so it is never turned into an edit by itself.
+ * author meant, so it is never turned into an edit by itself. (A code-span path
+ * is not rewritten at all: it is prose, it may be relative to a directory the
+ * text `cd`s into or to a package, and the detector's own suffix rule already
+ * treats a path that ends a longer one as imprecise rather than stale.)
  */
 function uniqueNameCandidate(ref: string, kind: RefKind, ctx: JudgeContext): string | undefined {
   const index = ctx.nameIndex();
@@ -1125,66 +1164,10 @@ function uniqueNameCandidate(ref: string, kind: RefKind, ctx: JudgeContext): str
   if (!name || segments.includes('..')) return undefined;
   const written = segments.join('/');
   const isDir = kind === 'rootedPath' || kind === 'linkPath';
-  const hits = isDir
-    ? (ctx.dirIndex().get(name) ?? []).filter((rel) => ctx.isIgnored(`${rel}/${DIR_PROBE}`) !== true)
-    : (index.paths.get(name) ?? []).filter((rel) => ctx.isIgnored(rel) !== true);
+  const hits = (isDir ? (ctx.dirIndex().get(name) ?? []) : (index.paths.get(name) ?? [])).filter((rel) =>
+    isCandidatePath(rel, ref, ctx, isDir),
+  );
   return hits.length === 1 && hits[0] !== written ? hits[0] : undefined;
-}
-
-/**
- * pcic-1ik0.4: the substitution that repairs a code-span path (`src/agent/x.rs`)
- * whose only fault is a missing PREFIX (the file is `src-tauri/src/agent/x.rs`),
- * or `undefined` when that is not unambiguous.
- *
- * The bar is higher than for a moved link, because a code span is prose and the
- * rewrite is a guess about which tree the author was describing:
- *
- *  - The span carries a directory part (two or more segments) and is written as
- *    a plain repo path: no `./`, no backslash, no `:line` suffix. A bare name
- *    (`index.md`) stays a hint; rewriting it to `docs/index.md` is a guess.
- *  - The written path is a whole-segment SUFFIX of exactly one non-ignored
- *    file's path. Same basename with a different or missing middle directory
- *    (`src/services/x.ts` for `src/main/services/x.ts`) is not a prefix fault
- *    and stays a hint.
- *  - The walk behind that answer was complete.
- *  - The instruction file sits at the repository root or under a top-level
- *    dot-directory (`.claude/`, `.github/`), where a repo path in a code span is
- *    read from the root. In a nested directory the span may be relative to that
- *    directory instead, and the replacement would be written from the wrong base.
- *  - The span is not inside a fenced block (sample text) and its exact text,
- *    backticks included, occurs once on the line.
- */
-function movedCodeSpanEdit(
-  filePath: string,
-  line: number,
-  lineText: string,
-  ref: string,
-  kind: RefKind,
-  ctx: JudgeContext,
-): FixEdit | undefined {
-  if (kind !== 'file') return undefined;
-  const segments = ref.split('/');
-  if (segments.length < 2 || segments.some((s) => s === '' || s === '.' || s === '..')) return undefined;
-  if (/[\\\s`]/.test(ref)) return undefined;
-
-  const fileDir = path.dirname(path.relative(path.resolve(ctx.tree.root), path.resolve(filePath)));
-  if (fileDir !== '.' && !fileDir.startsWith('.')) return undefined;
-  if (path.isAbsolute(fileDir) || fileDir.startsWith('..')) return undefined;
-
-  const index = ctx.nameIndex();
-  if (!index.complete) return undefined;
-  const base = segments[segments.length - 1]!;
-  const suffix = `/${ref}`;
-  const hits = (index.paths.get(base) ?? []).filter((rel) => rel.endsWith(suffix) && ctx.isIgnored(rel) !== true);
-  if (hits.length !== 1) return undefined;
-  const target = hits[0]!;
-  if (/[\s`]/.test(target)) return undefined;
-
-  const find = `\`${ref}\``;
-  let occurrences = 0;
-  for (let at = lineText.indexOf(find); at !== -1; at = lineText.indexOf(find, at + find.length)) occurrences++;
-  if (occurrences !== 1) return undefined;
-  return { filePath, line, find, replace: `\`${target}\`` };
 }
 
 // ── Detector ─────────────────────────────────────────────────────────────────
@@ -1305,16 +1288,10 @@ export function detectDeadReferences(
       const entry = byRef.get(normRef)!;
 
       // pcic-oonz: can THIS occurrence be re-pointed at the file it names?
-      // pcic-1ik0.4: a code span repairs only when its path is merely missing a prefix.
-      const lineText = fileLineTexts[line - 1] ?? '';
       const edit =
-        inCodeContext === true
+        linkRaw === undefined || inCodeContext === true
           ? undefined
-          : linkRaw !== undefined
-            ? movedLinkEdit(file.path, line, lineText, linkRaw, kind, ctx)
-            : codeSpan === true
-              ? movedCodeSpanEdit(file.path, line, lineText, ref, kind, ctx)
-              : undefined;
+          : movedLinkEdit(file.path, line, fileLineTexts[line - 1] ?? '', linkRaw, kind, ctx);
       if (edit === undefined) entry.allRewritable = false;
       else if (!entry.edits.some((e) => e.filePath === edit.filePath && e.line === edit.line && e.find === edit.find)) {
         entry.edits.push(edit);
@@ -1353,8 +1330,6 @@ export function detectDeadReferences(
     const candidateHint = candidate
       ? ` The only ${noun === 'directory' ? 'directory' : 'file'} named "${name}" in the repository is "${candidate}${isDir ? '/' : ''}"; it may be what was meant.`
       : '';
-    const linkEdits = edits.filter((e) => e.find.startsWith(']('));
-    const edited = [...new Set(edits.map((e) => `\`${e.find}\` -> \`${e.replace}\``))].join(', ');
 
     issues.push({
       id: issueId(normRef),
@@ -1378,12 +1353,9 @@ export function detectDeadReferences(
       ...(allRewritable && edits.length > 0
         ? {
             fixRecipe:
-              linkEdits.length === edits.length
-                ? `Re-point the link${edits.length > 1 ? 's' : ''} at the one file of that name in the repository: ${edited}.`
-                : linkEdits.length === 0
-                  ? `Add the missing leading directories to the path in backticks, as the one file it ends with in the repository: ${edited}.`
-                  : `Update each reference to the one matching file in the repository: ${edited}.`,
-            // `applyFixRecipe` rewrites exactly those spans, `](target)` or `path`.
+              `Re-point the link${edits.length > 1 ? 's' : ''} at the one file of that name in the ` +
+              `repository: ${[...new Set(edits.map((e) => `\`${e.find}\` -> \`${e.replace}\``))].join(', ')}.`,
+            // `applyFixRecipe` rewrites exactly those `](target)` spans.
             autoApplySafe: true,
             fixEdits: edits,
           }

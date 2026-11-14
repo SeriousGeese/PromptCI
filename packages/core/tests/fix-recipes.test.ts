@@ -429,6 +429,108 @@ describe('structure: broken link whose basename is unique in the tree', () => {
     });
   });
 
+  /** pcic-1ik0.4 review: row 5 of the table in issue 155. */
+  it('reports line 9 and offers the edit with an earlier link AND a code span to another missing file above it', async () => {
+    const claude =
+      '# CLAUDE.md\n\nSee [AGENTS.md](./AGENTS.md) for details.\n\nThe script `scripts/gone.sh` is stale.\n\n## B\n\nNew joiners start with the [onboarding checklist](onboarding-checklist.md).\n';
+    const repo = repoWith({
+      'package.json': MANIFEST,
+      'AGENTS.md': '# Agents\n',
+      'CLAUDE.md': claude,
+      'docs/onboarding-checklist.md': '# Onboarding\n',
+    });
+    const issue = brokenRefIssues(await issuesIn(repo)).find((i) => i.title.includes('onboarding-checklist'))!;
+    expect(issue.locations).toEqual([{ filePath: path.join(repo, 'CLAUDE.md'), startLine: 9 }]);
+    expect(issue.autoApplySafe).toBe(true);
+    expect(await applyAll(repo, [issue], 'CLAUDE.md')).toBe(
+      claude.replace('](onboarding-checklist.md)', '](./docs/onboarding-checklist.md)'),
+    );
+  });
+
+  /**
+   * pcic-1ik0.4 review (B2): sample text is reported but never rewritten. A
+   * fenced block and a code span were covered; so are an indented code block and
+   * an HTML comment, for the link recipe and the script-rename recipe alike.
+   */
+  describe('sample text is reported but never rewritten', () => {
+    const LINK = '[the runbook](./docs/runbook.md)';
+    const MOVED = '](./ops/runbook.md)';
+
+    async function linkCase(body: string): Promise<{ issue: PromptCiIssue; after: string }> {
+      const original = `# Agents\n\n${body}\n`;
+      const repo = repoWith({ 'package.json': MANIFEST, 'AGENTS.md': original, 'ops/runbook.md': '# Runbook\n' });
+      const issues = brokenRefIssues(await issuesIn(repo));
+      expect(issues).toHaveLength(1);
+      return { issue: issues[0]!, after: await applyAll(repo, issues, 'AGENTS.md') };
+    }
+
+    it.each([
+      ['an indented code block (4 spaces)', `Write it like this:\n\n    See ${LINK}.`],
+      ['an indented code block (tab)', `Write it like this:\n\n\tSee ${LINK}.`],
+      ['a single-line HTML comment', `<!-- old: ${LINK} -->`],
+      ['a multi-line HTML comment', `<!--\nold notes\nSee ${LINK}\n-->`],
+      ['an unterminated HTML comment', `<!-- the rest is hidden\nSee ${LINK}`],
+    ])('leaves a link in %s alone', async (_name, body) => {
+      const { issue, after } = await linkCase(body);
+      expect(issue.autoApplySafe).toBeUndefined();
+      expect(issue.fixEdits).toBeUndefined();
+      expect(after).toBe(`# Agents\n\n${body}\n`);
+    });
+
+    it('still rewrites a link after a comment has closed, and a normal line', async () => {
+      const body = `<!-- note -->\nSee ${LINK}.`;
+      const { issue, after } = await linkCase(body);
+      expect(issue.autoApplySafe).toBe(true);
+      expect(after).toBe(`# Agents\n\n${body.replace('](./docs/runbook.md)', MOVED)}\n`);
+    });
+
+    it('keeps the whole finding advisory when one occurrence is sample text', async () => {
+      const { issue, after } = await linkCase(`See ${LINK}.\n\n    Also ${LINK}.`);
+      expect(issue.autoApplySafe).toBeUndefined();
+      expect(after).toBe(`# Agents\n\nSee ${LINK}.\n\n    Also ${LINK}.\n`);
+    });
+
+    it('does not rewrite a mistyped script inside an HTML comment, but does in a fenced block', async () => {
+      const comment = '# Agents\n\n<!-- old: run `npm run bulid` -->\n';
+      const repo = repoWith({ 'package.json': MANIFEST, 'AGENTS.md': comment });
+      const hidden = commandIssues(await issuesIn(repo));
+      expect(hidden.length).toBeGreaterThan(0);
+      for (const issue of hidden) expect(issue.autoApplySafe).toBeUndefined();
+      expect(await applyAll(repo, hidden, 'AGENTS.md')).toBe(comment);
+
+      const fenced = '# Agents\n\n```bash\nnpm run bulid\n```\n';
+      const repo2 = repoWith({ 'package.json': MANIFEST, 'AGENTS.md': fenced });
+      const issues = commandIssues(await issuesIn(repo2));
+      expect(issues.some((i) => i.autoApplySafe === true)).toBe(true);
+      expect(await applyAll(repo2, issues, 'AGENTS.md')).toBe('# Agents\n\n```bash\nnpm run build\n```\n');
+    });
+  });
+
+  /** pcic-1ik0.4 review (b): a fixture or vendored copy is not where the file moved to. */
+  describe('the candidate is never a fixture, test, example or vendor copy', () => {
+    it.each(['test/fixtures', 'tests', 'examples/demo', 'vendor/lib'])('ignores a copy under %s', async (dir) => {
+      const repo = repoWith({
+        'package.json': MANIFEST,
+        'AGENTS.md': '# Agents\n\nSee [the runbook](./docs/runbook.md).\n',
+        [`${dir}/runbook.md`]: '# Runbook\n',
+      });
+      const [issue] = brokenRefIssues(await issuesIn(repo));
+      expect(issue!.autoApplySafe).toBeUndefined();
+      expect(issue!.summary).not.toContain('may be what was meant');
+    });
+
+    it('rewrites to the real file when a fixture copy also exists', async () => {
+      const repo = repoWith({
+        'package.json': MANIFEST,
+        'AGENTS.md': '# Agents\n\nSee [the runbook](./docs/runbook.md).\n',
+        'ops/runbook.md': '# Runbook\n',
+        'test/fixtures/runbook.md': '# Fixture\n',
+      });
+      const issues = brokenRefIssues(await issuesIn(repo));
+      expect(await applyAll(repo, issues, 'AGENTS.md')).toBe('# Agents\n\nSee [the runbook](./ops/runbook.md).\n');
+    });
+  });
+
   /** Review finding M3: a link inside a fence or a code span is sample text. */
   it('leaves a link inside a fenced code block alone', async () => {
     const original = '# Agents\n\n```markdown\n[the runbook](./docs/runbook.md)\n```\n';
