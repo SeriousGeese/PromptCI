@@ -317,22 +317,31 @@ are `info` like GitHub's own, so `--fail-on warning` does not fail on them.
 ### Grouped findings and fingerprints
 
 A finding is matched to the baseline by its fingerprint: category, title, file paths and
-evidence, never the id or line numbers. Two grouped findings use a fixed identity instead,
-because their evidence is a list that changes as the repository improves: the agent-practice
-finding (one per repository, listing the practices not found) and the action-pin finding (one per
-workflow file, listing its unpinned actions). They carry a `fingerprintKey`, and their
-fingerprint hashes only the category and that key. Pinning one action, adding one rule or adding
-an instruction file keeps them baselined, and so does a grouped finding that grows (one more
-unpinned action): both are `info` and do not count toward the health score. A workflow that gets
-its first unpinned action is a new finding. `review-diff --fail-on-regression`, the scan trend
+evidence, never the id or line numbers. Three grouped findings use a fixed identity instead,
+because what they list changes as the repository improves: the agent-practice finding (one per
+repository, listing the practices not found), the action-pin finding (one per workflow file,
+listing its unpinned actions) and the mirrored-instruction-files finding (one `warning` per group
+of files that copy each other). They carry a `fingerprintKey`, and their fingerprint hashes only
+the category and that key.
+
+- Agent-practice and action-pin: pinning one action, adding one rule or adding an instruction
+  file keeps them baselined, and so does a finding that grows (one more unpinned action): both
+  are `info` and do not count toward the health score. A workflow that gets its first unpinned
+  action is a new finding.
+- Mirrored files: keyed on the group's canonical file, so editing a copied section, or a copy
+  turning into a pointer, keeps the finding. Its consolidation fix is offered only when every
+  copy is the same text; copies that have drifted are reported with the sections that differ and
+  must be reconciled by hand.
+
+`review-diff --fail-on-regression`, the scan trend
 (`trend.newIssueIds`, `trend.resolvedIssueIds` and their counts) and SARIF `partialFingerprints`
 use the same fingerprint. `fingerprintKey` is an optional field on `PromptCiIssue` and is written
 to `report.json` with the rest of the finding.
 
 Upgrading from 0.3.0: a baseline (or previous `report.json`) written by 0.3.0 has these findings
 under their old, per-practice and per-action form, so the first scan with the new version shows
-the two grouped findings as new once, and the old ones as resolved. They are `info`, so only
-`--fail-on-new info` trips on it; refresh the baseline with `--update-baseline`.
+the agent-practice and action-pin findings as new once, and the old ones as resolved. They are
+`info`, so only `--fail-on-new info` trips on it; refresh the baseline with `--update-baseline`.
 
 ## SARIF
 

@@ -26,6 +26,7 @@ import { fileIdPath } from './finding-id.js';
 import { BUN_BUILTINS, analyzeCommands } from './command-validity.js';
 import { anyWorkspaceHasScript, isKnownBinary } from './workspace-manifests.js';
 import { treeFor } from './repo-tree.js';
+import { collectCiPackageManagers } from './ci-alignment.js';
 import type { RepoTree } from './repo-tree.js';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -512,6 +513,12 @@ function checkPackageManagerMismatch(context: RepoContext): PromptCiIssue | null
 
   if (offendingFiles.length === 0) return null;
 
+  // pcic-1ik0.5: the CI-alignment check defers to this one when the manifest
+  // names the package manager, so say here when CI agrees. Summary only: the
+  // evidence is part of the baseline fingerprint and stays as it was.
+  const ciAgrees =
+    context.workflows.files.length > 0 && collectCiPackageManagers(context.workflows.commands).has(preferred);
+
   return {
     id: 'manifest-package-manager-mismatch',
     severity: 'warning',
@@ -520,6 +527,7 @@ function checkPackageManagerMismatch(context: RepoContext): PromptCiIssue | null
     summary:
       `Instruction files refer to other package managers, but this project appears to use ${preferred} ` +
       `(based on ${packageJson.lockfiles.join(', ') || 'package.json'}). ` +
+      (ciAgrees ? `The CI workflows use ${preferred} too. ` : '') +
       `Mixing package managers can lead to inconsistent lockfiles and installation errors.`,
     filePaths: offendingFiles.map((f) => f.path),
     locations: offendingFiles.map((f) => ({ filePath: f.path })),

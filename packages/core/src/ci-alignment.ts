@@ -113,7 +113,7 @@ function extractPackageManager(command: string): string | null {
 }
 
 /** Collects all distinct package managers mentioned across all CI commands. */
-function collectCiPackageManagers(commands: WorkflowCommand[]): Set<string> {
+export function collectCiPackageManagers(commands: WorkflowCommand[]): Set<string> {
   const pms = new Set<string>();
   for (const wc of commands) {
     for (const segment of splitCommand(wc.command)) {
@@ -220,6 +220,12 @@ function checkMissingCiTasks(context: RepoContext): PromptCiIssue[] {
 function checkCiPackageManagerMismatch(context: RepoContext): PromptCiIssue[] {
   const { workflows, files, packageJson } = context;
   if (workflows.files.length === 0) return [];
+  // pcic-1ik0.5: when package.json or a lockfile names the package manager,
+  // the manifest check (manifest-consistency.ts) already reports every file
+  // that uses another one, and says when CI agrees with the manifest. Firing
+  // here too reported one mismatch twice. This check covers only the repos
+  // where CI is the sole evidence of the package manager.
+  if (packageJson.packageManagerName !== 'unknown') return [];
 
   const ciPms = collectCiPackageManagers(workflows.commands);
   if (ciPms.size === 0) return [];
