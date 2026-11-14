@@ -24,6 +24,10 @@
  * and a directory that cannot be listed leaves its references unchecked and
  * named in one "check incomplete" warning instead of reported as broken.
  *
+ * When a dead reference's last segment names exactly one file (or directory)
+ * in the repository, the finding says so (pcic-1ik0.4) and, for a code-span
+ * path that is only missing leading directories, carries a mechanical edit.
+ *
  * Findings are heuristic — wording is intentionally cautious.
  */
 
@@ -677,12 +681,15 @@ function collectRefs(
       const ext = path.extname(ref).toLowerCase();
       const rooted =
         opts.skipSourceBackticks && BACKTICK_SKIP_SOURCE_EXTENSIONS.has(ext) && !STALE_SOURCE_REF_RE.test(ref);
+      const line = lineForOffset(lineOffsets, m.index);
       found.push({
         ref,
         evidence: `\`${ref}\``,
-        line: lineForOffset(lineOffsets, m.index),
+        line,
         kind: rooted ? 'rootedSource' : 'file',
         codeSpan: true,
+        // pcic-1ik0.4: backticks inside a fenced block are sample text, never rewritten.
+        inCodeContext: fenceLines[line - 1]?.inFence === true,
       });
     }
   }
@@ -842,7 +849,32 @@ type JudgeContext = {
   isIgnored: (repoRelativePath: string) => IgnoreVerdict;
   suffixCache: Map<string, boolean | 'unknown'>;
   nameIndex: () => NameIndex;
+  /** pcic-1ik0.4: directory name -> repo-relative directories of that name (built from the name index). */
+  dirIndex: () => Map<string, string[]>;
 };
+
+/**
+ * pcic-1ik0.4: every directory that holds at least one indexed file, keyed by
+ * its own name. Derived from the file index, so it shares that walk's ignore
+ * list and its completeness, and a directory with no committed file in it is
+ * not a candidate (git tracks none).
+ */
+function buildDirIndex(index: NameIndex): Map<string, string[]> {
+  const dirs = new Set<string>();
+  for (const list of index.paths.values()) {
+    for (const rel of list) {
+      for (let at = rel.indexOf('/'); at !== -1; at = rel.indexOf('/', at + 1)) dirs.add(rel.slice(0, at));
+    }
+  }
+  const byName = new Map<string, string[]>();
+  for (const dir of [...dirs].sort()) {
+    const name = dir.slice(dir.lastIndexOf('/') + 1);
+    const list = byName.get(name);
+    if (list) list.push(dir);
+    else byName.set(name, [dir]);
+  }
+  return byName;
+}
 
 /**
  * Returned when part of the tree the verdict depends on could not be read: the
@@ -1075,6 +1107,86 @@ function movedLinkEdit(
   return { filePath, line, find, replace: `](${newTarget})` };
 }
 
+// ── Candidate for a reference that names something that moved (pcic-1ik0.4) ──
+
+/**
+ * pcic-1ik0.4: the ONE file (or, for a directory reference, the one directory)
+ * in the repository that carries the last segment of a dead reference, or
+ * `undefined` when there are none, several, or the walk behind the answer was
+ * incomplete. It is only ever used as TEXT in the finding ("the only file named
+ * x is y"): a basename match says where the thing may have gone, not what the
+ * author meant, so it is never turned into an edit by itself.
+ */
+function uniqueNameCandidate(ref: string, kind: RefKind, ctx: JudgeContext): string | undefined {
+  const index = ctx.nameIndex();
+  if (!index.complete) return undefined;
+  const segments = segmentsOf(ref);
+  const name = segments[segments.length - 1];
+  if (!name || segments.includes('..')) return undefined;
+  const written = segments.join('/');
+  const isDir = kind === 'rootedPath' || kind === 'linkPath';
+  const hits = isDir
+    ? (ctx.dirIndex().get(name) ?? []).filter((rel) => ctx.isIgnored(`${rel}/${DIR_PROBE}`) !== true)
+    : (index.paths.get(name) ?? []).filter((rel) => ctx.isIgnored(rel) !== true);
+  return hits.length === 1 && hits[0] !== written ? hits[0] : undefined;
+}
+
+/**
+ * pcic-1ik0.4: the substitution that repairs a code-span path (`src/agent/x.rs`)
+ * whose only fault is a missing PREFIX (the file is `src-tauri/src/agent/x.rs`),
+ * or `undefined` when that is not unambiguous.
+ *
+ * The bar is higher than for a moved link, because a code span is prose and the
+ * rewrite is a guess about which tree the author was describing:
+ *
+ *  - The span carries a directory part (two or more segments) and is written as
+ *    a plain repo path: no `./`, no backslash, no `:line` suffix. A bare name
+ *    (`index.md`) stays a hint; rewriting it to `docs/index.md` is a guess.
+ *  - The written path is a whole-segment SUFFIX of exactly one non-ignored
+ *    file's path. Same basename with a different or missing middle directory
+ *    (`src/services/x.ts` for `src/main/services/x.ts`) is not a prefix fault
+ *    and stays a hint.
+ *  - The walk behind that answer was complete.
+ *  - The instruction file sits at the repository root or under a top-level
+ *    dot-directory (`.claude/`, `.github/`), where a repo path in a code span is
+ *    read from the root. In a nested directory the span may be relative to that
+ *    directory instead, and the replacement would be written from the wrong base.
+ *  - The span is not inside a fenced block (sample text) and its exact text,
+ *    backticks included, occurs once on the line.
+ */
+function movedCodeSpanEdit(
+  filePath: string,
+  line: number,
+  lineText: string,
+  ref: string,
+  kind: RefKind,
+  ctx: JudgeContext,
+): FixEdit | undefined {
+  if (kind !== 'file') return undefined;
+  const segments = ref.split('/');
+  if (segments.length < 2 || segments.some((s) => s === '' || s === '.' || s === '..')) return undefined;
+  if (/[\\\s`]/.test(ref)) return undefined;
+
+  const fileDir = path.dirname(path.relative(path.resolve(ctx.tree.root), path.resolve(filePath)));
+  if (fileDir !== '.' && !fileDir.startsWith('.')) return undefined;
+  if (path.isAbsolute(fileDir) || fileDir.startsWith('..')) return undefined;
+
+  const index = ctx.nameIndex();
+  if (!index.complete) return undefined;
+  const base = segments[segments.length - 1]!;
+  const suffix = `/${ref}`;
+  const hits = (index.paths.get(base) ?? []).filter((rel) => rel.endsWith(suffix) && ctx.isIgnored(rel) !== true);
+  if (hits.length !== 1) return undefined;
+  const target = hits[0]!;
+  if (/[\s`]/.test(target)) return undefined;
+
+  const find = `\`${ref}\``;
+  let occurrences = 0;
+  for (let at = lineText.indexOf(find); at !== -1; at = lineText.indexOf(find, at + find.length)) occurrences++;
+  if (occurrences !== 1) return undefined;
+  return { filePath, line, find, replace: `\`${target}\`` };
+}
+
 // ── Detector ─────────────────────────────────────────────────────────────────
 
 /**
@@ -1126,6 +1238,7 @@ export function detectDeadReferences(
   let ctx: JudgeContext | undefined;
   let nameIndexCache: NameIndex | undefined;
   const nameIndex = (): NameIndex => (nameIndexCache ??= buildNameIndex(tree));
+  let dirIndexCache: Map<string, string[]> | undefined;
   // pcic-xhzb: references left unjudged because part of the tree could not be listed.
   const unjudged = new Map<string, { filePaths: Set<string>; fileLines: Map<string, number>; evidence: string }>();
 
@@ -1149,7 +1262,13 @@ export function detectDeadReferences(
       if (isHomeRooted(ref)) continue;
 
       // Resolve relative to the instruction file first, then repo root.
-      ctx ??= { tree, isIgnored: createGitIgnoreChecker(tree), suffixCache: new Map(), nameIndex };
+      ctx ??= {
+        tree,
+        isIgnored: createGitIgnoreChecker(tree),
+        suffixCache: new Map(),
+        nameIndex,
+        dirIndex: () => (dirIndexCache ??= buildDirIndex(nameIndex())),
+      };
       const confidence = judgeReference(ref, kind, codeSpan ?? false, fileDir, ctx);
       if (confidence === null) continue;
       if (confidence === UNJUDGED) {
@@ -1186,10 +1305,16 @@ export function detectDeadReferences(
       const entry = byRef.get(normRef)!;
 
       // pcic-oonz: can THIS occurrence be re-pointed at the file it names?
+      // pcic-1ik0.4: a code span repairs only when its path is merely missing a prefix.
+      const lineText = fileLineTexts[line - 1] ?? '';
       const edit =
-        linkRaw === undefined || inCodeContext === true
+        inCodeContext === true
           ? undefined
-          : movedLinkEdit(file.path, line, fileLineTexts[line - 1] ?? '', linkRaw, kind, ctx);
+          : linkRaw !== undefined
+            ? movedLinkEdit(file.path, line, lineText, linkRaw, kind, ctx)
+            : codeSpan === true
+              ? movedCodeSpanEdit(file.path, line, lineText, ref, kind, ctx)
+              : undefined;
       if (edit === undefined) entry.allRewritable = false;
       else if (!entry.edits.some((e) => e.filePath === edit.filePath && e.line === edit.line && e.find === edit.find)) {
         entry.edits.push(edit);
@@ -1221,6 +1346,16 @@ export function detectDeadReferences(
     const noun = isDir ? 'directory' : pathLike ? 'path' : 'file';
     const name = path.basename(stripFragment(displayRef).replace(/\/+$/, ''));
 
+    // pcic-1ik0.4: when the repository holds exactly one thing of that name, say so.
+    // Text only, worded as a possibility: the name matching is evidence of where
+    // it may have gone, not of what the author meant.
+    const candidate = ctx ? uniqueNameCandidate(displayRef, kind, ctx) : undefined;
+    const candidateHint = candidate
+      ? ` The only ${noun === 'directory' ? 'directory' : 'file'} named "${name}" in the repository is "${candidate}${isDir ? '/' : ''}"; it may be what was meant.`
+      : '';
+    const linkEdits = edits.filter((e) => e.find.startsWith(']('));
+    const edited = [...new Set(edits.map((e) => `\`${e.find}\` -> \`${e.replace}\``))].join(', ');
+
     issues.push({
       id: issueId(normRef),
       severity: 'warning',
@@ -1228,7 +1363,8 @@ export function detectDeadReferences(
       title: `Broken ${noun} reference: ${name}${isDir ? '/' : ''}`,
       summary:
         `This instruction file references "${displayRef}" which does not appear to exist. ` +
-        `The ${noun} may have been renamed, moved, or deleted.`,
+        `The ${noun} may have been renamed, moved, or deleted.` +
+        candidateHint,
       filePaths: allFilePaths,
       locations: allFilePaths.map((fp) => {
         const startLine = fileLines.get(fp);
@@ -1237,13 +1373,17 @@ export function detectDeadReferences(
       evidence: evidenceLines,
       recommendation:
         'Verify the path is correct relative to the instruction file location, ' +
-        'or remove the reference if the file no longer exists.',
+        'or remove the reference if the file no longer exists.' +
+        candidateHint,
       ...(allRewritable && edits.length > 0
         ? {
             fixRecipe:
-              `Re-point the link${edits.length > 1 ? 's' : ''} at the one file of that name in the ` +
-              `repository: ${[...new Set(edits.map((e) => `\`${e.find}\` -> \`${e.replace}\``))].join(', ')}.`,
-            // `applyFixRecipe` rewrites exactly those `](target)` spans.
+              linkEdits.length === edits.length
+                ? `Re-point the link${edits.length > 1 ? 's' : ''} at the one file of that name in the repository: ${edited}.`
+                : linkEdits.length === 0
+                  ? `Add the missing leading directories to the path in backticks, as the one file it ends with in the repository: ${edited}.`
+                  : `Update each reference to the one matching file in the repository: ${edited}.`,
+            // `applyFixRecipe` rewrites exactly those spans, `](target)` or `path`.
             autoApplySafe: true,
             fixEdits: edits,
           }
