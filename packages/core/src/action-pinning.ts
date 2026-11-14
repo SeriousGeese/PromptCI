@@ -234,13 +234,18 @@ function codeSafe(text: string): string {
 type Site = { lines: number[]; use: UnpinnedUse };
 
 /** Evidence line for one unpinned ref; the raw text of an odd-shaped ref never appears. */
-function evidenceLine(filePath: string, use: UnpinnedUse): string {
-  return use.displayable
-    ? `${filePath}: uses: ${codeSafe(use.ref)}`
-    // No line numbers (baseline fingerprints hash evidence); a hash of the
-    // raw value keeps two different refs in one file distinct.
-    : `${filePath}: unrecognised uses: value (sha1 ${shortHash(use.ref)})`;
+function evidenceLine(filePath: string, site: Site): string {
+  // Line numbers are safe here: the finding's fingerprint hashes its
+  // `fingerprintKey`, not its evidence. They map each ref to its `locations`.
+  const where = `${filePath}:${site.lines.join(',')}`;
+  return site.use.displayable
+    ? `${where}: uses: ${codeSafe(site.use.ref)}`
+    // A hash of the raw value keeps two different odd refs in one file distinct.
+    : `${where}: unrecognised uses: value (sha1 ${shortHash(site.use.ref)})`;
 }
+
+/** Refs named in the summary before the rest are counted; the evidence lists all of them. */
+const SUMMARY_REF_LIMIT = 10;
 
 /**
  * ONE info-level finding per workflow or composite-action file, listing every
@@ -259,7 +264,9 @@ function buildIssue(context: RepoContext, filePath: string, sites: Site[]): Prom
   const example = thirdParty[0] ?? shown[0];
   const file = codeSafe(filePath);
 
-  const listed = shown.map((use) => `\`${codeSafe(use.ref)}\``).join(', ');
+  const listed =
+    shown.slice(0, SUMMARY_REF_LIMIT).map((use) => `\`${codeSafe(use.ref)}\``).join(', ') +
+    (shown.length > SUMMARY_REF_LIMIT ? ` and ${shown.length - SUMMARY_REF_LIMIT} more (see the evidence)` : '');
   const odd =
     hidden === 0
       ? ''
@@ -301,7 +308,10 @@ function buildIssue(context: RepoContext, filePath: string, sites: Site[]): Prom
     // Absolute, like every other finding's paths; the JSON report relativizes.
     filePaths: [absPath],
     locations: lines.map((line) => ({ filePath: absPath, startLine: line, endLine: line })),
-    evidence: sites.map((site) => evidenceLine(filePath, site.use)),
+    evidence: sites.map((site) => evidenceLine(filePath, site)),
+    // One identity per file whichever refs are unpinned in it, so pinning one
+    // of several is not "resolved + new" in a baseline, review-diff or SARIF.
+    fingerprintKey: `action-pin:${filePath}`,
     recommendation,
     // The refs are certainly mutable; whether that matters for this repo is
     // the heuristic part, so confidence stays below 1.

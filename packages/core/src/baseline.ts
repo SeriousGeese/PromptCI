@@ -86,6 +86,7 @@ export type FingerprintableIssue = {
   title: string;
   filePaths: string[];
   evidence: string[];
+  fingerprintKey?: string;
 };
 
 /**
@@ -104,8 +105,21 @@ export type FingerprintableIssue = {
  *
  * Included:
  *  - `category`, `title`, sorted `filePaths`, sorted `evidence`
+ *
+ * A grouped finding that carries `fingerprintKey` (pcic-1ik0.3) hashes only
+ * `category` and that key: its evidence lists members that come and go (the
+ * unpinned actions of one workflow, the practices still missing), and a
+ * change to the list is the same finding getting better or worse, not a new
+ * one. So such a finding that grows does not count as new for `--fail-on-new`
+ * or `review-diff --fail-on-regression`; both are info and unscored.
  */
 export function computeFingerprint(issue: FingerprintableIssue, repoRoot?: string): string {
+  if (issue.fingerprintKey !== undefined) {
+    return crypto
+      .createHash('sha256')
+      .update(['key', issue.category, issue.fingerprintKey].join('|'))
+      .digest('hex');
+  }
   const normalizedFilePaths = issue.filePaths
     .map((filePath) => normalizePathForRoot(filePath, repoRoot))
     .sort();

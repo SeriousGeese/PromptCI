@@ -167,6 +167,16 @@ export type PromptCiIssue = {
    */
   fixEdits?: FixEdit[];
   confidence: number;
+  /**
+   * Stable identity for a finding whose evidence is a LIST of members (the
+   * repository's missing agent practices, a workflow's unpinned actions). When
+   * set, the baseline/SARIF fingerprint hashes `category` and this key instead
+   * of the title, files and evidence, so pinning one action or adding one rule
+   * keeps the finding's identity rather than reading as resolved plus new.
+   * Detectors set it only on such grouped findings; every other finding's
+   * fingerprint is unchanged.
+   */
+  fingerprintKey?: string;
   tags?: string[];
   impact?: 'high' | 'medium' | 'low';
   /**
