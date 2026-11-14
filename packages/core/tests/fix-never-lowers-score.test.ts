@@ -58,6 +58,9 @@ describe('every opt-in mirror recipe, on every fixture, loses, moves and adds no
           // Every section the import brings in was already in the copy (nothing gained).
           for (const t of canonicalTexts) expect(was, `${label}: canonical text the copy lacked`).toContain(t);
           // The result holds a LIVE import of AGENTS.md: in the import-only block at the top.
+          // Review B1 (an import elsewhere does not count as "already imported") is pinned
+          // here by examples/fixture-mirror-import-kept-import, whose only live import sits in
+          // a kept section, and by the unit cases in fix-engine.test.ts.
           const [first] = parseSections(change.newContent, 'x').filter((s) => sameSectionText(s) !== '');
           expect(first?.heading, `${label}: import block on top`).toBeUndefined();
           expect(isImportOnlySection(first!), `${label}: import-only top block`).toBe(true);

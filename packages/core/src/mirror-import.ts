@@ -13,8 +13,11 @@
  * there was observed not to load it). The copied text loads in both cases.
  * That trade-off is the user's to make.
  *
- * Scope: only a repo-root `CLAUDE.md` or `.claude/CLAUDE.md` copy of the
- * repo-root `AGENTS.md`. GEMINI.md is never edited: Gemini CLI documents
+ * Scope: only a repo-root `CLAUDE.md` copy of the repo-root `AGENTS.md`
+ * (same directory, so relative `@` paths in the shared text resolve the same
+ * before and after the edit). `.claude/CLAUDE.md` is never edited: relative
+ * paths in its shared text would resolve from another directory after the
+ * edit, and spotting every such mention is not reliable. GEMINI.md is never edited: Gemini CLI documents
  * `@file.md` imports, but Antigravity CLI, which replaced it for many users,
  * documents that `@filename` does not inline the file. A markdown link is
  * never written: no tool loads one.
@@ -52,18 +55,18 @@ export function importingToolFor(filePath: string): 'claude-code' | 'gemini-cli'
 
 /**
  * The import recipe's rule for which copies it may edit, by repo-relative
- * POSIX path: the repo-root `CLAUDE.md` or `.claude/CLAUDE.md`, importing the
- * repo-root `AGENTS.md`. From a session at the repository root both import
- * paths (`@AGENTS.md`, `@../AGENTS.md`) resolve inside the working directory,
- * so they are not external imports. A CLAUDE.md in a subdirectory is loaded
- * when Claude works there, where its import of the root AGENTS.md is external,
- * so it is never edited. Returns the import path, or undefined.
+ * POSIX path: only the repo-root `CLAUDE.md`, importing the repo-root
+ * `AGENTS.md` (`@AGENTS.md`). It is in AGENTS.md's own directory, so a
+ * relative `@` path inside the shared text resolves to the same file before
+ * and after the edit, and from a session at the repository root the import
+ * resolves inside the working directory (not external). `.claude/CLAUDE.md`
+ * is refused (its relative paths resolve from `.claude/`), and a CLAUDE.md in
+ * a subdirectory too (its import of the root AGENTS.md is external where it is
+ * loaded). Returns the import path, or undefined.
  */
 export function importRecipeTarget(copyRel: string, canonicalRel: string): string | undefined {
   if (canonicalRel !== MIRROR_CANONICAL_BASENAME) return undefined;
-  if (copyRel === 'CLAUDE.md') return 'AGENTS.md';
-  if (copyRel === '.claude/CLAUDE.md') return '../AGENTS.md';
-  return undefined;
+  return copyRel === 'CLAUDE.md' ? 'AGENTS.md' : undefined;
 }
 
 /** POSIX path from the importing file's directory to the canonical file. */
@@ -227,9 +230,11 @@ export type ImportConsolidation =
  *   section is no deeper than the dropped sections (ignoring an H1 title):
  *   a kept section must not move, or read as part of AGENTS.md (a kept
  *   tail may nest under its own first section);
- * - when the copy is not in the canonical file's directory
- *   (`.claude/CLAUDE.md`), no dropped section holds a relative @ import,
- *   which would resolve from another directory after the edit;
+ * - the copy must be in the canonical file's directory, so a relative `@`
+ *   path in the shared text (on its own line or inline in prose) resolves to
+ *   the same file before and after the edit;
+ * - the canonical file must not hold the same section twice (the copy's
+ *   duplicate would be dropped, and the canonical duplicate is then imported);
  * - the canonical file must not import the copy (circular);
  * - there must be something to drop.
  *
@@ -243,6 +248,11 @@ export function consolidateWithImport(
   paths: { copyRel: string; canonicalRel: string; importPath: string },
 ): ImportConsolidation {
   const refuse = (reason: string): ImportConsolidation => ({ ok: false, reason });
+  if (path.posix.dirname(paths.copyRel) !== path.posix.dirname(paths.canonicalRel)) {
+    return refuse(
+      `${paths.copyRel} is not in ${paths.canonicalRel}'s directory: relative @ paths in the shared text would resolve from another directory after the edit`,
+    );
+  }
   if (resolvedImports(paths.canonicalRel, canonicalContent).includes(paths.copyRel)) {
     return refuse(`${paths.canonicalRel} imports ${paths.copyRel} (circular)`);
   }
@@ -250,6 +260,9 @@ export function consolidateWithImport(
   const eol = copyContent.includes('\r\n') ? '\r\n' : '\n';
   const canonicalSections = parseSections(canonicalContent, 'canonical');
   const canonicalTexts = new Set(canonicalSections.map((s) => sameSectionText(s)).filter((t) => t !== ''));
+  if (canonicalTexts.size !== canonicalSections.filter((s) => sameSectionText(s) !== '').length) {
+    return refuse(`${paths.canonicalRel} has the same section more than once; consolidate it there first`);
+  }
   const headingKey = (h: string | undefined) => (h ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
   const canonicalHeadings = new Set(
     canonicalSections.filter((s) => s.heading !== undefined).map((s) => headingKey(s.heading)),
@@ -307,20 +320,6 @@ export function consolidateWithImport(
   const firstKept = kept[0];
   if (firstKept && (headingLevel(firstKept) === 0 || headingLevel(firstKept) > topLevel)) {
     return refuse(`"${firstKept.heading ?? '(preamble)'}" sits under a section being removed; it would read as part of ${paths.canonicalRel}`);
-  }
-
-  // An import line inside a dropped section resolved from the copy's own
-  // directory before the edit and resolves from the canonical file's after it.
-  // Same directory (the root CLAUDE.md): no change. Otherwise refuse.
-  const copyDir = path.posix.dirname(paths.copyRel);
-  const canonicalDir = path.posix.dirname(paths.canonicalRel);
-  if (copyDir !== canonicalDir) {
-    const relative = dropped.find((s) => importTargets(s.text).some((t) => !t.startsWith('/') && !t.startsWith('~')));
-    if (relative) {
-      return refuse(
-        `"${relative.heading ?? '(preamble)'}" holds a relative @ import that would resolve from ${canonicalDir === '.' ? 'the repository root' : canonicalDir} instead of ${copyDir}`,
-      );
-    }
   }
 
   const leadingLines = leading ? sameSectionText(leading).split('\n') : [];

@@ -664,6 +664,10 @@ function mirrorIssue(
       : `keeping one canonical file (here ${canonicalName}). A repository-root CLAUDE.md can import AGENTS.md with an ` +
         '`@AGENTS.md` line (loaded when the session starts at the repository root); Copilot, Cursor and Windsurf ' +
         'files load no import and need their own copy. If a generator writes these files, configure it accordingly.';
+  const dotClaudeNote = rels.slice(1).includes('.claude/CLAUDE.md')
+    ? ' .claude/CLAUDE.md is not edited by `promptci fix`: it is not in the same directory as AGENTS.md, so relative ' +
+      '@ paths in the shared text would resolve from another directory after the edit.'
+    : '';
   const geminiNote = hasGemini
     ? ' GEMINI.md: keep its text; Gemini CLI documents `@file.md` imports, but Antigravity CLI, which replaced it ' +
       'for many users, documents that `@filename` does not inline the file (its rules page lists AGENTS.md among the files it reads).'
@@ -698,6 +702,7 @@ function mirrorIssue(
           'right, since dropping a copy would discard the other. Then '
         : '') +
       (claudeTargets.length > 0 ? importAdvice : `${drifted.length > 0 ? 'consider' : 'Consider'} ${importAdvice}`) +
+      dotClaudeNote +
       geminiNote,
     // Advisory everywhere (pcic-1ik0.10): no autopilot PR and nothing in a
     // plain `promptci fix`. The CLAUDE.md import recipe is opt-in only.

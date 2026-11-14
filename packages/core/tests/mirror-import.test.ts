@@ -1,8 +1,8 @@
 /**
  * pcic-1ik0.10: the mirrored-files finding is advisory. Its CLAUDE.md import
  * recipe runs only on an explicit opt-in (`applyFixRecipe(..., { optIn })`,
- * i.e. `promptci fix --issue <id>`), edits only a repo-root CLAUDE.md or
- * .claude/CLAUDE.md copy of the repo-root AGENTS.md, never GEMINI.md, and is
+ * i.e. `promptci fix --issue <id>`), edits only a repo-root CLAUDE.md copy of
+ * the repo-root AGENTS.md, never .claude/CLAUDE.md or GEMINI.md, and is
  * refused for every shape where the edit would add, lose or move text.
  */
 
@@ -20,6 +20,8 @@ import type { PromptCiIssue } from '../src/types.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const fixture = (name: string) => path.resolve(__dirname, '../../../examples', name);
 const isMirror = (i: PromptCiIssue) => (i.tags ?? []).includes('mirrored-files');
+const DOTCLAUDE =
+  ".claude/CLAUDE.md: not edited (it is not in AGENTS.md's directory, so relative @ paths in the shared text would resolve from another directory after the edit)";
 
 async function mirrorOf(root: string): Promise<PromptCiIssue> {
   const mirrors = (await scan({ repoPath: root })).issues.filter(isMirror);
@@ -68,6 +70,13 @@ describe('the mirrored-files finding is advisory', () => {
     expect(mirror.recommendation).toContain('GEMINI.md: keep its text');
     expect(mirror.recommendation).not.toMatch(/loads? in place/);
   });
+
+  it('a .claude/CLAUDE.md mirror: the finding says it is not edited, and why', async () => {
+    const mirror = await mirrorOf(fixture('fixture-mirror-refuse-dotclaude'));
+    expect(mirror.recommendation).toContain('.claude/CLAUDE.md is not edited by `promptci fix`');
+    expect(mirror.recommendation).toContain('relative @ paths in the shared text would resolve from another directory');
+    expect(mirror.recommendation).not.toContain('@../AGENTS.md');
+  });
 });
 
 describe('the opt-in import edit (fixtures)', () => {
@@ -86,9 +95,10 @@ describe('the opt-in import edit (fixtures)', () => {
     expect(added).toEqual([]);
   });
 
-  it('fixture-mirror-import-dotclaude: .claude/CLAUDE.md imports ../AGENTS.md', async () => {
-    const { files, added } = await optInFix('fixture-mirror-import-dotclaude');
-    expect(files).toEqual({ '.claude/CLAUDE.md': '@../AGENTS.md\n' });
+  it('fixture-mirror-import-kept-import: a live @AGENTS.md in a kept section is not "already imported"; the line goes on top', async () => {
+    const { files, added } = await optInFix('fixture-mirror-import-kept-import');
+    expect(files['CLAUDE.md']).toMatch(/^@AGENTS\.md\n\n## Claude notes\n/);
+    expect(files['CLAUDE.md']).toMatch(/\n@AGENTS\.md\n$/);
     expect(added).toEqual([]);
   });
 
@@ -131,7 +141,9 @@ describe('refused shapes: a mirror finding, and no edit even with the opt-in (fi
     ['fixture-mirror-refuse-middle', 'a section only CLAUDE.md has comes before "Database rules"; it would move'],
     ['fixture-mirror-refuse-comment-import', 'a section only CLAUDE.md has comes before "Agent Guidelines"; it would move'],
     ['fixture-mirror-refuse-circular', 'AGENTS.md imports CLAUDE.md (circular)'],
-    ['fixture-mirror-refuse-dotclaude-relative', '"Style" holds a relative @ import that would resolve from the repository root instead of .claude'],
+    ['fixture-mirror-refuse-dotclaude', DOTCLAUDE],
+    ['fixture-mirror-refuse-dotclaude-relative', DOTCLAUDE],
+    ['fixture-mirror-refuse-canonical-dup', 'AGENTS.md has the same section more than once; consolidate it there first'],
     ['fixture-mirror-refuse-reordered', 'CLAUDE.md has the sections of AGENTS.md in another order (or more than once)'],
     ['fixture-mirrored-drift', 'CLAUDE.md lacks text that AGENTS.md has (Database rules); an import would add it'],
   ])('%s', async (name, reason) => {
@@ -146,9 +158,9 @@ describe('refused shapes: a mirror finding, and no edit even with the opt-in (fi
 });
 
 describe('importRecipeTarget: which copies the recipe may edit', () => {
-  it('only a repo-root CLAUDE.md or .claude/CLAUDE.md, importing the repo-root AGENTS.md', () => {
+  it('only a repo-root CLAUDE.md, importing the repo-root AGENTS.md', () => {
     expect(importRecipeTarget('CLAUDE.md', 'AGENTS.md')).toBe('AGENTS.md');
-    expect(importRecipeTarget('.claude/CLAUDE.md', 'AGENTS.md')).toBe('../AGENTS.md');
+    expect(importRecipeTarget('.claude/CLAUDE.md', 'AGENTS.md')).toBeUndefined();
     expect(importRecipeTarget('packages/api/CLAUDE.md', 'AGENTS.md')).toBeUndefined();
     expect(importRecipeTarget('GEMINI.md', 'AGENTS.md')).toBeUndefined();
     expect(importRecipeTarget('CLAUDE.md', 'docs/AGENTS.md')).toBeUndefined();

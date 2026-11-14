@@ -277,8 +277,8 @@ export type MirrorImportPlan = {
 
 /**
  * The CLAUDE.md import recipe for one mirrored-files finding, re-checked
- * against the files on disk. Edits only a repo-root `CLAUDE.md` or
- * `.claude/CLAUDE.md` copy of the repo-root `AGENTS.md` (see
+ * against the files on disk. Edits only a repo-root `CLAUDE.md`
+ * copy of the repo-root `AGENTS.md` (never `.claude/CLAUDE.md`; see
  * `importRecipeTarget`); every other member is left as it is. All or
  * nothing: any refusal means no edit to any file.
  *
@@ -332,9 +332,11 @@ export async function planMirrorImport(issue: PromptCiIssue, repoRoot: string): 
       untouched.push(
         path.basename(copy) === 'GEMINI.md'
           ? `${copyRel}: not edited (an @ import in GEMINI.md does not load in every Gemini tool)`
-          : path.basename(copy) === 'CLAUDE.md'
-            ? `${copyRel}: not edited (a CLAUDE.md below the root imports AGENTS.md as an external file)`
-            : `${copyRel}: not edited (its tool loads no @ import)`,
+          : copyRel === '.claude/CLAUDE.md'
+            ? `${copyRel}: not edited (it is not in AGENTS.md's directory, so relative @ paths in the shared text would resolve from another directory after the edit)`
+            : path.basename(copy) === 'CLAUDE.md'
+              ? `${copyRel}: not edited (a CLAUDE.md below the root imports AGENTS.md as an external file)`
+              : `${copyRel}: not edited (its tool loads no @ import)`,
       );
       continue;
     }
@@ -351,7 +353,11 @@ export async function planMirrorImport(issue: PromptCiIssue, repoRoot: string): 
     changes.push({ filePath: copy, originalContent: content, newContent: result.newContent });
   }
   if (refusals.length > 0) return { changes: [], refusals, untouched };
-  if (changes.length === 0) return { changes: [], refusals: ['no repository-root CLAUDE.md copy to edit'], untouched };
+  if (changes.length === 0) {
+    // Say why a CLAUDE.md in the group was not edited, not just that none was.
+    const claudeReasons = untouched.filter((u) => /(^|\/)CLAUDE\.md: /.test(u));
+    return { changes: [], refusals: claudeReasons.length > 0 ? claudeReasons : ['no repository-root CLAUDE.md copy to edit'], untouched };
+  }
   return { changes, refusals: [], untouched };
 }
 

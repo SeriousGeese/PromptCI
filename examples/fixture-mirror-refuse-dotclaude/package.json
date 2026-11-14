@@ -1,5 +1,5 @@
 {
-  "name": "fixture-mirror-import-dotclaude",
+  "name": "fixture-mirror-refuse-dotclaude",
   "private": true,
   "packageManager": "pnpm@10.0.0",
   "scripts": {

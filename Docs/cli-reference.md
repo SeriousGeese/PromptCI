@@ -129,10 +129,11 @@ The four it can apply today:
 
 A mirrored-instruction-files finding is advisory (`autoApplySafe: false`): `promptci fix` on its
 own lists it ("Opt-in fix available") and does not change it, and no autopilot applies it. Naming
-it, `promptci fix --issue <id>`, applies one edit: in a repository-root `CLAUDE.md` (or
-`.claude/CLAUDE.md`) that copies the repository-root `AGENTS.md`, it removes the copied sections
-and adds one line, `@AGENTS.md` (`@../AGENTS.md` from `.claude/CLAUDE.md`); sections only the
-copy has, at the end, stay below it.
+it, `promptci fix --issue <id>`, applies one edit: in a repository-root `CLAUDE.md` that copies
+the repository-root `AGENTS.md`, it removes the copied sections and adds one line, `@AGENTS.md`;
+sections only the copy has, at the end, stay below it. A `.claude/CLAUDE.md` copy is never
+edited: it is not in `AGENTS.md`'s directory, so relative `@` paths in the shared text would
+resolve from another directory after the edit.
 
 It is opt-in because of how Claude Code loads imports
 ([memory docs](https://code.claude.com/docs/en/memory)): a session started at the repository
@@ -147,14 +148,18 @@ and Windsurf files are never edited either (no import loads content).
 
 No edit is made, to any file, unless every section of `AGENTS.md`, the text before its first
 heading included, is in the copy byte-identically (line endings, trailing whitespace, a BOM and
-edge blank lines aside), once each and in the same order; no section has drifted; no copy-only
-section comes before a copied one, and the first copy-only section is not nested under a copied
-one; for `.claude/CLAUDE.md`, no copied section holds a relative `@` import (it would resolve from
-another directory after the edit); `AGENTS.md` does not import the copy; and `AGENTS.md` is
-readable and not ignored by the root `.gitignore`. An existing import counts only in the import
+edge blank lines aside), once each and in the same order; `AGENTS.md` has no section twice; no
+section has drifted; no copy-only section comes before a copied one, and the first copy-only
+section is not nested under a copied one; `AGENTS.md` does not import the copy; and `AGENTS.md`
+is readable and not ignored by the root `.gitignore`. An existing import counts only in the import
 lines at the very top of the copy; anywhere else the line is added again (a second import is
 harmless). `promptci fix --issue <id>` prints the reason when it refuses. Per-section duplicate
 findings are advisory and never edited.
+
+A `CLAUDE.md` whose live `@AGENTS.md` import reaches the scanned `AGENTS.md` counts as forwarding
+(no "No behavioral guidance" finding). Known limit: an import line right after a line that starts
+with an HTML tag (a `<br>`, or `<b>Note</b>` prose) is read as part of an HTML block and not
+counted, though Claude Code loads it; the cost is a false "No behavioral guidance" finding.
 
 A close match is not enough to rewrite a script name, because most one-edit neighbours of a
 script name are a real sibling script: `test:api` → `test:app`, `test:unit` → `test:init`,
