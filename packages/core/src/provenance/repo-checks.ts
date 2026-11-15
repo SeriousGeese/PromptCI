@@ -141,12 +141,6 @@ const NEXT_SERVER_CLIENT = src(
   'supports',
   'Says layouts and pages in the App Router are Server Components by default and that the use client directive marks a Client Component boundary.',
 );
-const NEXT_MIGRATION = src(
-  'https://nextjs.org/docs/app/guides/migrating/app-router-migration',
-  'Next.js migrating from Pages to the App Router',
-  'contradicts',
-  'Says the app directory is intentionally designed to work simultaneously with the pages directory for incremental migration and that the two routers can be used together, which contradicts treating pages router and app router as mutually exclusive; it also says getServerSideProps, getStaticProps and getInitialProps are replaced inside app.',
-);
 const NEXT_MIGRATION_SUPPORTS = src(
   'https://nextjs.org/docs/app/guides/migrating/app-router-migration',
   'Next.js migrating from Pages to the App Router',
@@ -778,18 +772,6 @@ export const REPO_CHECKS_PROVENANCE: readonly CheckProvenance[] = [
       { name: 'minimum instruction files', value: 2, unit: 'files', where: 'conflicts.ts:detectCompetingTechConflicts', source: 'unverified' },
       { name: 'finding confidence', value: 0.6, unit: 'confidence score', where: 'conflicts.ts:detectCompetingTechConflicts', source: 'unverified' },
     ],
-    lastVerified: VERIFIED,
-  },
-  {
-    id: 'competing-tech-conflicts/nextjs-routers',
-    refuted: true,
-    detector: 'competing-tech-conflicts',
-    title: 'Pages Router and App Router treated as exclusive',
-    kind: 'tool-fact',
-    claim:
-      'The Next.js Pages Router and App Router are mutually exclusive routing strategies, so instruction files recommending one and the other conflict.',
-    appliesTo: 'n/a',
-    sources: [NEXT_MIGRATION],
     lastVerified: VERIFIED,
   },
 
