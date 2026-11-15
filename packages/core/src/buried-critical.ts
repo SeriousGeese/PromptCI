@@ -1,9 +1,12 @@
 /**
  * Buried critical-instruction detector (FEAT-011).
  *
- * Models weight earlier context more heavily than later context. A long file
- * that puts its highest-stakes instructions ("never", "critical", "MUST NOT",
- * "security", "dangerous") at the very bottom risks having them under-weighted.
+ * Opinion-grade hint (#183). Some prompt-engineering advice holds that a long
+ * file which puts its highest-stakes instructions ("never", "critical", "MUST
+ * NOT", "security", "dangerous") at the very bottom may have them applied less
+ * reliably. The guidance is contested: Anthropic's long-context advice puts long
+ * documents at the top and the query or instructions at the end. So this is an
+ * info hint that costs no health-score points, not a defect.
  *
  * Heuristic: for files longer than 100 lines, find the lines carrying a
  * high-severity keyword. If more than 60% of those lines sit in the bottom half
@@ -19,6 +22,7 @@ import type { InstructionFile, PromptCiIssue } from './types.js';
 import { INSTRUCTION_FILE_TYPES } from './types.js';
 import { snippet } from './evidence.js';
 import { fileIdPath } from './finding-id.js';
+import { UNSCORED_TAG } from './health-score.js';
 
 /** Persistent, always-loaded instruction files this detector applies to. */
 const TARGET_FILE_TYPES = INSTRUCTION_FILE_TYPES;
@@ -98,9 +102,9 @@ export function detectBuriedCriticalInstructions(files: InstructionFile[]): Prom
       title: 'Critical instructions near the bottom of a long file',
       summary:
         `${pct}% of the high-severity lines in "${fileName}" (${bottomHalfCount} of ` +
-        `${keywordLines.length}) sit in the bottom half of a ${lineCount}-line file. Models ` +
-        `weight earlier context more heavily, so critical guidance placed late may be applied ` +
-        `less reliably.`,
+        `${keywordLines.length}) sit in the bottom half of a ${lineCount}-line file. Some ` +
+        `prompt-writing advice favours putting critical rules near the top of a long file, ` +
+        `though other guidance favours the end; this is a style hint, not a known defect.`,
       filePaths: [file.path],
       locations: bottomLineNumbers.slice(0, 5).map((ln) => ({ filePath: file.path, startLine: ln, endLine: ln })),
       evidence: [
@@ -109,10 +113,11 @@ export function detectBuriedCriticalInstructions(files: InstructionFile[]): Prom
         `e.g. line ${bottomLineNumbers[0] ?? keywordLines[0]}: "${snippet(sampleLine, 100)}"`,
       ],
       recommendation:
-        'Promote the highest-stakes instructions (security rules, "never"/"must not" ' +
-        'constraints) toward the top of the file, or add a short summary of them near the ' +
-        'top that points to the detail below.',
-      confidence: 0.5,
+        'If you want the highest-stakes instructions (security rules, "never"/"must not" ' +
+        'constraints) easy to find, consider a short summary of them near the top of the ' +
+        'file that points to the detail below. Skip this if your file already reads well.',
+      confidence: 0.3,
+      tags: [UNSCORED_TAG],
     });
   }
 

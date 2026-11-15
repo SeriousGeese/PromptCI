@@ -21,7 +21,10 @@ export type ContextBloatThresholds = {
   fileHigh: number;
   totalWarning: number;
   totalHigh: number;
-  /** Line count above which a Copilot instructions file may degrade response quality (GitHub guidance). */
+  /**
+   * Line count above which a Copilot instructions file is reported as long. PromptCI's own
+   * heuristic: GitHub documents no line limit for these files (#189).
+   */
   copilotLineWarning: number;
   /**
    * Higher char thresholds for README files — READMEs are project docs that agents
@@ -184,23 +187,23 @@ export function detectContextBloat(
     }
   }
 
-  // Copilot-specific: flag if line count exceeds GitHub's recommended limit
+  // Copilot instructions files: a generic size hint against our own line heuristic (not a GitHub limit).
   for (const file of [...files, ...aliasesOfType(files, aliases, 'copilot')]) {
     if (file.fileType === 'copilot' && file.lineCount > t.copilotLineWarning) {
       issues.push({
         id: fileIssueId(fileIdPath(file) + ':copilot-lines'),
         severity: 'warning',
         category: 'context_bloat',
-        title: 'Copilot instructions file exceeds recommended line limit',
+        title: 'Copilot instructions file is long',
         summary:
-          `File is ${file.lineCount.toLocaleString()} lines. GitHub recommends keeping Copilot ` +
-          `instruction files under ${t.copilotLineWarning.toLocaleString()} lines — longer files may be truncated, ` +
-          `degrading response quality.`,
+          `File is ${file.lineCount.toLocaleString()} lines, past PromptCI's ${t.copilotLineWarning.toLocaleString()}-line ` +
+          `size hint for a Copilot instructions file. This is PromptCI's own rule of thumb, not a documented limit; ` +
+          `a long file adds context to every request and is harder to keep accurate.`,
         filePaths: [file.path],
         locations: [{ filePath: file.path }],
         evidence: [
           `lineCount: ${file.lineCount.toLocaleString()}`,
-          `threshold: ${t.copilotLineWarning.toLocaleString()} lines`,
+          `threshold: ${t.copilotLineWarning.toLocaleString()} lines (PromptCI heuristic)`,
         ],
         recommendation:
           'Split into multiple focused instruction files, or move rarely-needed context to separate docs that are linked rather than inlined.',

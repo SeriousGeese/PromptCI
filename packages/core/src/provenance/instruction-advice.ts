@@ -16,6 +16,12 @@ const BY = 'Claude agent backfill (pcic-kvv3.1), pending human review';
 const V13 = { date: '2026-11-13', by: BY };
 /** Records that cite a page read on the following day. */
 const V14 = { date: '2026-11-14', by: BY };
+/** Records reworded and re-read on 2026-11-15. */
+const V15 = (issue: number) => ({ date: '2026-11-15', by: `agent run 2026-11-15 (issue #${issue})` });
+/** Tools other than Claude Code: where the volatile-content and local-path hints still apply. */
+const GEMINI_NOTICE =
+  ' geminicli.com carries a banner (read 2026-11-14): Gemini CLI was replaced by Antigravity CLI on June 18th, 2026 for unpaid-tier and Google One users; a claim about gemini-cli may not hold for the replacement.';
+const NON_CLAUDE_TOOLS = ['codex', 'cursor', 'copilot', 'gemini-cli', 'windsurf'] as const;
 
 /** Pages read for this file. `readOn` is the day the page was actually fetched. */
 const PAGES = {
@@ -54,6 +60,19 @@ const PAGES = {
   ccMemoryExternal: { url: 'https://code.claude.com/docs/en/memory', title: 'Claude Code docs: How Claude remembers your project (external imports, load order)', readOn: '2026-11-14' },
   antigravityRules: { url: 'https://antigravity.google/docs/rules.md', title: 'Antigravity docs: Rules', readOn: '2026-11-14' },
   windsurfMemories14: { url: 'https://docs.devin.ai/desktop/cascade/memories', title: 'Devin Local docs: Memories and rules (docs.windsurf.com/windsurf/cascade/memories redirects here)', readOn: '2026-11-14' },
+  // Re-read on 2026-11-15 for the instruction-advice demotions (issues #181, #182, #183, #185, #189).
+  ccCache15: { url: 'https://code.claude.com/docs/en/prompt-caching', title: 'Claude Code docs: How Claude Code uses prompt caching', readOn: '2026-11-15' },
+  apiCache15: { url: 'https://platform.claude.com/docs/en/build-with-claude/prompt-caching', title: 'Claude API docs: Prompt caching', readOn: '2026-11-15' },
+  apiPrompt15: {
+    url: 'https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/claude-prompting-best-practices',
+    title: 'Claude API docs: Prompting best practices',
+    readOn: '2026-11-15',
+  },
+  ghRepo15: {
+    url: 'https://docs.github.com/en/copilot/how-tos/configure-custom-instructions/add-repository-instructions',
+    title: 'GitHub Docs: Adding repository custom instructions for GitHub Copilot',
+    readOn: '2026-11-15',
+  },
 } as const;
 
 const src = (page: keyof typeof PAGES, stance: SourceStance, note: string): ProvenanceSource => ({ ...PAGES[page], stance, note });
@@ -102,16 +121,17 @@ export const INSTRUCTION_ADVICE_PROVENANCE: readonly CheckProvenance[] = [
   {
     id: 'context-bloat/copilot-line-limit',
     detector: 'context-bloat',
-    title: 'Copilot instructions file line limit',
-    kind: 'tool-fact',
-    claim: 'A Copilot instructions file of more than 1,000 lines may be truncated or degrade response quality.',
+    title: 'Copilot instructions file length hint',
+    kind: 'opinion',
+    unverified: true,
+    claim: 'A Copilot instructions file of more than 1,000 lines is long enough that splitting it or linking out to documents is worth considering, because a long file adds context to every request.',
     appliesTo: ['copilot'],
     sources: [
-      src('ghRepo', 'context', 'The only length statement is in the sample prompt for generating the file, which says instructions must be no longer than 2 pages; the page does not mention 1,000 lines or 1,000 characters.'),
+      src('ghRepo15', 'context', "States no limit on the size of an instructions file in lines, pages or characters; the only length statement is in a sample prompt for generating the file, which says instructions must be no longer than 2 pages. The 1,000-line number is PromptCI's own, not GitHub's."),
     ],
-    unverified: true,
-    thresholds: [heuristic('copilotLineWarning', 1000, 'lines per copilot-instructions file', 'context-bloat.ts:DEFAULTS.copilotLineWarning')],
-    lastVerified: V13,
+    caveat: "The finding is worded as a generic size hint from PromptCI's own heuristic and no longer attributes the number to GitHub (#189).",
+    thresholds: [heuristic('copilotLineWarning', 1000, "lines per copilot-instructions file (PromptCI's own heuristic; nothing supports the number)", 'context-bloat.ts:DEFAULTS.copilotLineWarning')],
+    lastVerified: V15(189),
   },
   {
     id: 'context-bloat/windsurf-truncation',
@@ -154,17 +174,18 @@ export const INSTRUCTION_ADVICE_PROVENANCE: readonly CheckProvenance[] = [
   {
     id: 'prompt-cache-friendliness/volatile-content',
     detector: 'prompt-cache-friendliness',
-    title: 'Volatile content in always-loaded instructions',
-    kind: 'tool-fact',
+    title: 'Volatile content in always-loaded instructions (tools other than Claude Code)',
+    kind: 'opinion',
+    unverified: true,
     claim:
-      'A date, timestamp, branch name, current-task line or pasted scan report in an always-loaded instruction file changes the prompt prefix whenever it is edited, so the cached prefix is rebuilt and the next request is slower and costlier.',
-    appliesTo: ['claude-code'],
-    refuted: true,
+      'For an AI tool other than Claude Code, a date, timestamp, branch name, current-task line or pasted scan report in an always-loaded instruction file may change the prompt prefix when edited, so a cached prefix may be rebuilt.',
+    appliesTo: NON_CLAUDE_TOOLS,
     sources: [
-      src('ccCache', 'contradicts', 'Says that editing CLAUDE.md in the middle of a session does not invalidate the cache, because project-root and user-level CLAUDE.md files are read once at session start and the edit applies only after /clear, /compact or a restart.'),
-      src('apiCache', 'context', 'The Claude API (not a Claude Code page) says cache hits need identical prompt segments up to the breakpoint and that a change at one level invalidates that level and all later ones; see prompt-cache-friendliness/volatile-content-api.'),
+      src('ccCache15', 'context', 'Why the check does not apply to Claude Code: the project-root and user CLAUDE.md are read once at session start and held in memory, so editing one mid-session does not invalidate the cache (the edit applies after /clear, /compact or a restart).'),
+      src('apiCache15', 'context', 'The underlying API needs a 100 percent identical prompt segment up to the cache breakpoint and a change at one level invalidates that level and later ones; whether another tool re-sends its instruction files that way is not documented here.'),
     ],
-    lastVerified: V14,
+    caveat: 'Reported as an info hint that costs no health-score points. CLAUDE.md-family files (scanner fileType claude) get no finding (#181).' + GEMINI_NOTICE,
+    lastVerified: V15(181),
   },
   {
     id: 'prompt-cache-friendliness/volatile-content-api',
@@ -181,20 +202,22 @@ export const INSTRUCTION_ADVICE_PROVENANCE: readonly CheckProvenance[] = [
   },
   {
     id: 'prompt-cache-friendliness/local-paths',
-    refuted: true,
     detector: 'prompt-cache-friendliness',
-    title: 'Absolute local machine paths in instructions',
-    kind: 'tool-fact',
-    claim: 'Absolute local machine paths in an always-loaded instruction file differ between environments and so prevent prompt-cache reuse across them.',
-    appliesTo: ['claude-code'],
+    title: 'Absolute local machine paths in instructions (tools other than Claude Code)',
+    kind: 'opinion',
+    unverified: true,
+    claim:
+      'For an AI tool other than Claude Code, an absolute local machine path in an always-loaded instruction file differs between environments and so may reduce prompt-cache reuse across them.',
+    appliesTo: NON_CLAUDE_TOOLS,
     sources: [
       src(
-        'ccCache',
-        'contradicts',
-        'Says that in Claude Code the cache is effectively scoped to one machine and directory because the system prompt embeds the auto memory paths and the conversation opens with the working directory, platform and shell, so sessions on different machines or directories already miss each other cache whatever paths CLAUDE.md contains.',
+        'ccCache15',
+        'context',
+        'Why the check is retired for Claude Code: its cache is effectively scoped to one machine and directory (the system prompt embeds the auto memory paths and the conversation opens with the working directory, platform and shell), so sessions on different machines already miss each other whatever paths CLAUDE.md contains.',
       ),
     ],
-    lastVerified: V14,
+    caveat: 'Reported as an info hint that costs no health-score points, decided by the scanner fileType: CLAUDE.md-family files get no finding (#182).' + GEMINI_NOTICE,
+    lastVerified: V15(182),
   },
   {
     id: 'prompt-cache-friendliness/large-table',
@@ -244,28 +267,29 @@ export const INSTRUCTION_ADVICE_PROVENANCE: readonly CheckProvenance[] = [
   // ───────────────────────────── buried-critical ─────────────────────────────
   {
     id: 'buried-critical',
-    refuted: true,
+    unverified: true,
     detector: 'buried-critical',
     title: 'Critical instructions near the bottom of a long file',
     kind: 'opinion',
     claim:
-      'Models weight earlier context more heavily than later context, so high-stakes instructions placed in the bottom half of a long instruction file are applied less reliably than the same lines near the top.',
+      'Some prompt-writing advice holds that high-stakes instructions in the bottom half of a long instruction file are applied less reliably than the same lines near the top; other guidance favours instructions at the end, so the effect is not established.',
     appliesTo: 'all',
     sources: [
       src(
-        'apiPrompt',
-        'contradicts',
-        'In long-context guidance (20k-plus-token prompts) it says to put long documents at the top above the query, instructions and examples, and that queries at the end can improve response quality by up to 30 percent, which favours later instructions and not earlier ones.',
+        'apiPrompt15',
+        'context',
+        'In long-context guidance (20k-plus-token prompts) it says to put long documents and inputs at the top above the query, instructions and examples, and that queries at the end can improve response quality by up to 30 percent in tests; it does not say where rules inside an instruction file should sit, and its advice cuts against putting instructions first.',
       ),
       src('ccMemory', 'context', 'About truncation, not weighting: says that when an on-demand subdirectory CLAUDE.md or rules file is over a per-file size limit Claude receives only the start of it, so later instructions are not in context.'),
       src('ccContext', 'context', 'About truncation, not weighting: says truncation of an over-cap invoked skill keeps the start of the file, so the most important instructions belong near the top of SKILL.md.'),
       src('ccBest', 'context', 'Attributes a CLAUDE.md line that keeps being missed to the file having grown long and says to shorten the file, and says nothing about where in the file a line sits.'),
     ],
+    caveat: 'Opinion-grade: reported as an info hint with low confidence that costs no health-score points (#183).',
     thresholds: [
       heuristic('MIN_LINES', 100, 'lines in the file', 'buried-critical.ts:MIN_LINES'),
       heuristic('BOTTOM_HALF_RATIO_THRESHOLD', 0.6, 'share of high-severity lines in the bottom half', 'buried-critical.ts:BOTTOM_HALF_RATIO_THRESHOLD'),
     ],
-    lastVerified: V14,
+    lastVerified: V15(183),
   },
 
   // ───────────────────────────── vague-guidance ─────────────────────────────
@@ -527,20 +551,21 @@ export const INSTRUCTION_ADVICE_PROVENANCE: readonly CheckProvenance[] = [
   },
   {
     id: 'missing-context/copilot-topic-silence',
-    refuted: true,
     detector: 'missing-context',
-    title: 'Copilot reads only its own instruction files',
+    title: 'Copilot topic silence',
     kind: 'tool-fact',
-    claim: 'GitHub Copilot reads only its own instruction files, so a naming convention documented in AGENTS.md or CLAUDE.md is invisible to it.',
+    claim:
+      'GitHub Copilot reads the nearest AGENTS.md and a single CLAUDE.md or GEMINI.md in the repository root as well as its own instruction files, so a convention documented in one of those is visible to it and is not reported as missing.',
     appliesTo: ['copilot'],
     sources: [
       src(
-        'ghRepo',
-        'contradicts',
-        'Says Copilot uses the nearest AGENTS.md in the directory tree and alternatively a single CLAUDE.md or GEMINI.md in the repository root, and that all relevant instruction sets are provided to it, so a convention in AGENTS.md is visible to Copilot.',
+        'ghRepo15',
+        'supports',
+        'Says Copilot uses AGENTS.md files stored anywhere in the repository (the nearest one in the directory tree takes precedence) and, alternatively, a single CLAUDE.md or GEMINI.md in the repository root.',
       ),
     ],
-    lastVerified: V13,
+    caveat: 'The page does not say what Copilot does not read; the check speaks only when none of AGENTS.md, a root CLAUDE.md or a root GEMINI.md exists (#185).',
+    lastVerified: V15(185),
   },
 
   // ───────────────────────────── within-section-dedup ─────────────────────────────

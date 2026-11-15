@@ -84,6 +84,14 @@ describe('detectContextBloat', () => {
     expect(issues.some(i => i.title.includes('Copilot'))).toBe(true);
   });
 
+  it("#189: words the Copilot line finding as PromptCI's own size hint, not GitHub guidance", () => {
+    const files = [makeFile('/repo/copilot-instructions.md', 'copilot', 1000, 1005)];
+    const issue = detectContextBloat(files).find(i => i.title.includes('Copilot'))!;
+    const text = `${issue.title} ${issue.summary} ${issue.evidence.join(' ')}`;
+    expect(text).not.toMatch(/GitHub (recommends|guidance)|truncated/i);
+    expect(text).toContain('PromptCI');
+  });
+
   it('flags total context warning threshold', () => {
     const files = [
       makeFile('/repo/CLAUDE.md', 'claude', 16000),

@@ -39,6 +39,15 @@ describe('detectBuriedCriticalInstructions', () => {
     expect(issue.locations.some((l) => l.startLine === 115)).toBe(true);
   });
 
+  it('#183: is an unscored, low-confidence hint worded as advice, not a fact about models', () => {
+    const content = makeLongContent(120, { 115: 'NEVER push to production.' });
+    const issue = detectBuriedCriticalInstructions([makeFile(content)])[0]!;
+    expect(issue.tags).toEqual(['unscored']);
+    expect(issue.confidence).toBeLessThanOrEqual(0.3);
+    expect(issue.summary).not.toMatch(/weight earlier context more heavily/i);
+    expect(issue.summary).toMatch(/hint, not a known defect/);
+  });
+
   it('does not flag the same instruction placed near the top', () => {
     const content = makeLongContent(120, { 5: 'NEVER push to production.' });
     expect(detectBuriedCriticalInstructions([makeFile(content)])).toEqual([]);
