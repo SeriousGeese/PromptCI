@@ -118,8 +118,12 @@ async function applyLineEdits(edits: readonly FixEdit[], repoRoot: string): Prom
 export async function applyFixRecipe(
   issue: PromptCiIssue,
   repoRoot: string,
-  /** `optIn`: the caller named this finding (`promptci fix --issue <id>`); needed for an {@link isOptInRecipe} recipe. */
-  options: { optIn?: boolean } = {},
+  /**
+   * `optIn`: the caller named this finding (`promptci fix --issue <id>`); needed for an {@link isOptInRecipe} recipe.
+   * `importSubset`: with `optIn`, the mirror import may also apply to a CLAUDE.md that lacks some of AGENTS.md's
+   * sections (`promptci fix --issue <id> --import-subset`, pcic-5rop.64); see {@link planMirrorImport}.
+   */
+  options: { optIn?: boolean; importSubset?: boolean } = {},
 ): Promise<FileChange[]> {
   const changes: FileChange[] = [];
 
@@ -234,7 +238,7 @@ export async function applyFixRecipe(
     for (const loc of issue.locations) resolveSafePath(repoRoot, loc.filePath);
     for (const p of issue.filePaths) resolveSafePath(repoRoot, p);
     if (!options.optIn || !isOptInRecipe(issue)) return changes;
-    return (await planMirrorImport(issue, repoRoot)).changes;
+    return (await planMirrorImport(issue, repoRoot, { subset: options.importSubset === true })).changes;
   }
 
   return changes;
@@ -293,6 +297,11 @@ export type MirrorImportPlan = {
   refusals: string[];
   /** Group members the recipe never edits (anything but a root CLAUDE.md copy), with the reason. */
   untouched: string[];
+  /**
+   * With `subset`: headings of AGENTS.md sections the edited CLAUDE.md lacked, which Claude Code
+   * reads after the edit (say so: `subsetImportCaveat`). Empty when nothing is gained or nothing is edited.
+   */
+  gained: string[];
 };
 
 /**
@@ -306,11 +315,21 @@ export type MirrorImportPlan = {
  * `optIn` gate and returns the edits for any mirrored-files finding it can
  * apply. Call it only for a finding the user picked (as
  * `promptci fix --issue <id>` does), never from an autopilot.
+ *
+ * `subset` (pcic-5rop.64): also plan the import for a CLAUDE.md that lacks
+ * some of AGENTS.md's sections (see `consolidateWithImport`). The plan's
+ * `gained` lists them; whoever offers the edit must say that Claude Code will
+ * read them too (`subsetImportCaveat`). Without `subset` such a copy is
+ * refused, as before.
  */
-export async function planMirrorImport(issue: PromptCiIssue, repoRoot: string): Promise<MirrorImportPlan> {
+export async function planMirrorImport(
+  issue: PromptCiIssue,
+  repoRoot: string,
+  options: { subset?: boolean } = {},
+): Promise<MirrorImportPlan> {
   const root = path.resolve(repoRoot);
   const rel = (abs: string) => path.relative(root, abs).split(path.sep).join('/');
-  const none = (...refusals: string[]): MirrorImportPlan => ({ changes: [], refusals, untouched: [] });
+  const none = (...refusals: string[]): MirrorImportPlan => ({ changes: [], refusals, untouched: [], gained: [] });
   if (!isOptInRecipe(issue)) return none('not a mirrored-files finding');
   const [canonicalRaw, ...copiesRaw] = issue.filePaths;
   if (canonicalRaw === undefined || copiesRaw.length === 0) return none('the finding names no copies');
@@ -345,6 +364,7 @@ export async function planMirrorImport(issue: PromptCiIssue, repoRoot: string): 
   const changes: FileChange[] = [];
   const refusals: string[] = [];
   const untouched: string[] = [];
+  const gained: string[] = [];
   for (const copy of copies) {
     const copyRel = rel(copy);
     const importPath = importRecipeTarget(copyRel, canonicalRel);
@@ -365,20 +385,21 @@ export async function planMirrorImport(issue: PromptCiIssue, repoRoot: string): 
       refusals.push(`${copyRel} cannot be read here`);
       continue;
     }
-    const result = consolidateWithImport(content, canonicalContent, { copyRel, canonicalRel, importPath });
+    const result = consolidateWithImport(content, canonicalContent, { copyRel, canonicalRel, importPath }, { subset: options.subset === true });
     if (!result.ok) {
       refusals.push(result.reason);
       continue;
     }
     changes.push({ filePath: copy, originalContent: content, newContent: result.newContent });
+    for (const heading of result.gained) if (!gained.includes(heading)) gained.push(heading);
   }
-  if (refusals.length > 0) return { changes: [], refusals, untouched };
+  if (refusals.length > 0) return { changes: [], refusals, untouched, gained: [] };
   if (changes.length === 0) {
     // Say why a CLAUDE.md in the group was not edited, not just that none was.
     const claudeReasons = untouched.filter((u) => /(^|\/)CLAUDE\.md: /.test(u));
-    return { changes: [], refusals: claudeReasons.length > 0 ? claudeReasons : ['no repository-root CLAUDE.md copy to edit'], untouched };
+    return { changes: [], refusals: claudeReasons.length > 0 ? claudeReasons : ['no repository-root CLAUDE.md copy to edit'], untouched, gained: [] };
   }
-  return { changes, refusals: [], untouched };
+  return { changes, refusals: [], untouched, gained };
 }
 
 /**

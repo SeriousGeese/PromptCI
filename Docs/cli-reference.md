@@ -41,6 +41,7 @@ promptci context optimize --write           # apply the previewed changes to dis
 # Fix
 promptci fix                                # interactively fix deterministic issues
 promptci fix --issue <id>                   # fix a specific issue by its ID
+promptci fix --issue <id> --import-subset   # mirrored CLAUDE.md: import AGENTS.md even when CLAUDE.md lacks some of its sections
 promptci fix --no-interactive               # apply all fixes without prompting
 promptci fix --dry-run                      # preview changes without writing to disk
 
@@ -155,6 +156,16 @@ is readable and not ignored by the root `.gitignore`. An existing import counts 
 lines at the very top of the copy; anywhere else the line is added again (a second import is
 harmless). `promptci fix --issue <id>` prints the reason when it refuses. Per-section duplicate
 findings are advisory and never edited.
+
+**A CLAUDE.md with fewer sections than AGENTS.md** (the state a consolidation leaves, when
+`AGENTS.md` gained the other tools' rules) is refused by default: the import would add text
+Claude Code did not read before. `promptci fix --issue <id> --import-subset` makes that edit
+anyway, after printing the sections Claude Code would gain; without the flag, a refusal for
+this reason alone names the flag. Every other rule above still holds: what the copy has must be
+`AGENTS.md` sections, byte-identical, once each and in `AGENTS.md`'s order (it may skip some),
+and drift, a moved or nested copy-only section, a duplicate or circular import, and an ignored
+`AGENTS.md` are still refused. Nothing in `CLAUDE.md` is lost: every removed section is the same
+text in `AGENTS.md`, and copy-only sections stay below the import.
 
 A `CLAUDE.md` whose live `@AGENTS.md` import reaches the scanned `AGENTS.md` counts as forwarding
 (no "No behavioral guidance" finding). Known limit: an import line right after a line that starts

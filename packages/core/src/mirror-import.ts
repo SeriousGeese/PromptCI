@@ -23,7 +23,11 @@
  * never written: no tool loads one.
  *
  * Refused (no edit, with a reason) unless the copy is exactly "AGENTS.md plus
- * trailing tool-specific sections": see {@link consolidateWithImport}.
+ * trailing tool-specific sections": see {@link consolidateWithImport}. A
+ * second, explicit mode (`subset`, pcic-5rop.64) also accepts a copy that
+ * lacks some of AGENTS.md's sections, the state a consolidation leaves: the
+ * import then ADDS those sections to what Claude Code reads, which the caller
+ * must say (see {@link subsetImportCaveat}).
  *
  * Pure: content in, content out. The caller reads and writes files.
  */
@@ -209,6 +213,12 @@ export type ImportConsolidation =
       dropped: string[];
       /** Headings of the copy-only sections kept below the import, in order. */
       kept: string[];
+      /**
+       * Headings of the canonical sections the copy lacks, in the canonical
+       * order: what Claude Code reads after the edit and did not before.
+       * Always empty unless `subset` was asked for.
+       */
+      gained: string[];
     }
   | { ok: false; reason: string };
 
@@ -241,11 +251,22 @@ export type ImportConsolidation =
  * The import line goes at the top (after front matter) unless the leading
  * import-only block already imports the canonical file. Line endings and
  * the final newline are kept.
+ *
+ * `subset` (pcic-5rop.64, an explicit second mode): the first rule is
+ * relaxed, nothing else. The copy may lack canonical sections (it is a
+ * subset of AGENTS.md, as a consolidation leaves it); they are returned as
+ * `gained`, because after the edit Claude Code reads them too. The copied
+ * sections must still be canonical sections, once each, in the canonical
+ * order (with gaps), and drift, a moved or nested kept section, the
+ * directory, a canonical duplicate and a circular import are refused as
+ * before. Nothing the copy has is lost in either mode: every dropped section
+ * is the same text in the canonical file, and every kept one stays.
  */
 export function consolidateWithImport(
   copyContent: string,
   canonicalContent: string,
   paths: { copyRel: string; canonicalRel: string; importPath: string },
+  options: { subset?: boolean } = {},
 ): ImportConsolidation {
   const refuse = (reason: string): ImportConsolidation => ({ ok: false, reason });
   if (path.posix.dirname(paths.copyRel) !== path.posix.dirname(paths.canonicalRel)) {
@@ -282,7 +303,7 @@ export function consolidateWithImport(
 
   const copyTexts = new Set(sections.map((s) => sameSectionText(s)));
   const missing = canonicalSections.filter((s) => sameSectionText(s) !== '' && !copyTexts.has(sameSectionText(s)));
-  if (missing.length > 0) {
+  if (missing.length > 0 && !options.subset) {
     const names = missing.map((s) => s.heading ?? '(text before the first heading)').join(', ');
     return refuse(`${paths.copyRel} lacks text that ${paths.canonicalRel} has (${names}); an import would add it`);
   }
@@ -306,9 +327,13 @@ export function consolidateWithImport(
 
   // The copied sections must be AGENTS.md's sections, once each, in AGENTS.md's
   // order: otherwise the import changes the order (or count) Claude reads them in.
+  // In subset mode the copy may skip sections (the gaps are `gained`), but what
+  // it has must still come once each and in that order.
   const canonicalOrder = canonicalSections.map((s) => sameSectionText(s)).filter((t) => t !== '');
   const droppedOrder = dropped.map((s) => sameSectionText(s));
-  if (droppedOrder.length !== canonicalOrder.length || droppedOrder.some((t, i) => t !== canonicalOrder[i])) {
+  const positions = droppedOrder.map((t) => canonicalOrder.indexOf(t));
+  const inOrder = positions.every((p, i) => i === 0 || p > positions[i - 1]!);
+  if (!inOrder || (!options.subset && droppedOrder.length !== canonicalOrder.length)) {
     return refuse(`${paths.copyRel} has the sections of ${paths.canonicalRel} in another order (or more than once)`);
   }
 
@@ -349,5 +374,22 @@ export function consolidateWithImport(
     newContent: out.join(eol) + finalNewline,
     dropped: dropped.map((s) => s.heading ?? '(preamble)'),
     kept: kept.map((s) => s.heading ?? '(preamble)'),
+    gained: missing.map((s) => s.heading ?? '(text before the first heading)'),
   };
+}
+
+/**
+ * What to say wherever a subset import (`subset`, pcic-5rop.64) is offered:
+ * the sections Claude Code gains, and that the copy loses nothing. `gained`
+ * is {@link ImportConsolidation}'s list (or a plan's); empty means the copy
+ * held every section, so there is nothing to add to the plain import's wording.
+ */
+export function subsetImportCaveat(gained: readonly string[], canonicalRel: string = MIRROR_CANONICAL_BASENAME): string {
+  if (gained.length === 0) return '';
+  return (
+    `CLAUDE.md has fewer sections than ${canonicalRel}, so after this import Claude Code also reads the ` +
+    `${gained.length === 1 ? 'section' : `${gained.length} sections`} only ${canonicalRel} has: ${gained.join(', ')}. ` +
+    `Nothing in CLAUDE.md is lost: every section the edit removes is the same text in ${canonicalRel}, and any ` +
+    'section only CLAUDE.md has stays below the import.'
+  );
 }

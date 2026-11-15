@@ -3,7 +3,10 @@ import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { Readable } from 'node:stream';
+import { fileURLToPath } from 'node:url';
 import { runFix } from '../src/commands/fix.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 async function makeTempDir(): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), 'promptci-fix-test-'));
@@ -162,6 +165,42 @@ describe('runFix CLI command', () => {
     expect(await fs.readFile(claudePath, 'utf-8')).toBe(claude);
     expect(logs).toContain(`No edit for ${mirror!.id}:`);
     expect(logs.some((l) => l.includes('comes before "Testing Conventions"; it would move'))).toBe(true);
+  });
+
+  // pcic-5rop.64: a CLAUDE.md that is a subset of AGENTS.md (after a
+  // consolidation) is refused by default, and the refusal names the flag and
+  // what Claude would gain; --import-subset makes the edit.
+  it('refuses a subset CLAUDE.md by default, names --import-subset, and imports with it', async () => {
+    const src = path.resolve(__dirname, '../../../examples/fixture-mirror-refuse-canonical-extra');
+    const agents = await fs.readFile(path.join(src, 'AGENTS.md'), 'utf-8');
+    const claude = await fs.readFile(path.join(src, 'CLAUDE.md'), 'utf-8');
+    const claudePath = path.join(tmpDir, 'CLAUDE.md');
+    await fs.writeFile(path.join(tmpDir, 'AGENTS.md'), agents, 'utf-8');
+    await fs.writeFile(claudePath, claude, 'utf-8');
+    const { scan } = await import('@promptci/core');
+    const mirror = (await scan({ repoPath: tmpDir })).issues.find((i) => (i.tags ?? []).includes('mirrored-files'));
+    expect(mirror).toBeDefined();
+    const gainedLine =
+      '  CLAUDE.md has fewer sections than AGENTS.md, so after this import Claude Code also reads the 2 sections only AGENTS.md has: ' +
+      'Codex sandbox, Cursor background agents. Nothing in CLAUDE.md is lost: every section the edit removes is the same text in ' +
+      'AGENTS.md, and any section only CLAUDE.md has stays below the import.';
+
+    const logs: string[] = [];
+    const spy = vi.spyOn(console, 'log').mockImplementation((...m) => { logs.push(m.join(' ')); });
+    try {
+      await runFix({ scanPath: tmpDir, issueId: mirror!.id, interactive: false });
+      expect(await fs.readFile(claudePath, 'utf-8')).toBe(claude);
+      expect(logs).toContain(`No edit for ${mirror!.id}:`);
+      expect(logs).toContain(gainedLine);
+      expect(logs).toContain(`  To import anyway: promptci fix --issue ${mirror!.id} --import-subset`);
+
+      logs.length = 0;
+      await runFix({ scanPath: tmpDir, issueId: mirror!.id, interactive: false, importSubset: true });
+    } finally {
+      spy.mockRestore();
+    }
+    expect(logs).toContain(gainedLine);
+    expect(await fs.readFile(claudePath, 'utf-8')).toBe('@AGENTS.md\n');
   });
 
   // pcic-1ik0.5 (PromptCI#160): a near-duplicate is two copies that have

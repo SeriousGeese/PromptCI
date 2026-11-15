@@ -1,6 +1,6 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
-import { scan, applyFixRecipe, isRepairable, isScriptRenameRecipe, requiresOptIn, planMirrorImport } from '@promptci/core';
+import { scan, applyFixRecipe, isRepairable, isScriptRenameRecipe, requiresOptIn, planMirrorImport, subsetImportCaveat } from '@promptci/core';
 import type { PromptCiIssue } from '@promptci/core';
 import { loadConfig } from '../config.js';
 import { applyChangesInteractively, NonInteractiveError, type ApplyUnit } from '../lib/interactive-apply.js';
@@ -11,6 +11,8 @@ export type FixOptions = {
   interactive?: boolean;
   dryRun?: boolean;
   answers?: string[];
+  /** With `issueId` naming a mirrored-files finding: allow the import into a CLAUDE.md that is a subset of AGENTS.md (pcic-5rop.64). */
+  importSubset?: boolean;
 };
 
 export async function runFix(options: FixOptions): Promise<void> {
@@ -64,13 +66,23 @@ export async function runFix(options: FixOptions): Promise<void> {
         target = named;
         optIn = true;
       } else if (named) {
-        const plan = await planMirrorImport(named, resolvedPath);
+        const importSubset = options.importSubset === true;
+        const plan = await planMirrorImport(named, resolvedPath, { subset: importSubset });
         for (const line of plan.untouched) console.log(`  ${line}`);
         if (plan.changes.length === 0) {
           console.log(`No edit for ${named.id}:`);
           for (const reason of plan.refusals) console.log(`  - ${reason}`);
+          // pcic-5rop.64: name the subset mode only when it would make the edit.
+          if (!importSubset) {
+            const subset = await planMirrorImport(named, resolvedPath, { subset: true });
+            if (subset.changes.length > 0) {
+              console.log(`  ${subsetImportCaveat(subset.gained)}`);
+              console.log(`  To import anyway: promptci fix --issue ${named.id} --import-subset`);
+            }
+          }
           return;
         }
+        if (plan.gained.length > 0) console.log(`  ${subsetImportCaveat(plan.gained)}`);
         target = named;
         optIn = true;
       }
@@ -101,7 +113,8 @@ export async function runFix(options: FixOptions): Promise<void> {
       `Severity:   ${issue.severity.toUpperCase()}`,
       `Summary:    ${issue.summary}`,
     ],
-    changes: () => applyFixRecipe(issue, resolvedPath, { optIn: optIn && requiresOptIn(issue) }),
+    changes: () =>
+      applyFixRecipe(issue, resolvedPath, { optIn: optIn && requiresOptIn(issue), importSubset: options.importSubset === true }),
     // Duplicate consolidation replaces the line ranges recorded at scan time.
     // If an earlier unit in this run rewrote one of the same files, those
     // ranges point at shifted content, so the unit must be skipped and picked
