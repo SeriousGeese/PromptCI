@@ -16,6 +16,8 @@
     "selfscan": "node packages/cli/dist/cli.cjs scan --baseline .promptci/baseline.json --fail-on-new warning --fail-on high",
     "selfscan:update": "node packages/cli/dist/cli.cjs scan --baseline .promptci/baseline.json --update-baseline && node scripts/health-badge.mjs",
     "check-versions": "node scripts/check-version-sync.mjs",
+    "catalog": "node scripts/detector-catalog.mjs",
+    "catalog:check": "node scripts/detector-catalog.mjs --check",
     "provenance:check": "node scripts/check-provenance.mjs"
   },
   "devDependencies": {

@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { Readable } from 'node:stream';
 import { runFix } from '../src/commands/fix.js';
 
 async function makeTempDir(): Promise<string> {
@@ -237,6 +238,36 @@ describe('runFix CLI command', () => {
 
     const content = await fs.readFile(gitignorePath, 'utf-8');
     expect(content).toBe('node_modules/\n');
+  });
+
+  // The CI path (#106): interactive fix with stdin that is not a TTY and carries
+  // no answer must fail fast and write nothing, not hang or apply silently.
+  it('refuses to apply, and exits 1, when stdin ends with no answer and no --yes/--no-interactive is given', async () => {
+    const gitignorePath = path.join(tmpDir, '.gitignore');
+    await fs.writeFile(gitignorePath, 'node_modules/\n', 'utf-8');
+
+    vi.spyOn(process, 'stdin', 'get').mockReturnValue(Readable.from([]) as unknown as typeof process.stdin);
+    let written = '';
+    vi.spyOn(process.stdout, 'write').mockImplementation((chunk: string | Uint8Array) => {
+      written += typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString();
+      return true;
+    });
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const errors: string[] = [];
+    vi.spyOn(console, 'error').mockImplementation((m?: unknown) => { errors.push(String(m)); });
+    vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+      throw new Error(`process.exit(${code})`);
+    }) as never);
+
+    try {
+      await expect(runFix({ scanPath: tmpDir, interactive: true })).rejects.toThrow('process.exit(1)');
+    } finally {
+      vi.restoreAllMocks();
+    }
+
+    expect(written).toContain('Apply this fix? (y/N):');
+    expect(errors.join('\n')).toContain('stdin is not an interactive terminal');
+    expect(await fs.readFile(gitignorePath, 'utf-8')).toBe('node_modules/\n');
   });
 
   it('does not modify files when --dry-run is specified', async () => {

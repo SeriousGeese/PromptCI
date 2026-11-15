@@ -99,8 +99,28 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     steps:
-      # MUST be the first step: every later step and scripts/pr-review.sh invoke
-      # $GH_CLI, and a gh that does not resolve makes has_do_not_merge_label()
+      # Fail-soft guard (#102): without OPENROUTER_API_KEY the reviewer cannot run,
+      # and the old behaviour was a red check ~10s in with the cause visible only in
+      # the env dump. Skip every later step with a notice and a job summary instead.
+      # Secrets cannot be tested in a job-level `if`, so this reads the job env.
+      # Needs nothing from the runner (no gh, no checkout), so it can come first.
+      # To enable reviews: set the OPENROUTER_API_KEY repository (or environment)
+      # secret — Settings > Secrets and variables > Actions.
+      - name: Check reviewer API key
+        id: key
+        run: |
+          if [ -z "${OPENROUTER_API_KEY:-}" ]; then
+            MSG="OPENROUTER_API_KEY is empty, so the reviewer cannot run. Set the OPENROUTER_API_KEY repository secret (Settings > Secrets and variables > Actions); skipping PR auto-review for PR #${PR_NUMBER}."
+            echo "::notice title=PR auto-review skipped::$MSG"
+            echo "### PR auto-review skipped" >> "$GITHUB_STEP_SUMMARY"
+            echo "$MSG" >> "$GITHUB_STEP_SUMMARY"
+            echo "missing=true" >> "$GITHUB_OUTPUT"
+          fi
+        shell: bash
+
+      # MUST come before every step that calls gh (the reviewer-key check above
+      # runs first and never calls $GH_CLI): every later step and
+      # scripts/pr-review.sh invoke $GH_CLI, and a gh that does not resolve makes has_do_not_merge_label()
       # fail closed (rc=127 -> held_label_lookup_failed), silently holding a PR
       # that nobody labelled. Resolve gh on the runner that is ACTUALLY
       # executing rather than trusting a repo-wide variable (DnD-krocc).
@@ -108,6 +128,7 @@ jobs:
         # Probes each candidate with `gh --version` (an executable gh that crashes
         # on launch no longer counts) and falls back to a pinned, sha256-verified
         # static gh release. Exports GH_CLI and RUNNER_HOST as before.
+        if: ${{ steps.key.outputs.missing != 'true' }}
         uses: SeriousGeese/CICD/actions/resolve-gh@27af3715aa26dc0774650f3abfe44d21eea1269b # main @ 2026-11-11
         with:
           hint: ${{ vars.GH_CLI_PATH }}
@@ -116,7 +137,7 @@ jobs:
       # pull_request payload would have supplied. Writes to $GITHUB_ENV, which
       # overrides the job-level env for every step after this one.
       - name: Resolve PR context (workflow_dispatch)
-        if: ${{ github.event_name == 'workflow_dispatch' }}
+        if: ${{ steps.key.outputs.missing != 'true' && github.event_name == 'workflow_dispatch' }}
         run: |
           PR_JSON="$($GH_CLI pr view "$PR_NUMBER" --repo "$REPO" \
             --json number,headRefName,baseRefName,title,body,author,url,isDraft,state,headRefOid,baseRefOid,headRepository,headRepositoryOwner)"
@@ -166,7 +187,7 @@ jobs:
         shell: bash
 
       - name: Prune stale checkout directories
-        if: ${{ steps.resolve.outputs.dispatch_skip != 'true' }}
+        if: ${{ steps.key.outputs.missing != 'true' && steps.resolve.outputs.dispatch_skip != 'true' }}
         run: |
           # Remove checkout dir left behind by a previous killed run of THIS
           # PR. The review script's EXIT trap normally cleans up, but SIGKILL
@@ -184,7 +205,7 @@ jobs:
 
       - name: Checkout PR branch
         id: checkout
-        if: ${{ steps.resolve.outputs.dispatch_skip != 'true' }}
+        if: ${{ steps.key.outputs.missing != 'true' && steps.resolve.outputs.dispatch_skip != 'true' }}
         run: |
           # A bot fix-push fires a `synchronize` event; by the time its run
           # starts, an earlier run may have merged the PR and deleted the
@@ -210,7 +231,7 @@ jobs:
 
       - name: Run PR review and auto-fix
         id: review
-        if: ${{ steps.checkout.outputs.skip != 'true' && steps.resolve.outputs.dispatch_skip != 'true' }}
+        if: ${{ steps.key.outputs.missing != 'true' && steps.checkout.outputs.skip != 'true' && steps.resolve.outputs.dispatch_skip != 'true' }}
         run: |
           # Run the reviewer tooling from the BASE branch, never from the PR
           # checkout (DnD-e74yy). Two reasons:
@@ -247,7 +268,7 @@ jobs:
         shell: bash
 
       - name: Post PR review comment
-        if: always()
+        if: ${{ always() && steps.key.outputs.missing != 'true' }}
         env:
           REVIEW_RESULT: ${{ steps.review.outputs.result }}
           COMMENT_PATH: ${{ steps.review.outputs.comment_path }}

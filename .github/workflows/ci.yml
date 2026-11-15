@@ -77,6 +77,12 @@ jobs:
       - name: Check cli/core version sync
         run: pnpm check-versions
 
+      # Docs/detector-catalog.md is generated from the built DETECTORS array. Fail when
+      # it is stale (a detector added, removed or renamed): the fix is running
+      # `node scripts/detector-catalog.mjs` after a build and committing the result.
+      - name: Check detector catalog is fresh
+        run: node scripts/detector-catalog.mjs --check
+
       # Dogfood: run PromptCI's own scanner against this repo and fail on any new
       # instruction-health regression relative to the committed .promptci/baseline.json.
       # Runs after Build so packages/cli/dist/cli.cjs exists (pnpm selfscan invokes it
