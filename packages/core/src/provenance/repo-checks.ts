@@ -471,10 +471,10 @@ export const REPO_CHECKS_PROVENANCE: readonly CheckProvenance[] = [
     title: 'At-sign file imports',
     kind: 'tool-fact',
     claim:
-      'An @path reference in a CLAUDE.md file is a file import that Claude Code resolves relative to the importing file, so a missing target is a broken instruction.',
+      'An @path on a line of its own in a CLAUDE.md file is a file import that Claude Code resolves relative to the importing file, so a missing target is a broken instruction, while an @path written in a code span is not an import and only names the file.',
     appliesTo: ['claude-code'],
-    sources: [CLAUDE_MEMORY],
-    lastVerified: VERIFIED,
+    sources: [{ ...CLAUDE_MEMORY, readOn: '2026-11-15' }],
+    lastVerified: { date: '2026-11-15', by: 'agent run 2026-11-15 (issue #204)' },
   },
   {
     id: 'dead-references/gitignore-matching',
