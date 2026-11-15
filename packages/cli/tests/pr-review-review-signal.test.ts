@@ -287,3 +287,14 @@ describe('auto-merge.yml (the automerge-label path)', SLOW, () => {
     expect(runStep('A new head needs its own review', pr).calls).toEqual(expected);
   });
 });
+
+describe('scripts/setup-labels.sh', () => {
+  // GitHub refuses a label description over 100 characters, so one long line makes
+  // `gh label create` fail and the `reviewed` label never exists (seen creating it for #217).
+  it("keeps every label description within GitHub's 100-character limit", () => {
+    const labels = fs.readFileSync(path.join(repoRoot, 'scripts', 'setup-labels.sh'), 'utf-8');
+    const descriptions = [...labels.matchAll(/^label "([^"]+)"\s+"[0-9A-Fa-f]{6}"\s+"([^"]*)"/gm)];
+    expect(descriptions.map((m) => m[1])).toContain('reviewed');
+    for (const [, name, description] of descriptions) expect(description!.length, name).toBeLessThanOrEqual(100);
+  });
+});
