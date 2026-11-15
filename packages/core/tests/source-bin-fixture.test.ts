@@ -89,6 +89,38 @@ describe('fixture-source-bin (#161)', () => {
     }
   });
 
+  it('still reports dist and obj under a partial inventory, but never as auto-applicable (pcic-1ik0.19)', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'promptci-partial-family-'));
+    try {
+      fs.writeFileSync(path.join(root, 'App.csproj'), '<Project/>\n');
+      fs.writeFileSync(path.join(root, '.gitignore'), '.promptci/\n');
+      fs.writeFileSync(path.join(root, 'AGENTS.md'), '# Agents\n\nRun `dotnet build` before you push.\n');
+      fs.mkdirSync(path.join(root, 'obj'));
+      fs.writeFileSync(path.join(root, 'obj', 'project.assets.json'), '{}');
+      fs.mkdirSync(path.join(root, 'dist'));
+      fs.writeFileSync(path.join(root, 'dist', 'app.js'), '1;');
+      const knownPaths = ['App.csproj', '.gitignore', 'AGENTS.md', 'obj/project.assets.json', 'dist/app.js'];
+      const partial = (await scan({ repoPath: root, knownPaths, knownPathsComplete: false })).issues
+        .find((i) => i.id === 'security-pack-unignored-dirs');
+      expect(partial?.evidence).toEqual([
+        'Directory "dist" exists but is not ignored in .gitignore.',
+        'Directory "obj" exists but is not ignored in .gitignore.',
+      ]);
+      expect(partial?.autoApplySafe).toBe(false);
+      // The same listing, declared complete, is identical but auto-applicable.
+      const complete = (await scan({ repoPath: root, knownPaths, knownPathsComplete: true })).issues
+        .find((i) => i.id === 'security-pack-unignored-dirs');
+      expect(complete?.autoApplySafe).toBe(true);
+      expect({ ...partial, autoApplySafe: true }).toEqual(complete);
+      expect(complete?.evidence).toEqual([
+        'Directory "dist" exists but is not ignored in .gitignore.',
+        'Directory "obj" exists but is not ignored in .gitignore.',
+      ]);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('reports bin/ once it holds only .NET build output', async () => {
     const root = copyFixture();
     try {

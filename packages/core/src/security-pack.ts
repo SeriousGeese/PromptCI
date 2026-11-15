@@ -513,7 +513,12 @@ export function detectSecurityPack(context: RepoContext): PromptCiIssue[] {
       fixRecipe: unignoredDirs.map((d) => `echo "${d}/" >> .gitignore`).join('\n'),
       // `applyFixRecipe` appends each missing directory to .gitignore — a
       // mechanical, reversible edit, so `promptci fix` may auto-apply it.
-      autoApplySafe: true,
+      // pcic-1ik0.19: but not when the caller declared its file inventory
+      // incomplete: the listing may leave out tracked files inside the
+      // directory, so the finding is still reported (`bin` is withheld above)
+      // and the human decides. There is no `fixEdits` to drop: the edit is
+      // derived from the id and evidence, which only `autoApplySafe` gates.
+      autoApplySafe: tree.inventory?.complete !== false,
       confidence: 0.8,
     });
   }

@@ -81,7 +81,11 @@ function isAdjacentTransposition(a: string, b: string): boolean {
   if (a.length !== b.length) return false;
   const diff: number[] = [];
   for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) diff.push(i);
-  return diff.length === 2 && diff[1] === diff[0]! + 1 && a[diff[0]!] === b[diff[1]!] && a[diff[1]!] === b[diff[0]!];
+  if (diff.length !== 2 || diff[1] !== diff[0]! + 1) return false;
+  if (a[diff[0]!] !== b[diff[1]!] || a[diff[1]!] !== b[diff[0]!]) return false;
+  // pcic-1ik0.19: a swap that involves a digit is a different number, not a
+  // slip of the fingers: `e12e` -> `e21e` names another version or target.
+  return !/[0-9]/.test(a[diff[0]!]! + a[diff[1]!]!);
 }
 
 /**
@@ -111,7 +115,8 @@ function isAdjacentTransposition(a: string, b: string): boolean {
  *     `py2` → `py3`, `1` → `2` select a version or a target, and the digit is
  *     the whole point of the name.
  *  4. The differing word must be a plausible slip of the fingers on the SAME
- *     word: an adjacent transposition (`bulid`/`build`), or — in a word of at
+ *     word: an adjacent transposition of letters (`bulid`/`build`; a swap that
+ *     involves a digit, `e12e`/`e21e`, is never one, pcic-1ik0.19), or — in a word of at
  *     least {@link MECHANICAL_SEGMENT_MIN_LENGTH} characters — one letter
  *     dropped or added inside the word, or one letter doubled or undoubled
  *     anywhere (`bild`/`build`, `comit`/`commit`, `typecheeck`/`typecheck`).
