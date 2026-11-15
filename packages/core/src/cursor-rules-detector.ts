@@ -7,7 +7,7 @@
  *  - `globs` that match zero files in the repo — an Auto-Attached rule keyed to
  *    a path that no longer exists never fires.
  *  - Rules with no trigger at all (no `description`, no `globs`, not
- *    `alwaysApply`) which can never activate.
+ *    `alwaysApply`): manual-only (included when @-mentioned), reported as info.
  *
  * Deterministic and offline; findings are cautiously worded.
  */
@@ -87,16 +87,18 @@ export function detectCursorRules(context: RepoContext): PromptCiIssue[] {
     const alwaysApply = fm.data.alwaysApply === true ||
       (typeof fm.data.alwaysApply === 'string' && fm.data.alwaysApply.trim().toLowerCase() === 'true');
 
-    // A rule with no trigger can never activate.
+    // A rule with no description, globs or alwaysApply is manual-only: Cursor
+    // includes it when it is @-mentioned in chat. Informational, not a defect.
     if (!description && globs.length === 0 && !alwaysApply) {
       issues.push(base({
         id: id('no-trigger', filePath),
-        title: 'Cursor rule has no trigger',
-        summary: `${filePath} defines no \`description\`, no \`globs\`, and \`alwaysApply\` is not set, so Cursor has no signal for when to apply it.`,
+        severity: 'info',
+        title: 'Cursor rule is manual-only (no automatic trigger)',
+        summary: `${filePath} defines no \`description\`, no \`globs\`, and \`alwaysApply\` is not set, so Cursor documents it as a manual rule: included only when you @-mention it in chat. That is fine if intended.`,
         filePaths: [filePath],
         locations: [{ filePath, startLine: 1, endLine: fm.fenceEndLine > 0 ? fm.fenceEndLine : 1 }],
         evidence: [`Keys present: ${Object.keys(fm.data).join(', ') || '(none)'}`],
-        recommendation: 'Add a `description` (agent-requested), `globs` (auto-attached), or `alwaysApply: true`.',
+        recommendation: 'If this rule should apply automatically, add a `description` (agent-requested), `globs` (auto-attached), or `alwaysApply: true`; otherwise reference it with @rule-name.',
         confidence: 0.7,
       }));
     }
@@ -105,19 +107,23 @@ export function detectCursorRules(context: RepoContext): PromptCiIssue[] {
     for (const glob of globs) {
       if (!isTestableGlob(glob)) continue;
       const normalized = glob.replace(/^\//, '');
-      // Cursor treats a slashless pattern like `*.tsx` as "any depth", but
-      // fast-glob only matches it at the root — so also try a `**/`-anchored
-      // variant before declaring the glob dead, to avoid false positives.
-      const candidates = normalized.includes('/') ? [normalized] : [normalized, `**/${normalized}`];
-      if (!globMatchesAnything(candidates)) {
+      // Cursor documents `*.ts` as the .ts files in the root and `**/*.ts` as
+      // .ts files in any directory, so a slashless glob is tested as written
+      // (root-level only), with no any-depth fallback.
+      if (!globMatchesAnything([normalized])) {
+        const nestedHint = !normalized.includes('/') && globMatchesAnything([`**/${normalized}`]);
         issues.push(base({
           id: id('dead-glob', `${filePath}|${glob}`),
           title: 'Cursor rule glob matches no files',
-          summary: `${filePath}: the \`globs\` pattern \`${glob}\` matches no files in the repository, so this auto-attached rule never fires.`,
+          summary: nestedHint
+            ? `${filePath}: the \`globs\` pattern \`${glob}\` matches no files in the repository root; Cursor documents a slashless pattern as root-level only, so this rule may never auto-attach to the nested files it seems aimed at.`
+            : `${filePath}: the \`globs\` pattern \`${glob}\` matches no files in the repository, so this auto-attached rule may never fire.`,
           filePaths: [filePath],
           locations: [{ filePath, startLine: fm.keyLines.globs ?? 1, endLine: fm.keyLines.globs ?? 1 }],
           evidence: [`Glob: ${glob}`],
-          recommendation: 'Update the glob to match real paths, or remove the rule if the code it targeted is gone.',
+          recommendation: nestedHint
+            ? `Use \`**/${normalized}\` to match at any depth, or point the glob at real paths.`
+            : 'Update the glob to match real paths, or remove the rule if the code it targeted is gone.',
           confidence: 0.6,
         }));
       }

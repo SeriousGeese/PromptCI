@@ -36,13 +36,22 @@ describe('detectCursorRules', () => {
     expect(dead!.evidence.join(' ')).toContain('src/**/*.py');
   });
 
-  it('does not flag a slashless extension glob that matches nested files', () => {
+  it('flags a slashless glob that only matches nested files (root-level only per Cursor docs)', () => {
     const dir = repo();
     writeFile(dir, 'src/nested/app.tsx', 'export {};');
     writeFile(dir, '.cursor/rules/tsx.mdc',
       ['---', 'description: TSX rules', 'globs: *.tsx', '---', 'body'].join('\n'));
     const issues = detectCursorRules(ctx(dir));
-    expect(issues.some((i) => i.title.includes('glob matches no files'))).toBe(false);
+    expect(issues.some((i) => i.title.includes('glob matches no files'))).toBe(true);
+  });
+
+  it('accepts a slashless glob that matches a root-level file, and **/ for any depth', () => {
+    const dir = repo();
+    writeFile(dir, 'root.tsx', 'export {};');
+    writeFile(dir, 'src/nested/app.ts', 'export {};');
+    writeFile(dir, '.cursor/rules/a.mdc', ['---', 'description: a', 'globs: *.tsx', '---', 'b'].join('\n'));
+    writeFile(dir, '.cursor/rules/b.mdc', ['---', 'description: b', 'globs: **/*.ts', '---', 'b'].join('\n'));
+    expect(detectCursorRules(ctx(dir))).toEqual([]);
   });
 
   it('does not flag a valid brace-expansion glob in an inline sequence', () => {
@@ -68,11 +77,14 @@ describe('detectCursorRules', () => {
     expect(issues.some((i) => i.title.includes('not closed'))).toBe(true);
   });
 
-  it('flags a rule with no trigger', () => {
+  it('reports a rule with no trigger as manual-only info, not as never activating', () => {
     const dir = repo();
     writeFile(dir, '.cursor/rules/x.mdc', ['---', 'foo: bar', '---', 'body'].join('\n'));
     const issues = detectCursorRules(ctx(dir));
-    expect(issues.some((i) => i.title.includes('no trigger'))).toBe(true);
+    const manual = issues.find((i) => i.title.includes('manual-only'));
+    expect(manual).toBeDefined();
+    expect(manual!.severity).toBe('info');
+    expect(manual!.summary).toContain('@-mention');
   });
 
   it('does not flag a glob targeting a source directory named build/', () => {
@@ -86,7 +98,7 @@ describe('detectCursorRules', () => {
 
   it('handles an unquoted brace-expansion glob without shredding it', () => {
     const dir = repo();
-    writeFile(dir, 'src/app.tsx', 'export {};');
+    writeFile(dir, 'app.tsx', 'export {};');
     writeFile(dir, '.cursor/rules/ts.mdc',
       ['---', 'description: TS rules', 'globs: *.{ts,tsx}', '---', 'body'].join('\n'));
     const issues = detectCursorRules(ctx(dir));
