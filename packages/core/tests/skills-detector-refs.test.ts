@@ -173,13 +173,14 @@ describe('paths that are not part of a checkout are not dead references', () => 
   });
 });
 
-describe('a missing frontmatter block is a portability warning', () => {
-  it('is warning severity and names strict loaders rather than claiming the skill will not load', () => {
+describe('a missing frontmatter block is a portability hint', () => {
+  it('is info severity and names Codex and the spec rather than claiming the skill will not load', () => {
     const dir = repo();
     writeFile(dir, '.claude/skills/demo/SKILL.md', '# no frontmatter');
     const finding = detectSkills(ctx(dir)).find((i) => i.title.includes('missing YAML frontmatter'));
     expect(finding).toBeDefined();
-    expect(finding!.severity).toBe('warning');
+    expect(finding!.severity).toBe('info');
+    expect(finding!.tags).toContain('unscored');
     expect(finding!.summary).toContain('Codex');
     expect(finding!.summary).not.toContain('will not load');
   });

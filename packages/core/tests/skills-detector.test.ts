@@ -105,4 +105,59 @@ describe('detectSkills', () => {
     const b = detectSkills(ctx(dir));
     expect(a).toEqual(b);
   });
+
+  it('reports the portability hints at info severity and unscored, never as defects', () => {
+    const dir = repo();
+    writeFile(dir, '.claude/skills/nofm/SKILL.md', '# Just a body');
+    writeFile(dir, '.claude/skills/noname/SKILL.md', ['---', 'foo: bar', '---', 'body'].join('\n'));
+    writeFile(dir, '.claude/skills/pdf/SKILL.md',
+      ['---', 'name: not-pdf', 'description: pdf', '---', 'body'].join('\n'));
+    const issues = detectSkills(ctx(dir));
+    expect(issues.length).toBeGreaterThanOrEqual(5);
+    for (const i of issues) {
+      expect(i.severity).toBe('info');
+      expect(i.tags).toContain('unscored');
+    }
+    const byTitle = (t: string) => issues.find((i) => i.title.includes(t))!;
+    expect(byTitle('missing `name`').summary).toContain('directory name');
+    expect(byTitle('missing `description`').summary).toContain('first non-empty line');
+    expect(byTitle('missing `description`').recommendation).toContain('1,536');
+    expect(byTitle('does not match its directory').summary).toContain('Claude Code accepts this');
+  });
+
+  it('accepts a skill with no name (defaults to the directory) and no description (falls back to the body)', () => {
+    const dir = repo();
+    writeFile(dir, '.claude/skills/deploy/SKILL.md', ['---', 'disable-model-invocation: true', '---', 'Deploy the app to staging.'].join('\n'));
+    const issues = detectSkills(ctx(dir));
+    expect(issues.every((i) => i.severity === 'info')).toBe(true);
+  });
+
+  it('does not report documented nested maps (hooks, metadata) or unknown keys', () => {
+    const dir = repo();
+    writeFile(dir, '.claude/skills/pdf/SKILL.md', [
+      '---',
+      'name: pdf',
+      'description: Fill and read PDF forms when asked',
+      'some-future-field: true',
+      'metadata:',
+      '  author: example-org',
+      '  version: "1.0"',
+      'hooks:',
+      '  PreToolUse:',
+      '    - matcher: "Bash"',
+      '      hooks:',
+      '        - type: command',
+      '          command: "./scripts/check.sh"',
+      '---',
+      'body',
+    ].join('\n'));
+    expect(detectSkills(ctx(dir))).toEqual([]);
+  });
+
+  it('still reports an unclosed frontmatter block at high severity', () => {
+    const dir = repo();
+    writeFile(dir, '.claude/skills/pdf/SKILL.md', ['---', 'name: pdf', 'description: Fill and read PDF forms when asked', 'body'].join('\n'));
+    const issues = detectSkills(ctx(dir));
+    expect(issues.some((i) => i.severity === 'high' && i.title.includes('not closed'))).toBe(true);
+  });
 });
