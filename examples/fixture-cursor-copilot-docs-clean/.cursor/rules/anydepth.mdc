@@ -1,0 +1,5 @@
+---
+description: TS rules
+globs: **/*.ts
+---
+Use strict mode.

@@ -1,13 +1,15 @@
 /**
  * Copilot Instructions Detector (issue #66)
  *
- * Audits GitHub Copilot per-file instruction files (`.github/instructions/**\/*.md`).
+ * Audits GitHub Copilot path-specific instruction files
+ * (`.github/instructions/**\/*.instructions.md`; GitHub requires that suffix).
  * These use `applyTo:` frontmatter globs to scope which files they apply to —
  * analogous to Cursor's `.mdc` `globs`. This mirrors `detectCursorRules`:
  *
  *  - Frontmatter validity: present, closed, structurally sound.
- *  - `applyTo:` absent — the file then applies to *every* Copilot request by
- *    default, which is often unintentional.
+ *  - Neither `applyTo` nor `description` — in VS Code the file is then only
+ *    available for manual attachment (there is no default pattern); info.
+ *  - Plain `.md` files under `.github/instructions/` that Copilot will not load.
  *  - `applyTo:` globs that match zero files in the repo — a scope keyed to a
  *    path that no longer exists never fires.
  *  - `applyTo:` globs that match only ignored / build-output files — informational.
@@ -38,11 +40,11 @@ const SURFACE: FrontmatterSurface = {
   idPrefix: 'copilot',
   noun: 'Copilot instructions file',
   why: 'A `.instructions.md` file uses an `applyTo:` frontmatter glob to control which files it applies to.',
-  recommendation: 'Add a frontmatter block with an `applyTo:` glob (use `applyTo: "**"` to apply to every request).',
-  // A frontmatter-less instructions file still loads (Copilot treats it as
-  // apply-to-everything), so this is softer news than a skill that cannot register.
+  recommendation: 'Add a frontmatter block with an `applyTo:` glob (use `applyTo: "**"` for all files) or a `description`.',
+  // Frontmatter is optional; with no `applyTo` or `description` VS Code leaves the
+  // file for manual attachment, so this is a hint, not a defect.
   noFrontmatterTitle: 'Copilot instructions file is missing frontmatter',
-  noFrontmatterSeverity: 'warning',
+  noFrontmatterSeverity: 'info',
   noFrontmatterConfidence: 0.7,
 };
 
@@ -110,18 +112,23 @@ export function detectCopilotInstructions(context: RepoContext): PromptCiIssue[]
 
     const applyTo = asStringList(fm.data.applyTo);
 
-    // No `applyTo` at all → the file applies to every request.
+    // Neither `applyTo` nor `description`: VS Code leaves the file available for
+    // manual attachment (no default pattern), so it is not applied automatically.
+    const description = typeof fm.data.description === 'string' ? fm.data.description.trim() : '';
     if (applyTo.length === 0) {
-      issues.push(base({
-        id: id('no-applyto', filePath),
-        title: 'Copilot instructions file has no applyTo glob',
-        summary: `${filePath} defines no \`applyTo\` glob, so Copilot applies it to every request by default — often unintentional.`,
-        filePaths: [filePath],
-        locations: [{ filePath, startLine: 1, endLine: fm.fenceEndLine > 0 ? fm.fenceEndLine : 1 }],
-        evidence: [`Keys present: ${Object.keys(fm.data).join(', ') || '(none)'}`],
-        recommendation: 'Add an `applyTo:` glob scoping the file to the paths it is about, or set `applyTo: "**"` to make the always-on scope explicit.',
-        confidence: 0.7,
-      }));
+      if (!description) {
+        issues.push(base({
+          id: id('no-applyto', filePath),
+          severity: 'info',
+          title: 'Copilot instructions file has no applyTo glob or description',
+          summary: `${filePath} defines neither an \`applyTo\` glob nor a \`description\`. VS Code documents such a file as available for manual attachment rather than applied automatically, and \`applyTo\` has no default pattern.`,
+          filePaths: [filePath],
+          locations: [{ filePath, startLine: 1, endLine: fm.fenceEndLine > 0 ? fm.fenceEndLine : 1 }],
+          evidence: [`Keys present: ${Object.keys(fm.data).join(', ') || '(none)'}`],
+          recommendation: 'If it should apply automatically, add an `applyTo:` glob (or `applyTo: "**"` for all files) or a `description`; otherwise attach it manually.',
+          confidence: 0.6,
+        }));
+      }
       continue; // no globs to test
     }
 
@@ -129,20 +136,24 @@ export function detectCopilotInstructions(context: RepoContext): PromptCiIssue[]
     for (const glob of applyTo) {
       if (!isTestableGlob(glob) || matchesEverything(glob)) continue;
       const normalized = glob.replace(/^\//, '');
-      // A slashless pattern like `*.ts` is intended as "any depth"; fast-glob
-      // only matches it at the root, so also try a `**/`-anchored variant
-      // before declaring the glob dead, to avoid false positives.
-      const candidates = normalized.includes('/') ? [normalized] : [normalized, `**/${normalized}`];
+      // GitHub and VS Code document `*.py` as matching the current/root directory
+      // only (`**` or `**/*.py` for any depth), so test the glob as written.
+      const candidates = [normalized];
 
       if (!matchesBroad(candidates)) {
+        const nestedHint = !normalized.includes('/') && matchesBroad([`**/${normalized}`]);
         issues.push(base({
           id: id('dead-glob', `${filePath}|${glob}`),
           title: 'Copilot instructions applyTo glob matches no files',
-          summary: `${filePath}: the \`applyTo\` glob \`${glob}\` matches no files in the repository, so this instructions file never applies.`,
+          summary: nestedHint
+            ? `${filePath}: the \`applyTo\` glob \`${glob}\` matches no files in the repository root; GitHub documents a slashless pattern as matching the current directory only, so this file may never reach the nested files it seems aimed at.`
+            : `${filePath}: the \`applyTo\` glob \`${glob}\` matches no files in the repository, so this instructions file may never apply.`,
           filePaths: [filePath],
           locations: [{ filePath, startLine: globLine, endLine: globLine }],
           evidence: [`Glob: ${glob}`],
-          recommendation: 'Update the glob to match real paths, or remove the file if the code it targeted is gone.',
+          recommendation: nestedHint
+            ? `Use \`**/${normalized}\` to match at any depth, or point the glob at real paths.`
+            : 'Update the glob to match real paths, or remove the file if the code it targeted is gone.',
           confidence: 0.6,
         }));
       } else if (!matchesSource(candidates)) {
@@ -159,6 +170,23 @@ export function detectCopilotInstructions(context: RepoContext): PromptCiIssue[]
         }));
       }
     }
+  }
+
+  // Plain `.md` files in `.github/instructions/`: GitHub requires the name to end
+  // `.instructions.md`, so Copilot is documented not to load these as
+  // path-specific instructions.
+  for (const filePath of context.aiConfig.copilotPlainMd ?? []) {
+    issues.push(base({
+      id: id('not-instructions-md', filePath),
+      severity: 'info',
+      title: 'Copilot path-specific instructions file is not named .instructions.md',
+      summary: `${filePath} is under .github/instructions/ but its name does not end with \`.instructions.md\`, which GitHub documents as required for path-specific instructions, so Copilot may not load it.`,
+      filePaths: [filePath],
+      locations: [{ filePath, startLine: 1, endLine: 1 }],
+      evidence: [`File name: ${filePath.split('/').pop()}`],
+      recommendation: 'Rename it to NAME.instructions.md if it is meant as path-specific instructions; otherwise move it out of .github/instructions/.',
+      confidence: 0.6,
+    }));
   }
 
   // Scanner-form paths so inline suppressions can match (see withScannerPaths).
