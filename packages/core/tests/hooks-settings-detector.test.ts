@@ -138,4 +138,29 @@ describe('detectHooksSettings', () => {
     const issues = detectHooksSettings(ctx(dir));
     expect(issues.some((i) => i.title.includes('unquoted $CLAUDE_PROJECT_DIR'))).toBe(false);
   });
+
+  it('does not flag $CLAUDE_PROJECT_DIR in an exec-form hook (args set, no shell)', () => {
+    const dir = repo();
+    writeFile(dir, '.claude/hooks/x.js', 'console.log(1)');
+    writeFile(dir, '.claude/settings.json', settings({
+      PreToolUse: [{ hooks: [
+        { type: 'command', command: 'node', args: ['${CLAUDE_PROJECT_DIR}/.claude/hooks/x.js'] },
+        { type: 'command', command: '${CLAUDE_PROJECT_DIR}/.claude/hooks/x.js', args: [] },
+      ] }],
+    }));
+    const issues = detectHooksSettings(ctx(dir));
+    expect(issues.some((i) => i.title.includes('unquoted $CLAUDE_PROJECT_DIR'))).toBe(false);
+  });
+
+  it('keeps the quoting advice for a shell-form command and mentions exec form', () => {
+    const dir = repo();
+    writeFile(dir, '.claude/hooks/x.sh', 'echo hi');
+    writeFile(dir, '.claude/settings.json', settings({
+      PreToolUse: [{ hooks: [{ type: 'command', command: '${CLAUDE_PROJECT_DIR}/.claude/hooks/x.sh --fix' }] }],
+    }));
+    const issue = detectHooksSettings(ctx(dir)).find((i) => i.title.includes('unquoted $CLAUDE_PROJECT_DIR'));
+    expect(issue).toBeDefined();
+    expect(issue!.summary).toContain('shell-form');
+    expect(issue!.recommendation).toContain('exec form');
+  });
 });

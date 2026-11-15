@@ -6,7 +6,9 @@
  *  - Invalid JSON: the file will not load at all.
  *  - Hook commands referencing local scripts that do not exist in the repo.
  *  - Dangerous hook patterns: piping a remote download straight into a shell
- *    (`curl … | sh`), and unquoted `$CLAUDE_PROJECT_DIR` path expansions.
+ *    (`curl … | sh`), and unquoted `$CLAUDE_PROJECT_DIR` path expansions in a
+ *    shell-form command. A hook with `args` set runs in exec form (no shell), so
+ *    its placeholders need no quoting and are never reported.
  *
  * Hook commands run automatically on tool events, so a broken or unsafe command
  * is higher-stakes than a stale doc line. Deterministic and offline.
@@ -28,7 +30,8 @@ import { treeFor } from './repo-tree.js';
 /** curl/wget piped straight into a shell — the classic remote-code-execution footgun. */
 const CURL_PIPE_SH_RE = /\b(curl|wget)\b[^|]*\|\s*(sudo\s+)?(sh|bash|zsh|dash)\b/i;
 
-type CommandHook = { command: string; event: string };
+/** `exec` is true when `args` is set: Claude Code spawns the command directly, with no shell. */
+type CommandHook = { command: string; event: string; exec: boolean };
 
 function id(kind: string, key: string): string {
   return `ai-config-hook-${kind}-${shortHash(key)}`;
@@ -43,7 +46,7 @@ function collectCommandHooks(hooks: unknown, event: string, out: CommandHook[]):
   if (typeof hooks !== 'object' || hooks === null) return;
   const obj = hooks as Record<string, unknown>;
   if (obj.type === 'command' && typeof obj.command === 'string') {
-    out.push({ command: obj.command, event });
+    out.push({ command: obj.command, event, exec: Array.isArray(obj.args) });
   }
   for (const [key, value] of Object.entries(obj)) {
     // When we recurse from the top-level `hooks` map, the key names the event
@@ -188,7 +191,7 @@ export function detectHooksSettings(context: RepoContext): PromptCiIssue[] {
     collectCommandHooks(hooks, '', commandHooks);
 
     const reportedMissing = new Set<string>();
-    for (const { command, event } of commandHooks) {
+    for (const { command, event, exec } of commandHooks) {
       const line = lineOf(raw, command);
 
       // Dangerous: remote download piped into a shell.
@@ -207,17 +210,20 @@ export function detectHooksSettings(context: RepoContext): PromptCiIssue[] {
         }));
       }
 
-      // Footgun: unquoted $CLAUDE_PROJECT_DIR path expansion.
-      if (hasUnquotedProjectDir(command)) {
+      // Footgun: unquoted $CLAUDE_PROJECT_DIR path expansion in a shell-form command. An exec-form
+      // hook (`args` set) has no shell to split the path, so there is nothing to quote.
+      if (!exec && hasUnquotedProjectDir(command)) {
         issues.push(base({
           id: id('unquoted-project-dir', `${filePath}|${command}`),
           severity: 'info',
           title: 'Hook uses an unquoted $CLAUDE_PROJECT_DIR path',
-          summary: `A ${event || 'hook'} command in ${filePath} expands \`$CLAUDE_PROJECT_DIR\` unquoted; if the project path contains a space the command breaks or runs the wrong file.`,
+          summary: `A ${event || 'hook'} command in ${filePath} expands \`$CLAUDE_PROJECT_DIR\` unquoted in a shell-form command; the shell splits an unquoted path at spaces, so if the project path contains one the command may break or run the wrong file.`,
           filePaths: [filePath],
           locations: [{ filePath, startLine: line, endLine: line }],
           evidence: [`Command: ${command.slice(0, 160)}`],
-          recommendation: 'Wrap the path in double quotes, e.g. `"$CLAUDE_PROJECT_DIR/script.sh"`.',
+          recommendation:
+            'Wrap the placeholder in double quotes, e.g. `"$CLAUDE_PROJECT_DIR"/script.sh`, or switch to exec form by setting `args` ' +
+            '(then `command` is the executable and each `args` element is one argument, with no quoting).',
           confidence: 0.5,
         }));
       }

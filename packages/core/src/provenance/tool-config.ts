@@ -295,21 +295,22 @@ export const TOOL_CONFIG_PROVENANCE: readonly CheckProvenance[] = [
     detector: 'ai-config-hooks-settings',
     title: 'Quoting the project directory in hook commands',
     kind: 'tool-fact',
-    claim: 'An unquoted `$CLAUDE_PROJECT_DIR` path in a hook command breaks when the project path contains a space.',
+    claim:
+      'In a shell-form command hook (no `args`) an unquoted `$CLAUDE_PROJECT_DIR` path is split by the shell when the project path contains a space, while a hook with `args` set runs in exec form with no shell and needs no quoting.',
     appliesTo: ['claude-code'],
     sources: [
       cite(
-        PAGES.ccHooks,
+        reread(PAGES.ccHooks),
         'supports',
-        'Says that in shell form the command string is tokenized by a shell and each path placeholder should be wrapped in double quotes.',
+        'Says a command hook runs in shell form when `args` is omitted, where the shell tokenizes the string and each path placeholder should be wrapped in double quotes.',
       ),
       cite(
-        PAGES.ccHooks,
-        'contradicts',
-        'Says a hook with `args` set runs in exec form with no shell, so a placeholder needs no quotes there, and its own example passes an unquoted ${CLAUDE_PROJECT_DIR} path with `"args": []`, which the detector would still flag.',
+        reread(PAGES.ccHooks),
+        'supports',
+        'Says a hook with `args` set runs in exec form with no shell and each element is passed as one argument with no quoting, so the detector skips exec-form hooks and only advises quoting (or setting `args`) for shell-form commands.',
       ),
     ],
-    lastVerified: VERIFIED,
+    lastVerified: VERIFIED_1115('#195'),
   },
   {
     id: 'ai-config-hooks-settings/remote-pipe',
