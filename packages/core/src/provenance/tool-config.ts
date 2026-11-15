@@ -73,6 +73,11 @@ const unverified = (
   unit?: string,
 ): ProvenanceThreshold => ({ name, value, ...(unit ? { unit } : {}), where, source: 'unverified' });
 
+/** Pages re-read on 2026-11-15 for the issue #176-#196 fixes (vendor docs alignment). */
+const READ_1115 = '2026-11-15';
+const reread = (page: Page): Page => ({ ...page, readOn: READ_1115 });
+const VERIFIED_1115 = (issue: string) => ({ date: READ_1115, by: `agent run 2026-11-15 (issue ${issue})` }) as const;
+
 export const TOOL_CONFIG_PROVENANCE: readonly CheckProvenance[] = [
   // ── ai-config-skills ────────────────────────────────────────────────────────
   {
@@ -193,62 +198,62 @@ export const TOOL_CONFIG_PROVENANCE: readonly CheckProvenance[] = [
     title: 'Subagent file and frontmatter',
     kind: 'tool-fact',
     claim:
-      'Claude Code registers a subagent from a Markdown file under `.claude/agents/` only when its frontmatter has `name` and `description`, and nested maps in that frontmatter are unsupported.',
+      'Claude Code requires `name` and `description` in subagent frontmatter, scans `.claude/agents/` recursively, and documents nested maps (`hooks`, `mcpServers`, `experimental`) as valid frontmatter.',
     appliesTo: ['claude-code'],
     sources: [
       cite(
-        PAGES.ccSubagents,
+        reread(PAGES.ccSubagents),
         'supports',
         'Says only `name` and `description` are required and that .claude/agents/ is scanned recursively.',
       ),
       cite(
-        PAGES.ccSubagents,
-        'contradicts',
-        'Documents `hooks`, `mcpServers` and `experimental` as nested YAML maps in subagent frontmatter, so the finding that a nested key is unsupported is wrong for Claude Code.',
+        reread(PAGES.ccSubagents),
+        'supports',
+        'Documents `hooks`, `mcpServers` and `experimental` as nested maps in subagent frontmatter and says an unrecognised field is ignored without an error, so the detector reports none of them.',
       ),
     ],
-    lastVerified: VERIFIED,
+    lastVerified: VERIFIED_1115('#194'),
   },
   {
     id: 'ai-config-subagents/model-values',
-    refuted: true,
     detector: 'ai-config-subagents',
     title: 'Subagent model values',
     kind: 'tool-fact',
     claim:
-      "A subagent's `model` frontmatter accepts only the aliases sonnet, opus, haiku, inherit, default or opusplan, or a full `claude-*` model id.",
+      "A subagent's `model` frontmatter accepts `sonnet`, `opus`, `haiku`, `fable`, `inherit` or a full model ID; the page does not list `default` or `opusplan` for subagents.",
     appliesTo: ['claude-code'],
     sources: [
       cite(
-        PAGES.ccSubagents,
-        'contradicts',
-        'Lists the accepted values as sonnet, opus, haiku, fable, a full model ID or inherit, so `fable` is valid but missing from the detector alias set, and `default` and `opusplan` are not listed as valid values.',
+        reread(PAGES.ccSubagents),
+        'supports',
+        'Lists the accepted values as sonnet, opus, haiku, fable, a full model ID such as claude-opus-5-5, or inherit, and does not list default or opusplan.',
       ),
     ],
-    lastVerified: VERIFIED,
+    lastVerified: VERIFIED_1115('#176'),
   },
   {
     id: 'ai-config-subagents/tool-names',
-    refuted: true,
     detector: 'ai-config-subagents',
     title: 'Subagent tool names',
     kind: 'tool-fact',
     claim:
-      'A subagent `tools` entry must be one of a fixed list of built-in tool names, an `mcp__` tool name or `*`, and any other name is a likely typo.',
+      'A subagent `tools` entry is a tool name from the Claude Code tools reference, the `Task` alias of `Agent`, a parenthesised form such as `Agent(worker)`, an `mcp__` tool name or `*`, so any other name (apart from legacy names the detector still accepts silently) is a likely typo.',
     appliesTo: ['claude-code'],
     sources: [
       cite(
-        PAGES.ccSubagents,
-        'contradicts',
-        'Documents `Agent(agent_type)` parenthesised entries (honoured for a main-thread agent, ignored in a subagent definition), the legacy `Task(...)` alias, and built-in tools such as Skill, LSP, PowerShell, ToolSearch and Monitor that the detector list omits, so valid entries are reported as typos.',
+        reread(PAGES.ccSubagents),
+        'supports',
+        'Documents `Agent(agent_type)` parenthesised entries, the `Task(...)` alias that still works after the rename to Agent, and `mcp__server__*` entries in `tools`; it does not say how a name that matches no tool is handled when other entries resolve.',
       ),
       cite(
-        PAGES.ccTools,
-        'contradicts',
-        'Its tool table lists current tools such as Skill, LSP, PowerShell, Monitor, TaskStop, SendMessage and ToolSearch that the detector list omits, and has no row for LS, MultiEdit, NotebookRead, BashOutput, KillBash, KillShell or SlashCommand, which the detector list still accepts.',
+        reread(PAGES.ccTools),
+        'supports',
+        'Its tool table lists the names the detector accepts, including Skill, LSP, PowerShell, Monitor, TaskStop, SendMessage and ToolSearch, and says the names are the exact strings used in subagent tool lists.',
       ),
     ],
-    lastVerified: VERIFIED,
+    caveat:
+      'LS, MultiEdit, NotebookRead, BashOutput, KillBash, KillShell and SlashCommand have no row in the tools reference but are accepted silently because real configs still use them.',
+    lastVerified: VERIFIED_1115('#177'),
   },
   {
     id: 'ai-config-subagents/duplicate-prompts',
