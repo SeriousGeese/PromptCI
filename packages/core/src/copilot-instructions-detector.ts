@@ -35,6 +35,7 @@ import {
   frontmatterStructureIssues,
 } from './ai-config.js';
 import type { FrontmatterSurface } from './ai-config.js';
+import { UNSCORED_TAG } from './health-score.js';
 
 const SURFACE: FrontmatterSurface = {
   idPrefix: 'copilot',
@@ -179,6 +180,7 @@ export function detectCopilotInstructions(context: RepoContext): PromptCiIssue[]
     issues.push(base({
       id: id('not-instructions-md', filePath),
       severity: 'info',
+      tags: [UNSCORED_TAG],
       title: 'Copilot path-specific instructions file is not named .instructions.md',
       summary: `${filePath} is under .github/instructions/ but its name does not end with \`.instructions.md\`, which GitHub documents as required for path-specific instructions, so Copilot may not load it.`,
       filePaths: [filePath],

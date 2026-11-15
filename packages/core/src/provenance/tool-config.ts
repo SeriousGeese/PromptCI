@@ -53,11 +53,6 @@ const PAGES = {
     title: 'VS Code: Custom instructions reference',
     readOn: D2,
   },
-  vscodeInstructions: {
-    url: 'https://code.visualstudio.com/docs/agent-customization/custom-instructions',
-    title: 'VS Code: Custom instructions',
-    readOn: D2,
-  },
   windsurfRules: { url: 'https://docs.devin.ai/desktop/devin-local/customizations', title: 'Devin Local docs: Customizations (docs.windsurf.com redirects here; Windsurf has no docs of its own to read, so this is another product\'s documentation)', readOn: D2 },
   rfc8259: { url: 'https://www.rfc-editor.org/info/rfc8259/', title: 'RFC 8259: The JSON Data Interchange Format', readOn: D2 },
 } as const satisfies Record<string, Page>;

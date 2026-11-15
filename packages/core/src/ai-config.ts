@@ -368,7 +368,9 @@ export function discoverAiConfigFiles(
     mcp: discover(AI_CONFIG_GLOBS.mcp),
     cursorRules: discover(AI_CONFIG_GLOBS.cursorRules),
     copilotInstructions: discover(AI_CONFIG_GLOBS.copilotInstructions),
-    copilotPlainMd: discover(AI_CONFIG_GLOBS.copilotPlainMd).filter((f) => !f.endsWith('.instructions.md')),
+    copilotPlainMd: discover(AI_CONFIG_GLOBS.copilotPlainMd).filter(
+      (f) => !f.endsWith('.instructions.md') && !/(^|\/)readme\.md$/i.test(f),
+    ),
   };
 }
 

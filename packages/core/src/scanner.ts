@@ -52,7 +52,10 @@ function deriveFileType(relPath: string): FileType {
   // through to 'unknown', which every filetype-gated detector's allowlist omits.
   // The file was scanned and then silently ignored by ~6 detectors.
   if (base === '.windsurfrules') return 'windsurf';
-  if (base === 'copilot-instructions.md' || norm.includes('/.github/instructions/')) return 'copilot';
+  // Copilot loads path-specific files only when the name ends `.instructions.md`
+  // (GitHub Docs); a plain .md there is not a live Copilot instruction file, so
+  // it falls through to the generic types below instead of being scored as one.
+  if (base === 'copilot-instructions.md' || (norm.includes('/.github/instructions/') && base.endsWith('.instructions.md'))) return 'copilot';
   // Gemini/Cline/persona files are matched anchored at the scan ROOT (`norm` is
   // leading-slash root-relative), never by basename or directory substring.
   // That is what they are discovered as, and it guarantees no file an earlier
