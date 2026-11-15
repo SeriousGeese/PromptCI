@@ -681,7 +681,9 @@ function collectRefs(
   if (opts.importFile) {
     for (const { line, target } of liveImportLines(content)) {
       importLineNumbers.add(line);
-      if (target && !isExternalRef(target)) {
+      // `@README`, `@types/node` and `@octocat` are mentions or package names, not paths: like the
+      // @-file pattern, only a target ending in a file extension is checked (`@types/node` is a package).
+      if (target && /\.[A-Za-z0-9]+$/.test(target) && !isExternalRef(target)) {
         found.push({ ref: target, evidence: `@${target}`, line, kind: 'file', importLine: true });
       }
     }

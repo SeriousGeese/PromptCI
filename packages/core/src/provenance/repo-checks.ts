@@ -471,7 +471,7 @@ export const REPO_CHECKS_PROVENANCE: readonly CheckProvenance[] = [
     title: 'At-sign file imports',
     kind: 'tool-fact',
     claim:
-      'An @path on a line of its own in a CLAUDE.md file is a file import that Claude Code resolves relative to the importing file, so a missing target is a broken instruction, while an @path written in a code span is not an import and only names the file.',
+      'An @path in a CLAUDE.md file, on a line of its own or inline in prose, is a file import that Claude Code resolves relative to the importing file (so a missing target is a broken instruction), while an @path written in a code span is not an import; the detector checks the line-of-its-own form from the importing file\'s directory and a code-span @path like any other code-span path.',
     appliesTo: ['claude-code'],
     sources: [{ ...CLAUDE_MEMORY, readOn: '2026-11-15' }],
     lastVerified: { date: '2026-11-15', by: 'agent run 2026-11-15 (issue #204)' },

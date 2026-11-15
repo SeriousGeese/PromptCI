@@ -451,7 +451,27 @@ type Forwarding =
   | { kind: 'import'; unread?: string }
   | { kind: 'prose'; pointsTo?: 'AGENTS' | 'CLAUDE' };
 
-function forwardingOf(file: InstructionFile, files: InstructionFile[], tree?: RepoTree): Forwarding | undefined {
+/** Per-scan memo of whether an imported file the scan did not read can be read (one read per file, size-capped). */
+const READABLE_IMPORTS = new WeakMap<RepoTree, Map<string, boolean>>();
+const MAX_IMPORT_BYTES = 1_000_000;
+
+function importReadable(tree: RepoTree, target: string): boolean {
+  let memo = READABLE_IMPORTS.get(tree);
+  if (!memo) READABLE_IMPORTS.set(tree, (memo = new Map()));
+  let readable = memo.get(target);
+  if (readable === undefined) {
+    readable = tree.readText(target, { maxBytes: MAX_IMPORT_BYTES }).state === 'found';
+    memo.set(target, readable);
+  }
+  return readable;
+}
+
+function forwardingOf(
+  file: InstructionFile,
+  files: InstructionFile[],
+  tree?: RepoTree,
+  hasGuidance: (f: InstructionFile) => boolean = () => false,
+): Forwarding | undefined {
   // pcic-1ik0.10: an import line in a file whose tool loads imports (CLAUDE.md,
   // GEMINI.md) that resolves, from that file's directory, to a scanned
   // AGENTS.md or CLAUDE.md puts that file's guidance in the tool's context:
@@ -472,11 +492,18 @@ function forwardingOf(file: InstructionFile, files: InstructionFile[], tree?: Re
     );
     if (targets.some((t) => canonical.has(t))) return { kind: 'import' };
     if (tree) {
-      const scanned = new Set(files.map((f) => fileIdPath(f)));
+      // A scanned target forwards only when it holds behavioral guidance (the
+      // canonical AGENTS.md/CLAUDE.md case is handled above). Only a file that
+      // exists but was not scanned gets the benefit of the doubt.
+      const scanned = new Map(files.map((f) => [fileIdPath(f), f]));
       for (const t of targets) {
+        const scannedFile = scanned.get(t);
+        if (scannedFile) {
+          if (scannedFile !== file && hasGuidance(scannedFile)) return { kind: 'import' };
+          continue;
+        }
         if (!tree.isFile(t)) continue;
-        if (scanned.has(t)) return { kind: 'import' };
-        return tree.readText(t).state === 'found' ? { kind: 'import' } : { kind: 'import', unread: t };
+        return importReadable(tree, t) ? { kind: 'import' } : { kind: 'import', unread: t };
       }
     }
   }
@@ -497,8 +524,13 @@ function forwardingOf(file: InstructionFile, files: InstructionFile[], tree?: Re
   return anywhere ? { kind: 'prose', pointsTo: anywhere[1]!.toUpperCase() as 'AGENTS' | 'CLAUDE' } : undefined;
 }
 
-function isForwardingFile(file: InstructionFile, files: InstructionFile[] = [], tree?: RepoTree): boolean {
-  return forwardingOf(file, files, tree) !== undefined;
+function isForwardingFile(
+  file: InstructionFile,
+  files: InstructionFile[] = [],
+  tree?: RepoTree,
+  hasGuidance?: (f: InstructionFile) => boolean,
+): boolean {
+  return forwardingOf(file, files, tree, hasGuidance) !== undefined;
 }
 
 /** Repo-relative POSIX import path from `from`'s directory to `to` (`AGENTS.md`, `../AGENTS.md`). */
@@ -617,7 +649,7 @@ function prosePointerIssue(file: InstructionFile, agents: InstructionFile): Prom
       `${path.basename(file.path)}. This is a suggestion, and it does not count toward the health score.`,
     filePaths: [file.path],
     locations: [{ filePath: file.path }],
-    evidence: [`No import line for ${path.basename(agents.path)} found in ${path.basename(file.path)}.`],
+    evidence: [`No import line that reaches ${path.basename(agents.path)} was found in ${path.basename(file.path)}.`],
     recommendation:
       `Consider replacing the sentence with \`${importLine}\` on a line of its own, so Claude Code loads ` +
       `${path.basename(agents.path)} with this file.`,
@@ -704,20 +736,22 @@ export function detectAgentPractices(
   for (const file of targetFiles) {
     const target = perFileBehaviorTarget(file);
     if (!target) continue;
+    // #184: one prose-pointer hint per CLAUDE.md, whether or not it also has rules of its own.
+    const forwarding = forwardingOf(file, files, tree, hasBehavioralGuidance);
+    const agentsFile = forwarding && pointsToAgents(forwarding) ? agentsFileFor(file, files) : undefined;
+    if (importingToolFor(file.path) === 'claude-code' && agentsFile) {
+      const hint = prosePointerIssue(file, agentsFile);
+      if (!issues.some((i) => i.id === hint.id)) issues.push(hint);
+    }
     if (hasBehavioralGuidance(file)) {
       // ── Duplication vs Forwarding Check ────────────────────────────────────
       continue;
     }
 
     // It lacks behavioral guidance. Is it a forwarding file?
-    const forwarding = forwardingOf(file, files, tree);
     if (forwarding) {
       if (forwarding.kind === 'import' && forwarding.unread !== undefined) {
         issues.push(unreadImportIssue(file, forwarding.unread));
-      }
-      const agentsFile = pointsToAgents(forwarding) ? agentsFileFor(file, files) : undefined;
-      if (importingToolFor(file.path) === 'claude-code' && agentsFile) {
-        issues.push(prosePointerIssue(file, agentsFile));
       }
       continue;
     }
@@ -768,7 +802,7 @@ export function detectAgentPractices(
       if (file === sourceFile) continue;
       const target = perFileBehaviorTarget(file);
       if (!target) continue;
-      if (isForwardingFile(file, files, tree)) continue;
+      if (isForwardingFile(file, files, tree, hasBehavioralGuidance)) continue;
       // AP4: already covered by the coarser "no behavioral guidance at all"
       // finding above — don't also pile on a granular per-check issue.
       if (filesWithNoGuidanceFinding.has(file.path)) continue;
