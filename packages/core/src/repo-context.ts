@@ -463,6 +463,8 @@ export async function buildRepoContext(input: ScanInput): Promise<RepoContext> {
     repoRoot,
     packageJson,
     (posix) => isExcludedPath(posix, input.exclude ?? []),
+    // pnpm and npm/yarn declare workspaces in different files (#200).
+    parsePackageJsonFacts(packageJson, lockfiles).packageManagerName,
   );
 
   const makefile = readMakefile(repoRoot, '.', tree);

@@ -61,13 +61,15 @@ const NPM_WORKSPACES = src(
   'https://docs.npmjs.com/cli/v11/using-npm/workspaces',
   'npm workspaces documentation',
   'supports',
-  'Documents the workspaces field of package.json, -w and --workspace to target one workspace, and --workspaces to run in all of them; the -ws short form is not mentioned on the page.',
+  'Documents the workspaces field of package.json, -w and --workspace to target one workspace by name or folder path, and --workspaces to run in all of them; the -ws short form is not mentioned on the page.',
+  REREAD_ON,
 );
 const PNPM_WORKSPACE_YAML = src(
   'https://pnpm.io/settings',
   'pnpm-workspace.yaml documentation',
-  'contradicts',
-  'Says pnpm reads workspaces only from pnpm-workspace.yaml and not from the workspaces field of the root package.json, while workspace-manifests.ts merges package.json workspaces globs with pnpm-workspace.yaml globs for every repository whatever its package manager.',
+  'supports',
+  'Says pnpm reads the workspace from pnpm-workspace.yaml and not from the workspaces field of the root package.json; workspace-manifests.ts now reads only pnpm-workspace.yaml for a pnpm repository and only the package.json field for npm, yarn and bun.',
+  REREAD_ON,
 );
 const GNU_MAKE_NAMES = src(
   'https://www.gnu.org/software/make/manual/html_node/Makefile-Names.html',
@@ -539,10 +541,10 @@ export const REPO_CHECKS_PROVENANCE: readonly CheckProvenance[] = [
     title: 'Workspace selectors and where workspace packages come from',
     kind: 'tool-fact',
     claim:
-      'pnpm --filter, npm -w and --workspace, and the workspaces globs of package.json or pnpm-workspace.yaml decide which workspace package a script command runs in, with conventional apps, packages and libs roots assumed when none are declared.',
+      'pnpm --filter selects among the packages pnpm-workspace.yaml declares (pnpm ignores the package.json workspaces field), npm -w and --workspace select among the packages the package.json workspaces field declares, and a repository with an unknown package manager is read from both, with conventional apps, packages and libs roots assumed when none are declared.',
     appliesTo: 'n/a',
     sources: [PNPM_FILTER, NPM_WORKSPACES, PNPM_WORKSPACE_YAML],
-    lastVerified: VERIFIED,
+    lastVerified: REVERIFIED(200),
   },
   {
     id: 'command-validity/make-targets',
