@@ -95,4 +95,12 @@ describe('detectMcpConfig', () => {
     }));
     expect(detectMcpConfig(ctx(dir))).toEqual([]);
   });
+
+  it('accepts a url-only entry with no type (the detector does not check `type`, issue #196)', () => {
+    const dir = repo();
+    writeFile(dir, '.mcp.json', JSON.stringify({
+      mcpServers: { remote: { url: 'https://mcp.example.com/mcp' } },
+    }));
+    expect(detectMcpConfig(ctx(dir))).toEqual([]);
+  });
 });

@@ -8,7 +8,8 @@
  *    server the author thinks is configured.
  *  - Placeholder env values never filled in (`"<your-key>"`, `"changeme"`, …).
  *  - stdio servers whose local `command`/script path does not exist, and
- *    servers declaring neither a `command` nor a `url`.
+ *    servers declaring neither a `command` nor a `url`. `type` is never checked,
+ *    so a `url`-only entry is accepted.
  *
  * PATH lookups for bare binaries (`npx`, `node`, `docker`) are intentionally out
  * of scope — they are not verifiable deterministically or offline. Only
@@ -162,7 +163,10 @@ export function detectMcpConfig(context: RepoContext): PromptCiIssue[] {
       const args = Array.isArray(def.args) ? def.args.filter((a): a is string => typeof a === 'string') : [];
       const serverLine = lineOf(raw, `"${name}"`);
 
-      // A server needs either a command (stdio) or a url (http/sse).
+      // A server needs either a command (stdio) or a url (http/sse). Deliberately NOT checked: `type`.
+      // The Claude Code MCP docs say an entry with a `url` but no `type` is read as stdio and skipped
+      // with a configuration error; a maintainer decision (#196) keeps a url-only entry accepted here,
+      // so this only reports an entry that has neither a `command` nor a `url`.
       if (!command && !url) {
         issues.push(base({
           id: id('no-command-or-url', `${filePath}|${name}`),

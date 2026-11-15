@@ -1,0 +1,6 @@
+{
+  "mcpServers": {
+    "docs": { "url": "https://mcp.example.com/mcp" },
+    "search": { "type": "http", "url": "https://search.example.com/mcp" }
+  }
+}

@@ -342,21 +342,23 @@ export const TOOL_CONFIG_PROVENANCE: readonly CheckProvenance[] = [
     title: 'Project MCP config format',
     kind: 'tool-fact',
     claim:
-      'Claude Code reads project MCP servers from `.mcp.json` under a top-level `mcpServers` key, where a stdio server needs a `command` and a remote server needs only a `url`.',
+      'Claude Code reads project MCP servers from `.mcp.json` under a top-level `mcpServers` key, where a stdio server is defined by a `command` (with `args` and `env`) and a remote server by a `url`; the check requires one of `command` or `url` and does not check `type`.',
     appliesTo: ['claude-code'],
     sources: [
       cite(
-        PAGES.ccMcp,
+        reread(PAGES.ccMcp),
         'supports',
-        'Shows project servers in .mcp.json under a top-level mcpServers key, with command, args and env for stdio servers and type plus url for http or sse servers.',
+        'Shows project servers in .mcp.json under a top-level mcpServers key, with command, args and env for stdio servers and a url (with a type) for remote servers.',
       ),
       cite(
-        PAGES.ccMcp,
-        'contradicts',
-        'Says an entry with a `url` but no `type` is read as a stdio server and skipped with a configuration error, so the detector accepting any `url` as a valid remote server is too lax.',
+        reread(PAGES.ccMcp),
+        'context',
+        'Says an entry with a `url` but no `type` is read as a stdio server and skipped with a configuration error; the detector deliberately does not check `type` (maintainer decision, issue #196), so a url-only entry is accepted and Claude Code may still skip it.',
       ),
     ],
-    lastVerified: VERIFIED,
+    caveat:
+      'Not checked by design: a `url` entry with no `type` is accepted here although the Claude Code docs say such an entry is skipped; only an entry with neither `command` nor `url` is reported.',
+    lastVerified: VERIFIED_1115('#196'),
   },
   {
     id: 'ai-config-mcp/duplicate-names',
