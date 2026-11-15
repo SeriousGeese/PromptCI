@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -21,12 +21,21 @@ describe('applyChangesInteractively', () => {
   let dir: string;
   const logs: string[] = [];
   const log = (m = '') => { logs.push(m); };
+  // The prompt is written straight to process.stdout (not through `log`), so
+  // capture it: keeps the vitest output silent (#106) and lets tests assert on it.
+  let prompts: string;
 
   beforeEach(async () => {
     dir = await makeTempDir();
     logs.length = 0;
+    prompts = '';
+    vi.spyOn(process.stdout, 'write').mockImplementation((chunk: string | Uint8Array) => {
+      prompts += typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString();
+      return true;
+    });
   });
   afterEach(async () => {
+    vi.restoreAllMocks();
     await fs.rm(dir, { recursive: true, force: true });
   });
 
@@ -41,6 +50,7 @@ describe('applyChangesInteractively', () => {
         log,
       }),
     ).rejects.toBeInstanceOf(NonInteractiveError);
+    expect(prompts).toContain('Apply this change? (y/N):');
     // Nothing written.
     expect(await fs.readFile(file, 'utf-8')).toBe('old\n');
   });
