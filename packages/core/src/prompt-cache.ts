@@ -4,6 +4,7 @@ import { matchEvidence } from './evidence.js';
 import * as path from 'node:path';
 import * as crypto from 'node:crypto';
 import { fileIdPath } from './finding-id.js';
+import { UNSCORED_TAG } from './health-score.js';
 
 /**
  * B4: every id in this file was keyed by `${file.fileType}` — two files
@@ -51,6 +52,21 @@ const BRANCH_TASK_PATTERNS: LabelledPattern[] = [
 
 const LOCAL_PATH_PATTERN = /(?:[a-zA-Z]:\\users\\[a-zA-Z0-9_-]+)|(?:\/users\/[a-zA-Z0-9_-]+\/)|(?:\/home\/(?!runner)[a-zA-Z0-9_-]+\/)/i;
 
+/**
+ * Claude Code's own instruction files (CLAUDE.md and the files typed like it) get no
+ * volatile-content or local-path finding (#181, #182). Claude Code reads the project-root
+ * and user CLAUDE.md once at session start, so editing one mid-session does not invalidate
+ * its prompt cache, and its cache is already scoped to one machine and directory
+ * (https://code.claude.com/docs/en/prompt-caching). The scanner's `fileType` decides this;
+ * the file's contents (an absolute path, say) are never used to guess the tool.
+ */
+function isClaudeCodeFile(file: InstructionFile): boolean {
+  return file.fileType === 'claude';
+}
+
+/** Hint-level: opinion for tools other than Claude Code, costs no health-score points. */
+const HINT_TAGS = [UNSCORED_TAG];
+
 export function detectPromptCacheFriendliness(files: InstructionFile[]): PromptCiIssue[] {
   const issues: PromptCiIssue[] = [];
 
@@ -61,22 +77,24 @@ export function detectPromptCacheFriendliness(files: InstructionFile[]): PromptC
 
   for (const file of targetFiles) {
     const fileName = path.basename(file.path);
+    const claudeCode = isClaudeCodeFile(file);
 
     // 1. Timestamps and Dates
     for (const pat of DATE_PATTERNS) {
-      if (pat.re.test(file.content)) {
+      if (!claudeCode && pat.re.test(file.content)) {
         issues.push({
           id: promptCacheIssueId('volatile-timestamp', fileIdPath(file)),
-          severity: 'warning',
+          severity: 'info',
           category: 'context_bloat',
           title: 'Volatile timestamp in instruction file',
-          summary: `The instruction file "${fileName}" contains a volatile date or timestamp. Frequently changing dates in persistent instruction files invalidate prompt caches.`,
+          summary: `The instruction file "${fileName}" contains a date or timestamp. For tools that re-send instruction files with every request, text that changes often may cause cached prompt prefixes to be rebuilt.`,
           filePaths: [file.path],
           locations: [],
           evidence: [matchEvidence(file.content, pat.re, pat.label)],
           recommendation: 'Move volatile dates to a separate task-specific prompt or scratch file, or remove them from canonical instructions.',
           fixRecipe: 'Remove the "Last updated: <date>" or timestamp line from the file.',
-          confidence: 0.85,
+          confidence: 0.6,
+          tags: HINT_TAGS,
         });
         break; // one is enough
       }
@@ -84,19 +102,20 @@ export function detectPromptCacheFriendliness(files: InstructionFile[]): PromptC
 
     // 2. Pasted Scan Outputs/Reports
     for (const pat of SCAN_REPORT_PATTERNS) {
-      if (pat.re.test(file.content)) {
+      if (!claudeCode && pat.re.test(file.content)) {
         issues.push({
           id: promptCacheIssueId('pasted-report', fileIdPath(file)),
-          severity: 'warning',
+          severity: 'info',
           category: 'context_bloat',
           title: 'Pasted scan report or summary in instructions',
-          summary: `The instruction file "${fileName}" contains pasted scan results or reports. Committing generated reports into canonical instruction files breaks prompt caching and bloats context.`,
+          summary: `The instruction file "${fileName}" contains pasted scan results or reports. Generated output in a canonical instruction file changes often and adds to context; for tools that cache the prompt prefix it may also cause the cache to be rebuilt.`,
           filePaths: [file.path],
           locations: [],
           evidence: [matchEvidence(file.content, pat.re, pat.label)],
           recommendation: 'Link to the generated report file or read it on-demand instead of pasting its contents into canonical instructions.',
           fixRecipe: 'Delete the pasted report summary block and reference the report file path instead.',
-          confidence: 0.9,
+          confidence: 0.6,
+          tags: HINT_TAGS,
         });
         break;
       }
@@ -104,39 +123,41 @@ export function detectPromptCacheFriendliness(files: InstructionFile[]): PromptC
 
     // 3. Current Branch or Task status
     for (const pat of BRANCH_TASK_PATTERNS) {
-      if (pat.re.test(file.content)) {
+      if (!claudeCode && pat.re.test(file.content)) {
         issues.push({
           id: promptCacheIssueId('volatile-branch-task', fileIdPath(file)),
-          severity: 'warning',
+          severity: 'info',
           category: 'context_bloat',
           title: 'Volatile branch or task status in instructions',
-          summary: `The instruction file "${fileName}" contains active git branch or task details. Frequently updated task status or branch names break prompt caching.`,
+          summary: `The instruction file "${fileName}" contains active git branch or task details. Text that is updated often may cause cached prompt prefixes to be rebuilt in tools that cache them.`,
           filePaths: [file.path],
           locations: [],
           evidence: [matchEvidence(file.content, pat.re, pat.label)],
           recommendation: 'Move branch-specific notes and active task details to git commit messages, PR descriptions, or a temporary scratch file.',
           fixRecipe: 'Remove active branch and task notes from the persistent instructions.',
-          confidence: 0.85,
+          confidence: 0.6,
+          tags: HINT_TAGS,
         });
         break;
       }
     }
 
     // 4. Local User Paths
-    if (LOCAL_PATH_PATTERN.test(file.content)) {
+    if (!claudeCode && LOCAL_PATH_PATTERN.test(file.content)) {
       const match = file.content.match(LOCAL_PATH_PATTERN)?.[0] ?? '';
       issues.push({
         id: promptCacheIssueId('local-paths', fileIdPath(file)),
-        severity: 'warning',
+        severity: 'info',
         category: 'context_bloat',
         title: 'Local machine paths in instructions',
-        summary: `The instruction file "${fileName}" contains absolute local machine paths ("${match}"). These paths change per environment, preventing prompt caching and causing instruction drift.`,
+        summary: `The instruction file "${fileName}" contains an absolute local machine path ("${match}"). It will differ on other machines, which may reduce prompt-cache reuse in tools that share a cache across machines, and the path will not resolve for other contributors.`,
         filePaths: [file.path],
         locations: [],
         evidence: [`Found absolute local path: ${match}`],
         recommendation: 'Use repository-relative paths instead of absolute local machine paths.',
         fixRecipe: 'Replace absolute local paths with repository-relative paths.',
-        confidence: 0.8,
+        confidence: 0.5,
+        tags: HINT_TAGS,
       });
     }
 

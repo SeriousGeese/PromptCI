@@ -417,9 +417,10 @@ const CROSS_FILE_TOPICS: Array<{
  * BUG-010: Detect when copilot-instructions.md is present but completely silent
  * on a topic that is covered — and possibly in conflict — across other files.
  *
- * A Copilot agent reads only its own instruction file and has no guidance on the
- * topic, even though human/Claude/Cursor agents are told what to do (or disagree
- * about it).
+ * Copilot also reads AGENTS.md (the nearest one) and a single CLAUDE.md or GEMINI.md
+ * in the repository root (#185), so when any of those exists a convention documented
+ * there is visible to it and the check stays silent. It only speaks when the other
+ * files are ones Copilot does not read (Cursor or Windsurf rules, say).
  */
 function checkCopilotTopicSilences(files: InstructionFile[]): PromptCiIssue[] {
   const normalizedPath = (file: InstructionFile) => file.path.replace(/\\/g, '/').toLowerCase();
@@ -433,6 +434,15 @@ function checkCopilotTopicSilences(files: InstructionFile[]): PromptCiIssue[] {
 
   const copilotFile = files.find(isRootCopilotFile);
   if (!copilotFile) return [];
+
+  // Copilot reads AGENTS.md anywhere in the tree and a single CLAUDE.md / GEMINI.md at the repo root.
+  const repoRoot = normalizedPath(copilotFile).slice(0, -'.github/copilot-instructions.md'.length);
+  const copilotAlsoReads = files.some((f) => {
+    if (f.fileType === 'agents') return true;
+    const p = normalizedPath(f);
+    return p === `${repoRoot}claude.md` || p === `${repoRoot}gemini.md`;
+  });
+  if (copilotAlsoReads) return [];
 
   const copilotFiles = files.filter(isCopilotInstructionFile);
   const otherFiles = files.filter((f) => !copilotFiles.includes(f));
@@ -458,7 +468,7 @@ function checkCopilotTopicSilences(files: InstructionFile[]): PromptCiIssue[] {
       title: `copilot-instructions.md is silent on: ${label}`,
       summary:
         `Other instruction files document the ${label}, but Copilot instruction files ` +
-        `do not mention it. Copilot agents will have no guidance on this topic.`,
+        `do not mention it. Copilot does not read those other files, so it may have no guidance on this topic.`,
       filePaths: [copilotFile.path],
       locations: [{ filePath: copilotFile.path }],
       evidence: [
