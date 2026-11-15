@@ -31,7 +31,7 @@ label "do-not-merge" "B60205" "Do not merge — maintainer hold on all merges"
 label "hold"         "B60205" "Temporarily hold — do not merge yet"
 label "blocked"      "B60205" "Blocked on something external — do not merge"
 label "automerge"    "0E8A16" "auto-merge.yml: squash-merge automatically once required checks pass"
-label "reviewed"     "0E8A16" "Second review covers the head commit: lets the review bot merge scanner or fix-recipe changes (a push removes it)"
+label "reviewed"     "0E8A16" "Second review covers the head: lets the bot merge scanner/fix-recipe PRs (a push removes it)"
 
 # ── Type / changelog categories ──────────────────────────────────────────────
 label "breaking-change" "D93F0B" "Backwards-incompatible change"
