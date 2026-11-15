@@ -91,4 +91,76 @@ describe('detectSubagents', () => {
     const issues = detectSubagents(ctx(dir));
     expect(issues.some((i) => i.title.includes('near-identical'))).toBe(false);
   });
+
+  it('accepts every model value the subagents docs list, --model values, [1m] suffixes and provider ids', () => {
+    const dir = repo();
+    const models = [
+      'sonnet', 'opus', 'haiku', 'fable', 'inherit', 'Fable', 'claude-opus-5-5', 'default', 'opusplan',
+      'opus[1m]', 'claude-sonnet-5[1m]', 'us.anthropic.claude-sonnet-4-5-v1:0', 'anthropic.claude-3-haiku',
+      'arn:aws:bedrock:us-east-1:123456789012:inference-profile/x', 'claude-sonnet-4@20250514',
+    ];
+    models.forEach((model, n) => {
+      writeFile(dir, `.claude/agents/m${n}.md`,
+        agent('m', [`name: m${n}`, 'description: does a thing', `model: '${model}'`], `unique body for ${model}`));
+    });
+    expect(detectSubagents(ctx(dir)).filter((i) => i.title.includes('unrecognized model'))).toEqual([]);
+  });
+
+  it('reports a value that is still unknown at info severity', () => {
+    const dir = repo();
+    writeFile(dir, '.claude/agents/g.md', agent('g', ['name: g', 'description: does a thing', 'model: gpt-5[1m]'], 'unique body'));
+    const flagged = detectSubagents(ctx(dir)).filter((i) => i.title.includes('unrecognized model'));
+    expect(flagged.length).toBe(1);
+    expect(flagged[0]!.severity).toBe('info');
+  });
+
+  it('accepts current, parenthesised and legacy tool names', () => {
+    const dir = repo();
+    writeFile(dir, '.claude/agents/a.md',
+      agent('a', [
+        'name: a',
+        'description: does a thing',
+        'tools: Agent(worker, researcher), Task(reviewer), Skill, LSP, PowerShell, Monitor, ToolSearch, TaskStop, SendMessage, Bash(git *), LS, MultiEdit, mcp__github__*, *',
+      ], 'body text here for the agent'));
+    expect(detectSubagents(ctx(dir)).filter((i) => i.title.includes('tools that may not exist'))).toEqual([]);
+  });
+
+  it('still flags a name that is not a tool even when parenthesised', () => {
+    const dir = repo();
+    writeFile(dir, '.claude/agents/a.md',
+      agent('a', ['name: a', 'description: does a thing', 'tools: Read, Bananas(x)'], 'body text here for the agent'));
+    const t = detectSubagents(ctx(dir)).find((i) => i.title.includes('tools that may not exist'));
+    expect(t?.evidence.join(' ')).toContain('Bananas(x)');
+  });
+
+  it('does not report documented nested maps (hooks, mcpServers, experimental)', () => {
+    const dir = repo();
+    writeFile(dir, '.claude/agents/a.md', [
+      '---',
+      'name: a',
+      'description: does a thing',
+      'hooks:',
+      '  PreToolUse:',
+      '    - matcher: "Bash"',
+      '      hooks:',
+      '        - type: command',
+      '          command: "./scripts/validate.sh"',
+      'mcpServers:',
+      '  - slack',
+      '  - playwright:',
+      '      type: stdio',
+      '      command: npx',
+      'experimental:',
+      '  cacheTtl: 1h',
+      '---',
+      'body text here for the agent',
+    ].join('\n'));
+    expect(detectSubagents(ctx(dir))).toEqual([]);
+  });
+
+  it('still reports a duplicate frontmatter key', () => {
+    const dir = repo();
+    writeFile(dir, '.claude/agents/a.md', agent('a', ['name: a', 'name: b', 'description: does a thing'], 'body text here for the agent'));
+    expect(detectSubagents(ctx(dir)).some((i) => i.title.includes('structural problem') || i.summary.includes('Duplicate'))).toBe(true);
+  });
 });
