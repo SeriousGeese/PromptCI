@@ -172,9 +172,8 @@ The score is self-reported by your own scan; regenerate the file in CI to keep i
 - Missing setup/validation commands and project-specific guidance
 - Manifest consistency against `package.json` and `pyproject.toml`
 - Dependency and framework-API staleness: packages an install command or import line names that
-  no `package.json` declares, end-of-life packages (moment, request, tslint, node-sass,
-  react-scripts, enzyme), and version-gated APIs (`ReactDOM.render` on React 18+, `getInitialProps`
-  in an app-router Next.js project, NgModule-centric guidance on Angular 17+)
+  no `package.json` declares, end-of-life packages, and version-gated APIs (`ReactDOM.render` on
+  React 18+, `getInitialProps` in an app-router Next.js project)
 - CI/workflow alignment between instructions and GitHub Actions
 - Security and privacy gaps in instruction guidance
 - Vague guidance, broken local references (files, directories, and documented package
@@ -191,10 +190,12 @@ The score is self-reported by your own scan; regenerate the file in CI to keep i
 - AI-setup config rot beyond markdown: Agent Skills, subagents, hooks/settings,
   `.mcp.json` servers, and Cursor `.mdc` rules checked against filesystem reality
 <!-- promptci-ignore-end -->
-- Agent Skill supply-chain risk: SKILL.md files and their bundled scripts (under `.claude/`,
-  `.agents/skills/`, and plugin `skills/` directories) read as text — never executed — for
-  fetch-and-execute installers, remote code loading, credential exfiltration, prompt-injection
-  and hidden text, and unpinned remote dependencies
+- Agent Skill supply-chain risk: SKILL.md files and their bundled scripts read as text — never
+  executed — for fetch-and-execute installers, remote code loading, credential exfiltration,
+  prompt-injection and hidden text, and unpinned remote dependencies
+
+Every detector, and the Next.js, Python, Rust, Go, .NET and Unity framework packs, is listed in the
+[detector catalog](Docs/detector-catalog.md).
 
 Findings are heuristic and cautiously worded; every one carries evidence, a recommendation,
 and a confidence value. Finding `id`s are derived from repo-relative paths, so they are the same
