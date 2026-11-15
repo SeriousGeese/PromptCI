@@ -30,6 +30,7 @@ import { fileIdPath } from './finding-id.js';
 import { aliasesWithNewType, groupAliasesByTarget } from './alias-files.js';
 import { UNSCORED_TAG } from './health-score.js';
 import { importingToolFor, resolvedImports } from './mirror-import.js';
+import type { RepoTree } from './repo-tree.js';
 
 // ── Practice checks ──────────────────────────────────────────────────────────
 
@@ -265,7 +266,7 @@ const CLAUDE_XML_TAG_RE = /<\/?claude:[\w-]+|<instructions-for-claude[\s>]/i;
 // and must not exempt the file. The `.md` extension is required so prose like
 // "use Claude to review" cannot match the bare word.
 const FORWARDING_RE =
-  /(?:follow|use|see|refer\s+to|canonical\s+(?:source|instructions?)|pointer\s+to)\s+[`'"*]*(?:\.?\/)?(?:\.github\/)?(?:AGENTS|CLAUDE)\.md\b/i;
+  /(?:follow|use|see|refer\s+to|canonical\s+(?:source|instructions?)|pointer\s+to)\s+[`'"*]*(?:\.?\/)?(?:\.github\/)?(AGENTS|CLAUDE)\.md\b/i;
 
 // The same delegation phrased subject-first: "`AGENTS.md` is the single source
 // of truth for all agents" / "AGENTS.md is canonical". Common in the tool stubs
@@ -437,36 +438,88 @@ function perFileBehaviorTarget(file: InstructionFile): { label: string; agent: s
   return undefined;
 }
 
-function isForwardingFile(file: InstructionFile, files: InstructionFile[] = []): boolean {
+/**
+ * How a file forwards its behavioral rules to another instruction file.
+ *  - `import`: an `@path` import line that Claude Code / Gemini CLI load with
+ *    the file. `unread` names the imported file when the repository holds it
+ *    but this scan could not read it (#205), so its guidance was not checked.
+ *  - `prose`: a sentence such as "Follow AGENTS.md". Claude Code's docs say
+ *    Claude sees the file only if it decides to open it (#184); `pointsTo` is
+ *    the file name the sentence gives.
+ */
+type Forwarding =
+  | { kind: 'import'; unread?: string }
+  | { kind: 'prose'; pointsTo?: 'AGENTS' | 'CLAUDE' };
+
+function forwardingOf(file: InstructionFile, files: InstructionFile[], tree?: RepoTree): Forwarding | undefined {
   // pcic-1ik0.10: an import line in a file whose tool loads imports (CLAUDE.md,
   // GEMINI.md) that resolves, from that file's directory, to a scanned
   // AGENTS.md or CLAUDE.md puts that file's guidance in the tool's context:
-  // the file forwards. Not counted: a markdown link (no tool loads it), an
-  // import inside fenced code or an HTML comment (not loaded), an import whose
-  // path does not reach such a file (a wrong path loads nothing), and an
-  // import line in a file whose tool documents no import syntax.
+  // the file forwards. #205: so does an import of any file the repository
+  // holds, scanned or not (a scan that excludes AGENTS.md, a hosted scan that
+  // did not fetch it); the scan's tree answers whether it exists. Not counted:
+  // a markdown link (no tool loads it), an import inside fenced code or an
+  // HTML comment (not loaded), an import whose path reaches no file (a wrong
+  // path loads nothing), and an import line in a file whose tool documents no
+  // import syntax.
   if (importingToolFor(file.path) !== undefined) {
     const self = fileIdPath(file);
+    const targets = resolvedImports(self, file.content);
     const canonical = new Set(
       files
         .filter((f) => f !== file && /^(?:AGENTS|CLAUDE)\.md$/.test(path.basename(f.path)))
         .map((f) => fileIdPath(f)),
     );
-    if (resolvedImports(self, file.content).some((t) => canonical.has(t))) return true;
+    if (targets.some((t) => canonical.has(t))) return { kind: 'import' };
+    if (tree) {
+      const scanned = new Set(files.map((f) => fileIdPath(f)));
+      for (const t of targets) {
+        if (!tree.isFile(t)) continue;
+        if (scanned.has(t)) return { kind: 'import' };
+        return tree.readText(t).state === 'found' ? { kind: 'import' } : { kind: 'import', unread: t };
+      }
+    }
   }
   // AP6: A header forwarding pointer near the top ("Follow AGENTS.md for the
   // canonical instructions") delegates behavioral rules to the canonical file
-  // regardless of the stub's total length — this is the exact remedy the
-  // per-check gap findings recommend, so a file that already does it should not
-  // be flagged for "missing" guidance it forwards to.
+  // regardless of the stub's total length. It still exempts a file from the
+  // "missing guidance" advice, but for CLAUDE.md the import is the better
+  // recommendation (see the prose-pointer finding).
   const head = file.content.split(/\r?\n/).slice(0, 12).join('\n');
-  if (FORWARDING_RE.test(head)) return true;
+  const pointer = FORWARDING_RE.exec(head);
+  if (pointer) return { kind: 'prose', pointsTo: pointer[1]!.toUpperCase() as 'AGENTS' | 'CLAUDE' };
   const sourceOfTruth = SOURCE_OF_TRUTH_RE.exec(head);
   if (sourceOfTruth && `${sourceOfTruth[1]!.toLowerCase()}.md` !== path.basename(file.path).toLowerCase()) {
-    return true;
+    return { kind: 'prose', pointsTo: sourceOfTruth[1]!.toUpperCase() as 'AGENTS' | 'CLAUDE' };
   }
   // Legacy: a short file with a forwarding pointer anywhere.
-  return file.lineCount < 20 && FORWARDING_RE.test(file.content);
+  const anywhere = file.lineCount < 20 ? FORWARDING_RE.exec(file.content) : null;
+  return anywhere ? { kind: 'prose', pointsTo: anywhere[1]!.toUpperCase() as 'AGENTS' | 'CLAUDE' } : undefined;
+}
+
+function isForwardingFile(file: InstructionFile, files: InstructionFile[] = [], tree?: RepoTree): boolean {
+  return forwardingOf(file, files, tree) !== undefined;
+}
+
+/** Repo-relative POSIX import path from `from`'s directory to `to` (`AGENTS.md`, `../AGENTS.md`). */
+function importPathBetween(from: InstructionFile, to: InstructionFile): string {
+  return path.posix.relative(path.posix.dirname(fileIdPath(from)), fileIdPath(to)) || path.basename(to.path);
+}
+
+/**
+ * How to bring another file's rules into a tool file. Claude Code loads an
+ * `@path` import with the file; a sentence telling Claude to read the file
+ * works only if Claude decides to open it (#184), so CLAUDE.md gets the import.
+ */
+function forwardingAdvice(file: InstructionFile, target: { label: string }, source: InstructionFile): string {
+  if (importingToolFor(file.path) === 'claude-code') {
+    return (
+      `put \`@${importPathBetween(file, source)}\` on a line of its own in ${target.label}: Claude Code loads an ` +
+      `imported file along with the file that imports it, whereas a sentence telling Claude to read ` +
+      `${path.basename(source.path)} works only if Claude decides to open it`
+    );
+  }
+  return `have ${target.label} point to ${path.basename(source.path)}, if that tool is set up to read it`;
 }
 
 // ── Detector ─────────────────────────────────────────────────────────────────
@@ -530,7 +583,75 @@ function claudeXmlTagIssue(names: InstructionFile[]): PromptCiIssue | undefined 
   };
 }
 
-export function detectAgentPractices(files: InstructionFile[], aliases: InstructionFile[] = []): PromptCiIssue[] {
+function pointsToAgents(forwarding: Forwarding): boolean {
+  return forwarding.kind === 'prose' && forwarding.pointsTo === 'AGENTS';
+}
+
+/** The scanned AGENTS.md a CLAUDE.md would import: the one in its own directory, else the shallowest. */
+function agentsFileFor(file: InstructionFile, files: InstructionFile[]): InstructionFile | undefined {
+  const agents = files.filter((f) => path.basename(f.path) === 'AGENTS.md');
+  const dir = path.posix.dirname(fileIdPath(file));
+  const depth = (f: InstructionFile) => fileIdPath(f).split('/').length;
+  return (
+    agents.find((f) => path.posix.dirname(fileIdPath(f)) === dir) ??
+    [...agents].sort((a, b) => depth(a) - depth(b) || (fileIdPath(a) < fileIdPath(b) ? -1 : 1))[0]
+  );
+}
+
+/**
+ * #184: a CLAUDE.md that only tells Claude in words to read AGENTS.md. Claude
+ * Code's memory docs say Claude then sees the file only if it decides to open
+ * it, and recommend an `@AGENTS.md` import. Advice, left out of the score.
+ */
+function prosePointerIssue(file: InstructionFile, agents: InstructionFile): PromptCiIssue {
+  const hash = crypto.createHash('sha1').update(`prose-pointer:${fileIdPath(file)}`).digest('hex').slice(0, 12);
+  const importLine = `@${importPathBetween(file, agents)}`;
+  return {
+    id: `prose-pointer-${hash}`,
+    severity: 'info',
+    category: 'agent_practices',
+    title: `${path.basename(file.path)} points to AGENTS.md in words only`,
+    summary:
+      `${path.basename(file.path)} tells the reader to follow ${path.basename(agents.path)} in a sentence. Claude Code's ` +
+      `docs say that works only if Claude decides to open the file, while an import line loads the file with ` +
+      `${path.basename(file.path)}. This is a suggestion, and it does not count toward the health score.`,
+    filePaths: [file.path],
+    locations: [{ filePath: file.path }],
+    evidence: [`No import line for ${path.basename(agents.path)} found in ${path.basename(file.path)}.`],
+    recommendation:
+      `Consider replacing the sentence with \`${importLine}\` on a line of its own, so Claude Code loads ` +
+      `${path.basename(agents.path)} with this file.`,
+    confidence: 0.6,
+    tags: [UNSCORED_TAG],
+  };
+}
+
+/** #205: the file imports a file the repository holds but this scan could not read. */
+function unreadImportIssue(file: InstructionFile, target: string): PromptCiIssue {
+  const hash = crypto.createHash('sha1').update(`unread-import:${fileIdPath(file)}:${target}`).digest('hex').slice(0, 12);
+  return {
+    id: `unread-import-${hash}`,
+    severity: 'info',
+    category: 'agent_practices',
+    title: `Imported file of ${path.basename(file.path)} was not read`,
+    summary:
+      `${path.basename(file.path)} imports ${target}, which the repository holds, but this scan did not read it, ` +
+      `so whether it carries behavioral guidance was not checked. No guidance gap is reported for ${path.basename(file.path)}.`,
+    filePaths: [file.path],
+    locations: [{ filePath: file.path }],
+    evidence: [`Import: @${target} (exists, content not read)`],
+    recommendation: 'No action needed unless the imported file lacks behavioral rules.',
+    confidence: 0.5,
+    tags: [UNSCORED_TAG],
+  };
+}
+
+export function detectAgentPractices(
+  files: InstructionFile[],
+  aliases: InstructionFile[] = [],
+  /** The scan's view of the repository, to resolve an `@` import of a file outside the scanned set (#205). */
+  tree?: RepoTree,
+): PromptCiIssue[] {
   if (files.length === 0) return [];
   // Files the per-agent checks run over: every scanned file plus the symlink aliases that are a different tool's file.
   const targetFiles = [...files, ...aliasesWithNewTarget(files, aliases)];
@@ -589,7 +710,17 @@ export function detectAgentPractices(files: InstructionFile[], aliases: Instruct
     }
 
     // It lacks behavioral guidance. Is it a forwarding file?
-    if (isForwardingFile(file, files)) continue;
+    const forwarding = forwardingOf(file, files, tree);
+    if (forwarding) {
+      if (forwarding.kind === 'import' && forwarding.unread !== undefined) {
+        issues.push(unreadImportIssue(file, forwarding.unread));
+      }
+      const agentsFile = pointsToAgents(forwarding) ? agentsFileFor(file, files) : undefined;
+      if (importingToolFor(file.path) === 'claude-code' && agentsFile) {
+        issues.push(prosePointerIssue(file, agentsFile));
+      }
+      continue;
+    }
 
     // At least one OTHER file must have behavioral guidance — otherwise the
     // combined-content check already fires and we'd be duplicating the finding.
@@ -597,15 +728,19 @@ export function detectAgentPractices(files: InstructionFile[], aliases: Instruct
     if (!fileWithGuidance) continue;
 
     filesWithNoGuidanceFinding.add(file.path);
+    // #199: a tool-specific file without rules is advice, not a defect. Several
+    // tools read AGENTS.md (or another tool's file) themselves, so whether this
+    // file is the only one a tool reads is the author's call.
     issues.push({
       id: perFileBehaviorIssueId(fileIdPath(file)),
-      severity: 'warning',
+      severity: 'info',
       category: 'agent_practices',
       title: `No behavioral guidance in ${target.label}`,
       summary:
-        `The ${target.label} contains no agent behavioral rules (verification loop, honesty policy, ` +
-        `scope control, read-before-edit). ${target.agent} may rely on this file, so they will have no behavioral ` +
-        `guidance even though another instruction file in the repo contains related rules.`,
+        `The ${target.label} contains none of the behavioral rules PromptCI looks for (verification loop, honesty ` +
+        `policy, scope control, read-before-edit), while ${path.basename(fileWithGuidance.path)} has some. If ` +
+        `${target.agent} reads only this file it may work without them. Several tools also read AGENTS.md ` +
+        `themselves, so this is a suggestion to check, not a defect, and it does not count toward the health score.`,
       filePaths: [file.path],
       locations: [{ filePath: file.path }],
       evidence: [
@@ -613,11 +748,11 @@ export function detectAgentPractices(files: InstructionFile[], aliases: Instruct
         `Some behavioral guidance appears in ${path.basename(fileWithGuidance.path)}.`,
       ],
       recommendation:
-        `Add at minimum: a verification rule ("run tests before saying done"), a scope-control rule ` +
-        `("prefer focused diffs"), a read-before-edit rule, and an honesty policy directly to ` +
-        `${target.label} so behavioral guidance is available in the file this tool reads. ` +
-        `Alternatively, use a forwarding pointer if the tool supports it (e.g., "Follow AGENTS.md").`,
-      confidence: 0.8,
+        `Consider making the rules reach ${target.agent}: either ${forwardingAdvice(file, target, fileWithGuidance)}, ` +
+        `or add the rules to ${target.label} itself (a verification rule, a scope-control rule, a read-before-edit ` +
+        `rule and an honesty policy).`,
+      confidence: 0.5,
+      tags: [UNSCORED_TAG],
     });
   }
 
@@ -633,7 +768,7 @@ export function detectAgentPractices(files: InstructionFile[], aliases: Instruct
       if (file === sourceFile) continue;
       const target = perFileBehaviorTarget(file);
       if (!target) continue;
-      if (isForwardingFile(file, files)) continue;
+      if (isForwardingFile(file, files, tree)) continue;
       // AP4: already covered by the coarser "no behavioral guidance at all"
       // finding above — don't also pile on a granular per-check issue.
       if (filesWithNoGuidanceFinding.has(file.path)) continue;
@@ -644,13 +779,14 @@ export function detectAgentPractices(files: InstructionFile[], aliases: Instruct
         const hash = crypto.createHash('sha1').update(`behavior-gap:${fileIdPath(file)}:${check.id}`).digest('hex').slice(0, 12);
         issues.push({
           id: `per-file-behavioral-gap-${hash}`,
-          severity: 'warning',
+          severity: 'info',
           category: 'agent_practices',
           title: `Missing critical guidance "${check.title.replace('No ', '').replace(' instruction', '')}" in ${target.label}`,
           summary:
             `The ${target.label} lacks the critical behavioral guidance regarding "${checkName}" ` +
-            `which is defined in ${path.basename(sourceFile.path)}. Since ${target.agent} reads ${target.label}, ` +
-            `they will miss this rule.`,
+            `which is defined in ${path.basename(sourceFile.path)}. If ${target.agent} reads only ${target.label}, ` +
+            `it may miss this rule. Several tools also read AGENTS.md themselves, so this is a suggestion to ` +
+            `check, not a defect, and it does not count toward the health score.`,
           filePaths: [file.path, sourceFile.path],
           locations: [{ filePath: file.path }],
           evidence: [
@@ -658,10 +794,11 @@ export function detectAgentPractices(files: InstructionFile[], aliases: Instruct
             `Guidance defined in ${path.basename(sourceFile.path)}.`,
           ],
           recommendation:
-            `Add the missing guidance to ${target.label} (e.g., "${check.recommendation.replace('Add a rule such as: ', '').replace(/"/g, '')}") ` +
-            `or use a forwarding pointer (e.g., "Follow ${path.basename(sourceFile.path)}").`,
+            `Consider adding the missing guidance to ${target.label} (e.g., "${check.recommendation.replace('Add a rule such as: ', '').replace(/"/g, '')}") ` +
+            `or ${forwardingAdvice(file, target, sourceFile)}.`,
           fixRecipe: check.fixRecipe,
-          confidence: 0.8,
+          confidence: 0.5,
+          tags: [UNSCORED_TAG],
         });
       }
     }

@@ -1,0 +1,6 @@
+{
+  "projectType": "typescript",
+  "exclude": [
+    "AGENTS.md"
+  ]
+}
