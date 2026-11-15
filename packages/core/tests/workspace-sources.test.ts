@@ -11,6 +11,7 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import { scan } from '../src/scan.js';
+import { buildRepoContext } from '../src/repo-context.js';
 import { discoverWorkspaceManifests, workspaceGlobSources } from '../src/workspace-manifests.js';
 import { makeTempRepo, writeFile } from './ai-config-helpers.js';
 
@@ -129,6 +130,31 @@ describe('script commands resolve against the package manager workspace source',
       'CLAUDE.md': '# Project\n\n## Commands\n\n- `pnpm --filter a dev`\n- `pnpm --filter b dev`\n',
     });
     expect(found).toEqual([]);
+  });
+});
+
+describe('lockfiles of several managers (#200)', () => {
+  async function workspaceDirs(pkg: Record<string, unknown>, lockfiles: string[]): Promise<string[]> {
+    const repo = repoWith({
+      'package.json': JSON.stringify({ name: 'root', workspaces: ['pkgs-json/*'], ...pkg }),
+      ...Object.fromEntries(lockfiles.map((f) => [f, '{}'])),
+      ...LAYOUT,
+    });
+    const context = await buildRepoContext({ repoPath: repo, projectType: 'typescript' });
+    return (context.workspaces ?? []).map((w) => w.dir).filter((d) => d !== '.').sort();
+  }
+
+  it('two managers\' lockfiles and no packageManager field read as unknown: both sources are read', async () => {
+    expect(await workspaceDirs({}, ['pnpm-lock.yaml', 'package-lock.json'])).toEqual(['pkgs-json/a', 'pkgs-yaml/b']);
+  });
+
+  it('one lockfile decides', async () => {
+    expect(await workspaceDirs({}, ['pnpm-lock.yaml'])).toEqual(['pkgs-yaml/b']);
+    expect(await workspaceDirs({}, ['package-lock.json'])).toEqual(['pkgs-json/a']);
+  });
+
+  it('the packageManager field still wins over a second lockfile', async () => {
+    expect(await workspaceDirs({ packageManager: 'pnpm@9.15.9' }, ['package-lock.json', 'yarn.lock'])).toEqual(['pkgs-yaml/b']);
   });
 });
 

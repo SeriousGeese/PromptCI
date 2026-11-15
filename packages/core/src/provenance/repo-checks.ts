@@ -56,6 +56,7 @@ const PNPM_FILTER = src(
   'pnpm filtering documentation',
   'context',
   'Documents --filter and -F as the workspace selector; it does not define -r or --recursive, so the detector treating pnpm -r as running in every workspace package is not covered by this page.',
+  REREAD_ON,
 );
 const NPM_WORKSPACES = src(
   'https://docs.npmjs.com/cli/v11/using-npm/workspaces',
@@ -191,6 +192,7 @@ const ANGULAR_NGMODULES = src(
   'Angular NgModules overview',
   'supports',
   'Says the Angular team recommends standalone components instead of NgModule for all new code and bootstrapApplication instead of bootstrapModule.',
+  REREAD_ON,
 );
 
 // ── Deprecated packages ───────────────────────────────────────────────────────
@@ -200,12 +202,14 @@ const MOMENT_STATUS = src(
   'Moment.js project status',
   'supports',
   'States that Moment.js is a legacy project in maintenance mode.',
+  REREAD_ON,
 );
 const TSLINT_README = src(
   'https://github.com/palantir/tslint',
   'TSLint repository README',
   'supports',
   'Says TSLint is deprecated, points to ESLint as the replacement, and shows the repository archived on 2021-03-25.',
+  REREAD_ON,
 );
 const LIBSASS_DEPRECATED = src(
   'https://sass-lang.com/blog/libsass-is-deprecated/',
@@ -219,24 +223,28 @@ const REQUEST_ISSUE = src(
   'request issue 3142, consider deprecating',
   'context',
   'Shows the maintainers discussing maintenance mode and deprecation and an npm warning that request has been deprecated quoted in an October 2022 comment; no 2020 deprecation date appears on the page.',
+  REREAD_ON,
 );
 const REQUEST_NPM = src(
   'https://registry.npmjs.org/request/latest',
   'npm registry entry for the latest request release',
   'supports',
   'The registry marks the latest release deprecated with the message: request has been deprecated, see https://github.com/request/request/issues/3142.',
+  REREAD_ON,
 );
 const CRA_SUNSET = src(
   'https://react.dev/blog/2025/02/14/sunsetting-create-react-app',
   'React blog, sunsetting Create React App',
   'supports',
   'Announces on 2025-02-14 that Create React App is deprecated for new apps and in maintenance mode; the page never names the react-scripts package.',
+  REREAD_ON,
 );
 const ENZYME_README = src(
   'https://github.com/enzymejs/enzyme',
   'Enzyme repository README',
   'context',
   'Lists adapters only up to enzyme-adapter-react-16 and states no maintenance status or React 17 or 18 adapter, so it neither confirms nor refutes that Enzyme is unmaintained.',
+  REREAD_ON,
 );
 const VUE2_EOL = src(
   'https://v2.vuejs.org/',
@@ -412,6 +420,7 @@ const CLAUDE_SETTINGS_REFERENCE = src(
   'Claude Code settings reference',
   'context',
   'Lists respectGitignore only as keeping gitignored files out of the @ file picker and shows no setting making gitignore govern file reads, which are controlled by permissions.deny rules.',
+  REREAD_ON,
 );
 const CLAUDE_MEMORY = src(
   'https://code.claude.com/docs/en/memory',
