@@ -121,8 +121,8 @@ export type InstructionFile = {
  * never re-derives detection logic (and never walks the repository again).
  *
  * `find` must occur EXACTLY ONCE on line `line` of `filePath`. Both the
- * detector and the fix engine check that: the detector so a finding is never
- * advertised as auto-applicable when the edit is ambiguous, the engine so an
+ * detector and the fix engine check that: the detector so a finding never
+ * carries an edit that is ambiguous, the engine so an
  * edit computed against a file that has since changed is refused rather than
  * applied to the wrong text. An issue whose edits cannot all be applied
  * cleanly produces no change at all — never a partial rewrite.
@@ -162,8 +162,10 @@ export type PromptCiIssue = {
    * finding, computed by the detector. Present only on the recipes that work
    * this way (a mistyped package script, a moved link target); the older
    * recipes (.gitignore stanzas, duplicate consolidation) are recomputed from
-   * the issue inside the fix engine and carry none. Never set without
-   * `autoApplySafe`.
+   * the issue inside the fix engine and carry none. Always set together with
+   * `autoApplySafe`: `true` for a moved link, `false` for a script rename,
+   * which is applied only on an explicit opt-in (pcic-1ik0.18, see
+   * `isScriptRenameRecipe`).
    */
   fixEdits?: FixEdit[];
   confidence: number;

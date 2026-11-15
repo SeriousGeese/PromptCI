@@ -84,17 +84,17 @@ describe('a rename between two real script names is never applied unattended', (
     expect(await unattended(repo, issues)).toBe(0);
     expect(fs.readFileSync(path.join(repo, 'AGENTS.md'), 'utf-8')).toBe(text);
 
-    // Named, the edit applies wherever the rules offered one.
-    if (isScriptRenameRecipe(issue)) {
-      expect(requiresOptIn(issue)).toBe(true);
-      expect(issue.recommendation).toContain(`promptci fix --issue ${issue.id}`);
-      for (const change of await applyFixRecipe(issue, repo, { optIn: true })) {
-        fs.writeFileSync(change.filePath, change.newContent, 'utf-8');
-      }
-      expect(fs.readFileSync(path.join(repo, 'AGENTS.md'), 'utf-8')).toBe(
-        text.replace(`npm run ${written}`, `npm run ${defined}`),
-      );
+    // Every listed pair still carries the edit (that is what made it a live
+    // risk); named, it applies.
+    expect(isScriptRenameRecipe(issue)).toBe(true);
+    expect(requiresOptIn(issue)).toBe(true);
+    expect(issue.recommendation).toContain(`promptci fix --issue ${issue.id}`);
+    for (const change of await applyFixRecipe(issue, repo, { optIn: true })) {
+      fs.writeFileSync(change.filePath, change.newContent, 'utf-8');
     }
+    expect(fs.readFileSync(path.join(repo, 'AGENTS.md'), 'utf-8')).toBe(
+      text.replace(`npm run ${written}`, `npm run ${defined}`),
+    );
   });
 
   it('gates on the category and the edit, not on autoApplySafe: a stored finding from an older core is not applied', async () => {
