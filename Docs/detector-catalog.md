@@ -5,10 +5,10 @@ One row per entry of `DETECTORS` in [`packages/core/src/detectors.ts`](../packag
 
 ## Suppressing a finding
 
-Every detector's findings can be silenced in place with an inline annotation placed in the instruction file next to the content, naming the finding's `category` (shown on every finding in the report) or `all`, and a required reason:
+`promptci-ignore` takes a finding **category**, not a detector id. A category is shared by several detectors (for example `conflict` covers `conflicts`, `version-conflicts` and `cross-tool-parity`), and one detector can emit more than one. The "Suppress with" column lists the categories each detector emits; every finding also shows its `category` in the report. Place the annotation in the instruction file next to the content, with a required reason, or use `all`:
 
 ```markdown
-<!-- promptci-ignore: <category>
+<!-- promptci-ignore: vague_guidance
      reason: why this is intentional -->
 ```
 
@@ -18,41 +18,41 @@ Use `promptci-ignore-start` / `promptci-ignore-end` for a range. An annotation w
 
 Provenance for each detector's claims lives in [check-provenance.md](check-provenance.md). The last column is where the detector is exercised: fixtures under `examples/`, and the unit-test file where no fixture is dedicated to it.
 
-| Detector | What it checks | Fixtures / tests |
-| --- | --- | --- |
-| `duplicates` | Duplicate or near-duplicate instruction sections, within and across files; mirrored files are grouped once. | [`fixture-mirrored-instructions`](../examples/fixture-mirrored-instructions/)<br>[`fixture-mirrored-drift`](../examples/fixture-mirrored-drift/)<br>[`fixture-conflicts`](../examples/fixture-conflicts/) |
-| `duplicate-headings` | The same heading repeated within one instruction file. | [`fixture-conflicts`](../examples/fixture-conflicts/) |
-| `within-section-dedup` | A single long section that restates the same point in several paragraphs. | [`within-section-dedup.test.ts`](../packages/core/tests/within-section-dedup.test.ts) |
-| `conflicts` | Contradictory directives (do/don't pairs, tool files that disagree with AGENTS.md). | [`fixture-conflicts`](../examples/fixture-conflicts/)<br>[`fixture-mirrored-drift`](../examples/fixture-mirrored-drift/) |
-| `version-conflicts` | Different instruction files naming different versions of the same framework or runtime. | [`conflicts.test.ts`](../packages/core/tests/conflicts.test.ts) |
-| `competing-tech-conflicts` | Different instruction files recommending mutually exclusive technologies for the same job. | [`conflicts.test.ts`](../packages/core/tests/conflicts.test.ts) |
-| `context-bloat` | Instruction files, and the total, that exceed size or token budgets. | [`context-bloat.test.ts`](../packages/core/tests/context-bloat.test.ts) |
-| `stale-instructions` | Old years, dated TODOs, deprecated wording and outdated versions. | [`fixture-suppression`](../examples/fixture-suppression/) |
-| `command-validity` | Documented package scripts, `make` targets and commands that do not exist. | [`fixture-command-scope`](../examples/fixture-command-scope/)<br>[`fixture-script-name-closers`](../examples/fixture-script-name-closers/)<br>[`fixture-fix-recipes`](../examples/fixture-fix-recipes/)<br>[`fixture-monorepo-scripts`](../examples/fixture-monorepo-scripts/) |
-| `missing-context` | No setup, build, test or project-specific guidance where an agent needs it. | [`fixture-basic`](../examples/fixture-basic/)<br>[`fixture-no-instructions`](../examples/fixture-no-instructions/) |
-| `manifest-consistency` | Instructions that disagree with package.json or pyproject.toml. | [`fixture-monorepo-scripts`](../examples/fixture-monorepo-scripts/) |
-| `dependency-staleness` | Packages and version-gated APIs the instructions name that the manifest does not support, or that are end-of-life. | [`fixture-dependency-staleness`](../examples/fixture-dependency-staleness/) |
-| `vague-guidance` | Guidance too generic to act on ("write clean code"). | [`fixture-basic`](../examples/fixture-basic/)<br>[`fixture-suppression`](../examples/fixture-suppression/) |
-| `dead-references` | Local files and directories the instructions mention that no longer exist. | [`fixture-dead-ref-resolution`](../examples/fixture-dead-ref-resolution/)<br>[`fixture-moved-refs`](../examples/fixture-moved-refs/)<br>[`fixture-stale-paths`](../examples/fixture-stale-paths/)<br>[`fixture-path-references`](../examples/fixture-path-references/) |
-| `agent-practices` | Common practices (a verification loop, "ask when unsure") that no instruction file mentions. | [`fixture-basic`](../examples/fixture-basic/) |
-| `canonical-owner` | Instruction files that each claim to be the canonical source, or that forward authority to a file that does not claim it. | [`canonical-owner.test.ts`](../packages/core/tests/canonical-owner.test.ts) |
-| `cross-tool-parity` | Instruction files for different AI tools that drift apart. | [`fixture-cross-tool-parity`](../examples/fixture-cross-tool-parity/)<br>[`fixture-cross-tool-parity-clean`](../examples/fixture-cross-tool-parity-clean/)<br>[`fixture-cross-tool-parity-no-anchor`](../examples/fixture-cross-tool-parity-no-anchor/) |
-| `ci-alignment` | Instructions that disagree with the project's GitHub Actions workflows. | [`fixture-grouped-findings`](../examples/fixture-grouped-findings/)<br>[`fixture-dead-ref-resolution`](../examples/fixture-dead-ref-resolution/) |
-| `security-pack` | Security and privacy gaps in instruction guidance. | [`fixture-basic`](../examples/fixture-basic/) |
-| `action-pinning` | GitHub Actions `uses:` references pinned to a tag or branch instead of a commit SHA. Detect-only. | [`fixture-agent-formats`](../examples/fixture-agent-formats/)<br>[`fixture-grouped-findings`](../examples/fixture-grouped-findings/)<br>[`fixture-grouped-findings-clean`](../examples/fixture-grouped-findings-clean/) |
-| `framework-packs` | Framework-specific checks; see "Framework packs" below. | [`fixture-unity`](../examples/fixture-unity/)<br>[`fixture-dependency-staleness`](../examples/fixture-dependency-staleness/) |
-| `prompt-cache-friendliness` | Volatile content that defeats prompt caching and inflates the cost of every turn. | [`prompt-cache.test.ts`](../packages/core/tests/prompt-cache.test.ts) |
-| `ai-config-skills` | Agent Skills (SKILL.md) checked against filesystem reality. | [`fixture-path-references`](../examples/fixture-path-references/)<br>[`skills-detector.test.ts`](../packages/core/tests/skills-detector.test.ts) |
-| `skill-supply-chain` | Skill files and bundled scripts, read as text and never executed, for fetch-and-execute installers, credential exfiltration, hidden text and unpinned remote dependencies. | [`fixture-skill-supply-chain`](../examples/fixture-skill-supply-chain/) |
-| `ai-config-subagents` | Subagent definitions checked against filesystem reality. | [`subagents-detector.test.ts`](../packages/core/tests/subagents-detector.test.ts) |
-| `ai-config-hooks-settings` | Hooks and settings files checked against filesystem reality. | [`hooks-settings-detector.test.ts`](../packages/core/tests/hooks-settings-detector.test.ts) |
-| `ai-config-mcp` | `.mcp.json` server entries checked against filesystem reality. | [`mcp-config-detector.test.ts`](../packages/core/tests/mcp-config-detector.test.ts) |
-| `ai-config-cursor-rules` | Cursor `.mdc` rules checked against filesystem reality. | [`fixture-cross-tool-parity-clean`](../examples/fixture-cross-tool-parity-clean/)<br>[`cursor-rules-detector.test.ts`](../packages/core/tests/cursor-rules-detector.test.ts) |
-| `ai-config-copilot-instructions` | GitHub Copilot instruction files checked against filesystem reality. | [`copilot-instructions-detector.test.ts`](../packages/core/tests/copilot-instructions-detector.test.ts) |
-| `ai-config-windsurf-rules` | Windsurf rules checked against filesystem reality. | [`windsurf-detector.test.ts`](../packages/core/tests/windsurf-detector.test.ts) |
-| `negative-instructions` | Files whose directives are mostly prohibitions rather than positive guidance. | [`negative-instructions.test.ts`](../packages/core/tests/negative-instructions.test.ts) |
-| `buried-critical` | High-stakes instructions (never, must not, security) concentrated in the bottom half of a long file. | [`buried-critical.test.ts`](../packages/core/tests/buried-critical.test.ts) |
-| `custom-rules` | Repository-defined rules from `.promptci/config.json`; see [custom-rules.md](custom-rules.md). | [`fixture-custom-rules`](../examples/fixture-custom-rules/) |
+| Detector | What it checks | Suppress with | Fixtures / tests |
+| --- | --- | --- | --- |
+| `duplicates` | Duplicate or near-duplicate instruction sections, within and across files; mirrored files are grouped once. | `duplicate` | [`fixture-mirrored-instructions`](../examples/fixture-mirrored-instructions/)<br>[`fixture-mirrored-drift`](../examples/fixture-mirrored-drift/)<br>[`fixture-conflicts`](../examples/fixture-conflicts/) |
+| `duplicate-headings` | The same heading repeated within one instruction file. | `duplicate` | [`fixture-conflicts`](../examples/fixture-conflicts/) |
+| `within-section-dedup` | A single long section that restates the same point in several paragraphs. | `duplicate` | [`within-section-dedup.test.ts`](../packages/core/tests/within-section-dedup.test.ts) |
+| `conflicts` | Contradictory directives (do/don't pairs, tool files that disagree with AGENTS.md). | `conflict` | [`fixture-conflicts`](../examples/fixture-conflicts/)<br>[`fixture-mirrored-drift`](../examples/fixture-mirrored-drift/) |
+| `version-conflicts` | Different instruction files naming different versions of the same framework or runtime. | `conflict` | [`conflicts.test.ts`](../packages/core/tests/conflicts.test.ts) |
+| `competing-tech-conflicts` | Different instruction files recommending mutually exclusive technologies for the same job. | `conflict` | [`conflicts.test.ts`](../packages/core/tests/conflicts.test.ts) |
+| `context-bloat` | Instruction files, and the total, that exceed size or token budgets. | `context_bloat` | [`context-bloat.test.ts`](../packages/core/tests/context-bloat.test.ts) |
+| `stale-instructions` | Old years, dated TODOs, deprecated wording and outdated versions. | `stale_instruction` | [`fixture-suppression`](../examples/fixture-suppression/) |
+| `command-validity` | Documented package scripts, `make` targets and commands that do not exist. | `command_validity` | [`fixture-command-scope`](../examples/fixture-command-scope/)<br>[`fixture-script-name-closers`](../examples/fixture-script-name-closers/)<br>[`fixture-fix-recipes`](../examples/fixture-fix-recipes/)<br>[`fixture-monorepo-scripts`](../examples/fixture-monorepo-scripts/) |
+| `missing-context` | No setup, build, test or project-specific guidance where an agent needs it. | `missing_context` | [`fixture-basic`](../examples/fixture-basic/)<br>[`fixture-no-instructions`](../examples/fixture-no-instructions/) |
+| `manifest-consistency` | Instructions that disagree with package.json or pyproject.toml. | `conflict`, `stale_instruction` | [`fixture-monorepo-scripts`](../examples/fixture-monorepo-scripts/) |
+| `dependency-staleness` | Packages an install command or import names that no `package.json` declares; end-of-life packages (moment, request, tslint, node-sass, react-scripts, enzyme); version-gated APIs (`ReactDOM.render` on React 18+, `getInitialProps` in an app-router Next.js project, NgModule guidance where standalone components are the default). | `stale_instruction` | [`fixture-dependency-staleness`](../examples/fixture-dependency-staleness/) |
+| `vague-guidance` | Guidance too generic to act on ("write clean code"). | `vague_guidance` | [`fixture-basic`](../examples/fixture-basic/)<br>[`fixture-suppression`](../examples/fixture-suppression/) |
+| `dead-references` | Local files and directories the instructions mention that no longer exist. | `structure` | [`fixture-dead-ref-resolution`](../examples/fixture-dead-ref-resolution/)<br>[`fixture-moved-refs`](../examples/fixture-moved-refs/)<br>[`fixture-stale-paths`](../examples/fixture-stale-paths/)<br>[`fixture-path-references`](../examples/fixture-path-references/) |
+| `agent-practices` | Common practices (a verification loop, "ask when unsure") that no instruction file mentions. | `agent_practices`, `structure` | [`fixture-basic`](../examples/fixture-basic/) |
+| `canonical-owner` | Instruction files that each claim to be the canonical source, or that forward authority to a file that does not claim it. | `duplicate`, `structure` | [`canonical-owner.test.ts`](../packages/core/tests/canonical-owner.test.ts) |
+| `cross-tool-parity` | Instruction files for different AI tools that drift apart. | `conflict` | [`fixture-cross-tool-parity`](../examples/fixture-cross-tool-parity/)<br>[`fixture-cross-tool-parity-clean`](../examples/fixture-cross-tool-parity-clean/)<br>[`fixture-cross-tool-parity-no-anchor`](../examples/fixture-cross-tool-parity-no-anchor/) |
+| `ci-alignment` | Instructions that disagree with the project's GitHub Actions workflows. | `conflict`, `missing_context`, `stale_instruction` | [`fixture-grouped-findings`](../examples/fixture-grouped-findings/)<br>[`fixture-dead-ref-resolution`](../examples/fixture-dead-ref-resolution/) |
+| `security-pack` | Security and privacy gaps in instruction guidance. | `security`, `context_bloat` | [`fixture-basic`](../examples/fixture-basic/) |
+| `action-pinning` | GitHub Actions `uses:` references pinned to a tag or branch instead of a commit SHA. Detect-only. | `security` | [`fixture-agent-formats`](../examples/fixture-agent-formats/)<br>[`fixture-grouped-findings`](../examples/fixture-grouped-findings/)<br>[`fixture-grouped-findings-clean`](../examples/fixture-grouped-findings-clean/) |
+| `framework-packs` | Framework-specific checks; see "Framework packs" below. | `stale_instruction`, `conflict`, `structure` | [`fixture-unity`](../examples/fixture-unity/)<br>[`fixture-dependency-staleness`](../examples/fixture-dependency-staleness/) |
+| `prompt-cache-friendliness` | Volatile content that defeats prompt caching and inflates the cost of every turn. | `context_bloat` | [`prompt-cache.test.ts`](../packages/core/tests/prompt-cache.test.ts) |
+| `ai-config-skills` | Agent Skills (SKILL.md) checked against filesystem reality. | `ai_config` | [`fixture-path-references`](../examples/fixture-path-references/)<br>[`skills-detector.test.ts`](../packages/core/tests/skills-detector.test.ts) |
+| `skill-supply-chain` | SKILL.md files and bundled scripts under `.claude/`, `.agents/skills/` and plugin `skills/` directories, read as text and never executed, for fetch-and-execute installers, credential exfiltration, hidden text and unpinned remote dependencies. | `ai_config`, `security` | [`fixture-skill-supply-chain`](../examples/fixture-skill-supply-chain/) |
+| `ai-config-subagents` | Subagent definitions checked against filesystem reality. | `ai_config` | [`subagents-detector.test.ts`](../packages/core/tests/subagents-detector.test.ts) |
+| `ai-config-hooks-settings` | Hooks and settings files checked against filesystem reality. | `ai_config` | [`hooks-settings-detector.test.ts`](../packages/core/tests/hooks-settings-detector.test.ts) |
+| `ai-config-mcp` | `.mcp.json` server entries checked against filesystem reality. | `ai_config` | [`mcp-config-detector.test.ts`](../packages/core/tests/mcp-config-detector.test.ts) |
+| `ai-config-cursor-rules` | Cursor `.mdc` rules checked against filesystem reality. | `ai_config` | [`fixture-cross-tool-parity-clean`](../examples/fixture-cross-tool-parity-clean/)<br>[`cursor-rules-detector.test.ts`](../packages/core/tests/cursor-rules-detector.test.ts) |
+| `ai-config-copilot-instructions` | GitHub Copilot instruction files checked against filesystem reality. | `ai_config` | [`copilot-instructions-detector.test.ts`](../packages/core/tests/copilot-instructions-detector.test.ts) |
+| `ai-config-windsurf-rules` | Windsurf rules checked against filesystem reality. | `ai_config` | [`windsurf-detector.test.ts`](../packages/core/tests/windsurf-detector.test.ts) |
+| `negative-instructions` | Files whose directives are mostly prohibitions rather than positive guidance. | `agent_practices` | [`negative-instructions.test.ts`](../packages/core/tests/negative-instructions.test.ts) |
+| `buried-critical` | High-stakes instructions (never, must not, security) concentrated in the bottom half of a long file. | `structure` | [`buried-critical.test.ts`](../packages/core/tests/buried-critical.test.ts) |
+| `custom-rules` | Repository-defined rules from `.promptci/config.json`; see [custom-rules.md](custom-rules.md). | `custom` | [`fixture-custom-rules`](../examples/fixture-custom-rules/) |
 
 ## Framework packs
 

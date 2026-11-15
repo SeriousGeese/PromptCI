@@ -118,8 +118,9 @@ jobs:
           fi
         shell: bash
 
-      # MUST be the first step: every later step and scripts/pr-review.sh invoke
-      # $GH_CLI, and a gh that does not resolve makes has_do_not_merge_label()
+      # MUST come before every step that calls gh (the reviewer-key check above
+      # runs first and never calls $GH_CLI): every later step and
+      # scripts/pr-review.sh invoke $GH_CLI, and a gh that does not resolve makes has_do_not_merge_label()
       # fail closed (rc=127 -> held_label_lookup_failed), silently holding a PR
       # that nobody labelled. Resolve gh on the runner that is ACTUALLY
       # executing rather than trusting a repo-wide variable (DnD-krocc).
