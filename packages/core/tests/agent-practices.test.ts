@@ -539,7 +539,7 @@ describe('detectAgentPractices — BUG-007 cursor per-file gap', () => {
         i.title.toLowerCase().includes('behavioral'),
     );
     expect(perFileIssue).toBeDefined();
-    expect(perFileIssue!.severity).toBe('warning');
+    expect(perFileIssue!.severity).toBe('info');
   });
 
   it('does NOT flag .cursorrules that already has behavioral guidance', () => {
@@ -657,7 +657,7 @@ describe('detectAgentPractices — per-file behavioral gaps', () => {
     const perFileIssue = issues.find((i) => i.title === 'No behavioral guidance in CLAUDE.md');
 
     expect(perFileIssue).toBeDefined();
-    expect(perFileIssue!.severity).toBe('warning');
+    expect(perFileIssue!.severity).toBe('info');
     expect(perFileIssue!.filePaths).toEqual(['/repo/CLAUDE.md']);
     expect(perFileIssue!.evidence).toContain('Some behavioral guidance appears in AGENTS.md.');
   });
@@ -700,7 +700,7 @@ describe('detectAgentPractices — per-file behavioral gaps', () => {
     );
 
     expect(perFileIssue).toBeDefined();
-    expect(perFileIssue!.severity).toBe('warning');
+    expect(perFileIssue!.severity).toBe('info');
     expect(perFileIssue!.filePaths).toEqual(['/repo/.github/copilot-instructions.md']);
     expect(perFileIssue!.evidence).toContain('Some behavioral guidance appears in AGENTS.md.');
   });
@@ -833,7 +833,7 @@ describe('detectAgentPractices — placement detector extensions', () => {
       (i) => i.title.includes('Missing critical guidance') && i.title.includes('read before edit')
     );
     expect(missingReadIssue).toBeDefined();
-    expect(missingReadIssue!.severity).toBe('warning');
+    expect(missingReadIssue!.severity).toBe('info');
     expect(missingReadIssue!.fixRecipe).toBe('Read a file before editing it. Preserve unrelated user changes.');
   });
 });

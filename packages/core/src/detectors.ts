@@ -112,7 +112,7 @@ export const DETECTORS: DetectorDefinition[] = [
   },
   {
     id: 'agent-practices',
-    run: (context) => detectAgentPractices(context.files, context.aliasFiles),
+    run: (context) => detectAgentPractices(context.files, context.aliasFiles, context.tree),
   },
   {
     id: 'canonical-owner',

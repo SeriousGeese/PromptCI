@@ -1,8 +1,10 @@
 # CLAUDE.md
 
-Follow **AGENTS.md** ([open](AGENTS.md)) — it is the canonical guide for agents working in this
-repo (how to work, the determinism constraint, and the self-scan gate). This file only adds a few
-Claude-specific notes; it does not restate those rules.
+@AGENTS.md
+
+The import above loads **AGENTS.md** ([open](AGENTS.md)), the canonical guide for agents working
+in this repo (how to work, the determinism constraint, and the self-scan gate). This file only
+adds a few Claude-specific notes; it does not restate those rules.
 
 ## Claude-specific notes
 
