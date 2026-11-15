@@ -21,14 +21,16 @@ function all(root: string): PromptCiIssue[] {
 describe('ai-config vendor-docs fixtures (issues #176, #177, #191-#196)', () => {
   it('stays clean on configuration the Claude Code docs describe as valid', () => {
     // fable model, Agent(...)/Task(...)/Skill/LSP/... tools, nested hooks/mcpServers/experimental/metadata,
-    // an unknown skill key, an exec-form hook with an unquoted placeholder, and url-only and typed MCP entries.
+    // an unknown skill key, an exec-form hook with a braced placeholder, and typed http MCP entries.
     expect(all(CLEAN).map((i) => `${i.id} ${i.title}`)).toEqual([]);
   });
 
   it('still reports what remains a finding or a hint', () => {
     const titles = all(HINTS).map((i) => i.title).sort();
     expect(titles).toEqual([
+      'MCP server has a url but no type',
       'MCP server has neither a command nor a url',
+      'Exec-form hook uses an unbraced $CLAUDE_PROJECT_DIR',
       'Hook uses an unquoted $CLAUDE_PROJECT_DIR path',
       'Skill `description` is too short to trigger reliably',
       'Skill `name` does not match its directory',

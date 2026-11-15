@@ -41,12 +41,24 @@ const SURFACE: FrontmatterSurface = {
 };
 
 /**
- * Values the subagents docs list for `model`: `sonnet`, `opus`, `haiku`, `fable`,
- * a full model ID, or `inherit`. `default` and `opusplan` are session-level model
- * settings the page does not list for subagents, so they are not accepted here.
- * Full `claude-*` ids also pass.
+ * Values accepted for `model`. The subagents page lists `sonnet`, `opus`, `haiku`, `fable`,
+ * `inherit` and "a full model ID ... a value the `--model` flag accepts", so `default` and
+ * `opusplan` (also `--model` values) pass silently.
  */
-const KNOWN_MODEL_ALIASES = new Set(['sonnet', 'opus', 'haiku', 'fable', 'inherit']);
+const KNOWN_MODEL_ALIASES = new Set(['sonnet', 'opus', 'haiku', 'fable', 'inherit', 'default', 'opusplan']);
+
+/** A `--model` style id: `claude-*` (also Vertex `claude-…@date`), Bedrock `[us.]anthropic.claude-…` or an ARN. */
+const PROVIDER_MODEL_ID_RE = /^(?:claude-|(?:[a-z]{2,4}\.)?anthropic\.claude-|arn:aws[\w-]*:bedrock:)/i;
+
+/** Drops a context-window suffix such as `[1m]` (`opus[1m]`, `claude-opus-5-5[1m]`). */
+function stripModelSuffix(model: string): string {
+  return model.replace(/\[[^\]]*\]$/, '');
+}
+
+function isKnownModel(model: string): boolean {
+  const base = stripModelSuffix(model.trim());
+  return KNOWN_MODEL_ALIASES.has(base.toLowerCase()) || PROVIDER_MODEL_ID_RE.test(base);
+}
 
 /**
  * Tool names the Claude Code tools reference lists (code.claude.com/docs/en/tools-reference).
@@ -164,16 +176,17 @@ export function detectSubagents(context: RepoContext): PromptCiIssue[] {
 
     // Unknown model alias.
     const model = typeof fm.data.model === 'string' ? fm.data.model.trim() : undefined;
-    if (model && !KNOWN_MODEL_ALIASES.has(model.toLowerCase()) && !/^claude-/i.test(model)) {
+    if (model && !isKnownModel(model)) {
       issues.push(base({
+        severity: 'info',
         id: id('unknown-model', `${filePath}|${model}`),
         title: 'Subagent references an unrecognized model',
-        summary: `${filePath}: \`model: ${model}\` is not one of the values the Claude Code subagents docs list (sonnet, opus, haiku, fable, inherit) or a full \`claude-*\` model id.`,
+        summary: `${filePath}: \`model: ${model}\` is not an alias the Claude Code subagents docs list (sonnet, opus, haiku, fable, inherit) or a model id this check recognises (\`claude-*\`, Bedrock or Vertex ids), so it may be a typo.`,
         filePaths: [filePath],
         locations: [{ filePath, startLine: fm.keyLines.model ?? 1, endLine: fm.keyLines.model ?? 1 }],
         evidence: [`model: ${model}`],
-        recommendation: 'Use sonnet, opus, haiku, fable, inherit or a full model id, or remove `model` to use the default subagent model order.',
-        confidence: 0.5,
+        recommendation: 'If this is not an intended custom model id, use sonnet, opus, haiku, fable, inherit or a full model id, or remove `model` to use the default subagent model order.',
+        confidence: 0.4,
       }));
     }
 

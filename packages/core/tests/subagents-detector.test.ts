@@ -92,23 +92,26 @@ describe('detectSubagents', () => {
     expect(issues.some((i) => i.title.includes('near-identical'))).toBe(false);
   });
 
-  it('accepts every model value the subagents docs list, plus claude-* ids', () => {
+  it('accepts every model value the subagents docs list, --model values, [1m] suffixes and provider ids', () => {
     const dir = repo();
-    for (const model of ['sonnet', 'opus', 'haiku', 'fable', 'inherit', 'Fable', 'claude-opus-5-5']) {
-      writeFile(dir, `.claude/agents/m-${model.toLowerCase()}.md`,
-        agent('m', [`name: m-${model.toLowerCase()}`, 'description: does a thing', `model: ${model}`], `unique body for ${model}`));
-    }
+    const models = [
+      'sonnet', 'opus', 'haiku', 'fable', 'inherit', 'Fable', 'claude-opus-5-5', 'default', 'opusplan',
+      'opus[1m]', 'claude-sonnet-5[1m]', 'us.anthropic.claude-sonnet-4-5-v1:0', 'anthropic.claude-3-haiku',
+      'arn:aws:bedrock:us-east-1:123456789012:inference-profile/x', 'claude-sonnet-4@20250514',
+    ];
+    models.forEach((model, n) => {
+      writeFile(dir, `.claude/agents/m${n}.md`,
+        agent('m', [`name: m${n}`, 'description: does a thing', `model: '${model}'`], `unique body for ${model}`));
+    });
     expect(detectSubagents(ctx(dir)).filter((i) => i.title.includes('unrecognized model'))).toEqual([]);
   });
 
-  it('flags model values the docs do not list for subagents (default, opusplan)', () => {
+  it('reports a value that is still unknown at info severity', () => {
     const dir = repo();
-    for (const model of ['default', 'opusplan']) {
-      writeFile(dir, `.claude/agents/${model}.md`,
-        agent(model, [`name: ${model}`, 'description: does a thing', `model: ${model}`], `unique body for ${model}`));
-    }
+    writeFile(dir, '.claude/agents/g.md', agent('g', ['name: g', 'description: does a thing', 'model: gpt-5[1m]'], 'unique body'));
     const flagged = detectSubagents(ctx(dir)).filter((i) => i.title.includes('unrecognized model'));
-    expect(flagged.length).toBe(2);
+    expect(flagged.length).toBe(1);
+    expect(flagged[0]!.severity).toBe('info');
   });
 
   it('accepts current, parenthesised and legacy tool names', () => {

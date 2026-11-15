@@ -1,7 +1,7 @@
 ---
 name: loose
 description: Does a thing for the team when asked.
-model: opusplan
+model: gpt-5
 tools: Read, Bananas
 ---
 You are a helper agent. Read the request first.

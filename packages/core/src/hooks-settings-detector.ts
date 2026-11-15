@@ -8,7 +8,9 @@
  *  - Dangerous hook patterns: piping a remote download straight into a shell
  *    (`curl … | sh`), and unquoted `$CLAUDE_PROJECT_DIR` path expansions in a
  *    shell-form command. A hook with `args` set runs in exec form (no shell), so
- *    its placeholders need no quoting and are never reported.
+ *    its placeholders need no quoting; instead an unbraced `$CLAUDE_PROJECT_DIR`
+ *    there is reported, because exec form has no shell to expand it and the docs
+ *    document substitution only for `${CLAUDE_PROJECT_DIR}`.
  *
  * Hook commands run automatically on tool events, so a broken or unsafe command
  * is higher-stakes than a stale doc line. Deterministic and offline.
@@ -31,7 +33,7 @@ import { treeFor } from './repo-tree.js';
 const CURL_PIPE_SH_RE = /\b(curl|wget)\b[^|]*\|\s*(sudo\s+)?(sh|bash|zsh|dash)\b/i;
 
 /** `exec` is true when `args` is set: Claude Code spawns the command directly, with no shell. */
-type CommandHook = { command: string; event: string; exec: boolean };
+type CommandHook = { command: string; event: string; exec: boolean; args: string[] };
 
 function id(kind: string, key: string): string {
   return `ai-config-hook-${kind}-${shortHash(key)}`;
@@ -46,7 +48,12 @@ function collectCommandHooks(hooks: unknown, event: string, out: CommandHook[]):
   if (typeof hooks !== 'object' || hooks === null) return;
   const obj = hooks as Record<string, unknown>;
   if (obj.type === 'command' && typeof obj.command === 'string') {
-    out.push({ command: obj.command, event, exec: Array.isArray(obj.args) });
+    out.push({
+      command: obj.command,
+      event,
+      exec: Array.isArray(obj.args),
+      args: Array.isArray(obj.args) ? obj.args.filter((a): a is string => typeof a === 'string') : [],
+    });
   }
   for (const [key, value] of Object.entries(obj)) {
     // When we recurse from the top-level `hooks` map, the key names the event
@@ -147,6 +154,9 @@ function insideQuotes(command: string, index: number): boolean {
   return quote !== '';
 }
 
+/** `$CLAUDE_PROJECT_DIR` with no braces (`${CLAUDE_PROJECT_DIR}` does not match). */
+const UNBRACED_PROJECT_DIR_RE = /\$CLAUDE_PROJECT_DIR(?![\w])/;
+
 /** Finds a `$CLAUDE_PROJECT_DIR/...` expansion that no quote region protects. */
 function hasUnquotedProjectDir(command: string): boolean {
   for (const m of command.matchAll(/\$\{?CLAUDE_PROJECT_DIR\}?[/\\]/g)) {
@@ -191,7 +201,7 @@ export function detectHooksSettings(context: RepoContext): PromptCiIssue[] {
     collectCommandHooks(hooks, '', commandHooks);
 
     const reportedMissing = new Set<string>();
-    for (const { command, event, exec } of commandHooks) {
+    for (const { command, event, exec, args } of commandHooks) {
       const line = lineOf(raw, command);
 
       // Dangerous: remote download piped into a shell.
@@ -224,6 +234,22 @@ export function detectHooksSettings(context: RepoContext): PromptCiIssue[] {
           recommendation:
             'Wrap the placeholder in double quotes, e.g. `"$CLAUDE_PROJECT_DIR"/script.sh`, or switch to exec form by setting `args` ' +
             '(then `command` is the executable and each `args` element is one argument, with no quoting).',
+          confidence: 0.5,
+        }));
+      }
+
+      // Exec form has no shell, so only the braced `${CLAUDE_PROJECT_DIR}` placeholder is substituted
+      // (into `command` and each `args` element); an unbraced `$CLAUDE_PROJECT_DIR` is passed through as text.
+      if (exec && [command, ...args].some((part) => UNBRACED_PROJECT_DIR_RE.test(part))) {
+        issues.push(base({
+          id: id('exec-unbraced-project-dir', `${filePath}|${command}|${args.join('\u0000')}`),
+          severity: 'info',
+          title: 'Exec-form hook uses an unbraced $CLAUDE_PROJECT_DIR',
+          summary: `A ${event || 'hook'} command in ${filePath} sets \`args\` (exec form, no shell) and uses \`$CLAUDE_PROJECT_DIR\` without braces; the hooks docs describe substitution only for \`\${CLAUDE_PROJECT_DIR}\`, so the unbraced text may be passed through literally.`,
+          filePaths: [filePath],
+          locations: [{ filePath, startLine: line, endLine: line }],
+          evidence: [`Command: ${command.slice(0, 160)}`, `Args: ${args.join(' ').slice(0, 160)}`],
+          recommendation: 'Use the braced placeholder `${CLAUDE_PROJECT_DIR}` in `command` and `args`; no quoting is needed in exec form.',
           confidence: 0.5,
         }));
       }

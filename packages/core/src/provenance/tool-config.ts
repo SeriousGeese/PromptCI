@@ -214,15 +214,17 @@ export const TOOL_CONFIG_PROVENANCE: readonly CheckProvenance[] = [
     title: 'Subagent model values',
     kind: 'tool-fact',
     claim:
-      "A subagent's `model` frontmatter accepts `sonnet`, `opus`, `haiku`, `fable`, `inherit` or a full model ID; the page does not list `default` or `opusplan` for subagents.",
+      "A subagent's `model` frontmatter accepts `sonnet`, `opus`, `haiku`, `fable`, `inherit` or a full model ID, which the page defines as a value the `--model` flag accepts.",
     appliesTo: ['claude-code'],
     sources: [
       cite(
         reread(PAGES.ccSubagents),
         'supports',
-        'Lists the accepted values as sonnet, opus, haiku, fable, a full model ID such as claude-opus-5-5, or inherit, and does not list default or opusplan.',
+        'Lists the accepted values as sonnet, opus, haiku, fable, a full model ID such as claude-opus-5-5, or inherit, and describes a full model ID as "a value the --model flag accepts".',
       ),
     ],
+    caveat:
+      'The detector also accepts `default` and `opusplan`, a `[1m]` suffix and Bedrock or Vertex style ids (`anthropic.claude-…`, `arn:aws:bedrock:…`, `claude-…@date`) silently as `--model` values; the subagents page does not enumerate them, and no page read here lists the `--model` values. Anything else is reported at info.',
     lastVerified: VERIFIED_1115('#176'),
   },
   {
@@ -296,7 +298,7 @@ export const TOOL_CONFIG_PROVENANCE: readonly CheckProvenance[] = [
     title: 'Quoting the project directory in hook commands',
     kind: 'tool-fact',
     claim:
-      'In a shell-form command hook (no `args`) an unquoted `$CLAUDE_PROJECT_DIR` path is split by the shell when the project path contains a space, while a hook with `args` set runs in exec form with no shell and needs no quoting.',
+      'In a shell-form command hook (no `args`) an unquoted `$CLAUDE_PROJECT_DIR` path is split by the shell when the project path contains a space, while a hook with `args` set runs in exec form with no shell, needs no quoting, and has the braced `${CLAUDE_PROJECT_DIR}` placeholder substituted into `command` and `args`.',
     appliesTo: ['claude-code'],
     sources: [
       cite(
@@ -307,7 +309,12 @@ export const TOOL_CONFIG_PROVENANCE: readonly CheckProvenance[] = [
       cite(
         reread(PAGES.ccHooks),
         'supports',
-        'Says a hook with `args` set runs in exec form with no shell and each element is passed as one argument with no quoting, so the detector skips exec-form hooks and only advises quoting (or setting `args`) for shell-form commands.',
+        'Says a hook with `args` set runs in exec form with no shell and each element is passed as one argument with no quoting, so the quoting hint is not raised for exec-form hooks.',
+      ),
+      cite(
+        reread(PAGES.ccHooks),
+        'supports',
+        'Documents `${CLAUDE_PROJECT_DIR}` (braced) as the path placeholder, substituted as plain strings into `command` and each `args` element in exec form; the unbraced `$CLAUDE_PROJECT_DIR` appears only as an environment variable or shell expansion, so the detector reports an unbraced use in exec form as an info hint.',
       ),
     ],
     lastVerified: VERIFIED_1115('#195'),
@@ -342,7 +349,7 @@ export const TOOL_CONFIG_PROVENANCE: readonly CheckProvenance[] = [
     title: 'Project MCP config format',
     kind: 'tool-fact',
     claim:
-      'Claude Code reads project MCP servers from `.mcp.json` under a top-level `mcpServers` key, where a stdio server is defined by a `command` (with `args` and `env`) and a remote server by a `url`; the check requires one of `command` or `url` and does not check `type`.',
+      'Claude Code reads project MCP servers from `.mcp.json` under a top-level `mcpServers` key, where a stdio server is defined by a `command` (with `args` and `env`) and a remote server by a `url` plus a `type`; an entry with a `url` but no `type` is read as a stdio server and skipped with a configuration error.',
     appliesTo: ['claude-code'],
     sources: [
       cite(
@@ -352,12 +359,10 @@ export const TOOL_CONFIG_PROVENANCE: readonly CheckProvenance[] = [
       ),
       cite(
         reread(PAGES.ccMcp),
-        'context',
-        'Says an entry with a `url` but no `type` is read as a stdio server and skipped with a configuration error; the detector deliberately does not check `type` (maintainer decision, issue #196), so a url-only entry is accepted and Claude Code may still skip it.',
+        'supports',
+        'Says an entry with a `url` but no `type` is read as a stdio server and skipped with a configuration error, which is why the detector reports it as an info-level, unscored hint rather than a scored warning.',
       ),
     ],
-    caveat:
-      'Not checked by design: a `url` entry with no `type` is accepted here although the Claude Code docs say such an entry is skipped; only an entry with neither `command` nor `url` is reported.',
     lastVerified: VERIFIED_1115('#196'),
   },
   {
