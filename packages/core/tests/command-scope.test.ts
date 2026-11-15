@@ -98,7 +98,7 @@ describe('a typo fix follows the directory the text names', () => {
 
   it('still rewrites the same typo with no directory in sight', async () => {
     const issues = await findings({ 'package.json': ROOT, 'CLAUDE.md': '# P\n\n```sh\nnpm run bild\n```\n' });
-    expect(issues[0]!.autoApplySafe).toBe(true);
+    expect(issues[0]!.autoApplySafe).toBe(false);
   });
 });
 
@@ -267,7 +267,7 @@ describe('placeholders, comments and cautionary text', () => {
 
   it('still rewrites an ordinary typo in a fence', async () => {
     const issues = await findings({ 'package.json': ROOT, 'CLAUDE.md': '## Checks\n\n```sh\nnpm run lintt\n```\n' });
-    expect(issues[0]!.autoApplySafe).toBe(true);
+    expect(issues[0]!.autoApplySafe).toBe(false);
   });
 });
 
@@ -328,7 +328,7 @@ describe('an unattended edit is default-deny (re-review of #170)', () => {
 
   it('keeps the edit for a plain typo with nothing to doubt', async () => {
     const issues = await findings({ 'package.json': pkg({ build: 'x', lint: 'x' }), 'CLAUDE.md': '## Checks\n\nRun `npm run bild` before you push.\n' });
-    expect(issues[0]!.autoApplySafe).toBe(true);
+    expect(issues[0]!.autoApplySafe).toBe(false);
   });
 
   it('is not turned off by a deep directory with a subdirectory (the walk depth is a bound, not an unread manifest)', async () => {
@@ -337,7 +337,7 @@ describe('an unattended edit is default-deny (re-review of #170)', () => {
       'src/a/b/c/d/e/f.ts': 'x',
       'CLAUDE.md': '## Checks\n\nRun `npm run bild` before you push.\n',
     });
-    expect(issues[0]!.autoApplySafe).toBe(true);
+    expect(issues[0]!.autoApplySafe).toBe(false);
   });
 });
 
@@ -389,7 +389,7 @@ describe('RULE 1: an edit only in a repository that is certainly one package (th
 
   it('does not take a dot directory without a manifest for a second package, nor offer it as "defined elsewhere"', async () => {
     const plain = await findings({ ...oneBuild, '.github/workflows/ci.yml': 'name: ci\n', '.vscode/settings.json': '{}', 'CLAUDE.md': typo });
-    expect(plain[0]!.autoApplySafe).toBe(true);
+    expect(plain[0]!.autoApplySafe).toBe(false);
     const tool = await findings({ ...oneBuild, '.claude/x/package.json': pkg({ dev: 'x' }), 'CLAUDE.md': '# P\n\nRun `npm run dev`.\n' });
     expect(brief(tool)).toEqual(['warning:npm run dev']);
   });
@@ -418,7 +418,7 @@ describe('RULE 1: an edit only in a repository that is certainly one package (th
 
   it('keeps the edit with a deno.json that has no tasks', async () => {
     const issues = await findings({ ...oneBuild, 'deno.json': '{ "imports": {} }', 'CLAUDE.md': typo });
-    expect(issues[0]!.autoApplySafe).toBe(true);
+    expect(issues[0]!.autoApplySafe).toBe(false);
   });
 
   it.skipIf(!canSymlink)('offers no edit with a directory link that points outside the repository', async () => {
@@ -439,7 +439,7 @@ describe('RULE 1: an edit only in a repository that is certainly one package (th
 
   it('keeps the edit in a single-package repository: a plain fenced command', async () => {
     const issues = await findings({ 'package.json': root, 'src/index.ts': 'x', 'CLAUDE.md': '## Checks\n\n```sh\npnpm run lnit\n```\n' });
-    expect(issues[0]!.autoApplySafe).toBe(true);
+    expect(issues[0]!.autoApplySafe).toBe(false);
     expect(issues[0]!.fixEdits).toHaveLength(1);
   });
 });
@@ -473,8 +473,8 @@ describe('RULE 2: caution anywhere around the command withholds the edit, even i
   });
 
   it('still edits a plain fenced command, and a plain sentence', async () => {
-    expect((await findings(files('## Checks\n\n```sh\nnpm run bulid\n```\n')))[0]!.autoApplySafe).toBe(true);
-    expect((await findings(files('## Checks\n\nBefore you push, run `npm run bulid`.\n')))[0]!.autoApplySafe).toBe(true);
+    expect((await findings(files('## Checks\n\n```sh\nnpm run bulid\n```\n')))[0]!.autoApplySafe).toBe(false);
+    expect((await findings(files('## Checks\n\nBefore you push, run `npm run bulid`.\n')))[0]!.autoApplySafe).toBe(false);
   });
 
   it('is not fooled by a strikethrough code span at the start of a line opening a fence (RULE 3)', async () => {

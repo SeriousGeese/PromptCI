@@ -91,7 +91,8 @@ function isAdjacentTransposition(a: string, b: string): boolean {
 /**
  * pcic-oonz: whether replacing `missing` with `candidate` is a MECHANICAL
  * rename — a misspelling of one name — rather than a plausible reference to a
- * genuinely different script. Only a mechanical rename may be auto-applied;
+ * genuinely different script. Only a mechanical rename is offered as an edit
+ * (and even then applied only on an explicit opt-in, pcic-1ik0.18);
  * {@link closestUniqueMatch} alone is far too loose for that.
  *
  * The problem the extra rules solve: a one-edit neighbour is very often a real
@@ -130,7 +131,7 @@ function isAdjacentTransposition(a: string, b: string): boolean {
  *     detectors make no network call, so the test is structural.)
  *
  * Anything this rejects is still reported — with the candidate named
- * cautiously in the recommendation — just never rewritten automatically.
+ * cautiously in the recommendation — just never offered as an edit.
  */
 export function isMechanicalRename(missing: string, candidate: string): boolean {
   if (!missing || !candidate || missing === candidate) return false;

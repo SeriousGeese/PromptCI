@@ -129,6 +129,9 @@ export async function applyFixRecipe(
   // knew the parsed command / link target and the candidate set, so it carries
   // the edit rather than making the fix engine re-derive any of it.
   if (issue.fixEdits && issue.fixEdits.length > 0) {
+    // pcic-1ik0.18: a script rename is applied only when the caller named the
+    // finding. A caller that ignores `autoApplySafe` (an autopilot) gets no edit.
+    if (isScriptRenameRecipe(issue) && !options.optIn) return changes;
     return applyLineEdits(issue.fixEdits, repoRoot);
   }
 
@@ -244,6 +247,23 @@ export async function applyFixRecipe(
  */
 export function isOptInRecipe(issue: PromptCiIssue): boolean {
   return issue.category === 'duplicate' && (issue.tags ?? []).includes(MIRRORED_FILES_TAG);
+}
+
+/**
+ * True for a finding that carries the script-rename edit (pcic-1ik0.18): a
+ * missing package script with one close match. Applied only on an explicit
+ * opt-in, like {@link isOptInRecipe}'s import, but kept out of that predicate,
+ * whose callers treat it as "the mirrored-files import". Keyed on the category
+ * and the edit, not on `autoApplySafe`, so a finding stored by an older core
+ * (which marked it safe) is gated the same way.
+ */
+export function isScriptRenameRecipe(issue: PromptCiIssue): boolean {
+  return issue.category === 'command_validity' && (issue.fixEdits?.length ?? 0) > 0;
+}
+
+/** True when the finding's recipe is applied only by naming it: {@link isOptInRecipe} or {@link isScriptRenameRecipe}. */
+export function requiresOptIn(issue: PromptCiIssue): boolean {
+  return isOptInRecipe(issue) || isScriptRenameRecipe(issue);
 }
 
 /**

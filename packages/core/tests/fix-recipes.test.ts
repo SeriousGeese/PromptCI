@@ -16,7 +16,7 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import { scan } from '../src/scan.js';
-import { applyFixRecipe, isRepairable } from '../src/fix-engine.js';
+import { applyFixRecipe, isRepairable, isScriptRenameRecipe, requiresOptIn } from '../src/fix-engine.js';
 import { closestUniqueMatch, damerauLevenshtein, isMechanicalRename } from '../src/close-match.js';
 import type { PromptCiIssue } from '../src/types.js';
 import { canSymlink, makeTempRepo, trySymlink, writeFile } from './ai-config-helpers.js';
@@ -46,6 +46,19 @@ async function issuesIn(repo: string): Promise<PromptCiIssue[]> {
 async function applyAll(repo: string, issues: PromptCiIssue[], relPath: string): Promise<string> {
   for (const issue of issues.filter(isRepairable)) {
     for (const change of await applyFixRecipe(issue, repo)) {
+      fs.writeFileSync(change.filePath, change.newContent, 'utf-8');
+    }
+  }
+  return fs.readFileSync(path.join(repo, relPath), 'utf-8');
+}
+
+/**
+ * pcic-1ik0.18: what `promptci fix --issue <id>` writes when each finding is
+ * named in turn (the opt-in). A script rename is applied only this way.
+ */
+async function applyNamed(repo: string, issues: PromptCiIssue[], relPath: string): Promise<string> {
+  for (const issue of issues) {
+    for (const change of await applyFixRecipe(issue, repo, { optIn: true })) {
       fs.writeFileSync(change.filePath, change.newContent, 'utf-8');
     }
   }
@@ -181,22 +194,29 @@ describe('isMechanicalRename', () => {
 // ── Recipe 1: a mistyped package-manager script ──────────────────────────────
 
 describe('command_validity: mistyped script with one close match', () => {
-  it('marks the finding auto-applicable and rewrites exactly that token', async () => {
-    const repo = repoWith({
-      'package.json': MANIFEST,
-      'AGENTS.md': '# Agents\n\n```bash\nnpm run bulid\n```\n',
-    });
+  it('offers the rename on opt-in only (pcic-1ik0.18) and rewrites exactly that token', async () => {
+    const original = '# Agents\n\n```bash\nnpm run bulid\n```\n';
+    const repo = repoWith({ 'package.json': MANIFEST, 'AGENTS.md': original });
     const issues = commandIssues(await issuesIn(repo));
     expect(issues).toHaveLength(1);
     const issue = issues[0]!;
-    expect(issue.autoApplySafe).toBe(true);
-    expect(isRepairable(issue)).toBe(true);
+    expect(issue.autoApplySafe).toBe(false);
+    expect(isRepairable(issue)).toBe(false);
+    expect(isScriptRenameRecipe(issue)).toBe(true);
+    expect(requiresOptIn(issue)).toBe(true);
     expect(issue.summary).toContain('The closest script name the manifest defines is "build".');
+    expect(issue.recommendation).toContain(`If "build" is what was meant, \`promptci fix --issue ${issue.id}\` makes the rename.`);
     expect(issue.fixEdits).toEqual([
       { filePath: path.join(repo, 'AGENTS.md'), line: 4, find: 'npm run bulid', replace: 'npm run build' },
     ]);
 
-    expect(await applyAll(repo, issues, 'AGENTS.md')).toBe('# Agents\n\n```bash\nnpm run build\n```\n');
+    // Unattended (`promptci fix`, an autopilot): nothing, even when a caller
+    // ignores `autoApplySafe` and asks for the recipe anyway.
+    expect(await applyFixRecipe(issue, repo)).toEqual([]);
+    expect(await applyFixRecipe(issue, repo, { optIn: false })).toEqual([]);
+    expect(await applyAll(repo, issues, 'AGENTS.md')).toBe(original);
+    // Named (`promptci fix --issue <id>`): the rename.
+    expect(await applyNamed(repo, issues, 'AGENTS.md')).toBe('# Agents\n\n```bash\nnpm run build\n```\n');
   });
 
   it('rewrites a prose mention and leaves the rest of the sentence alone', async () => {
@@ -206,7 +226,7 @@ describe('command_validity: mistyped script with one close match', () => {
     });
     const issues = commandIssues(await issuesIn(repo));
     expect(issues).toHaveLength(1);
-    expect(await applyAll(repo, issues, 'AGENTS.md')).toBe(
+    expect(await applyNamed(repo, issues, 'AGENTS.md')).toBe(
       '# Agents\n\nAlways run pnpm typecheck before you push.\n',
     );
   });
@@ -221,7 +241,7 @@ describe('command_validity: mistyped script with one close match', () => {
       find: 'npm run --silent bulid',
       replace: 'npm run --silent build',
     });
-    expect(await applyAll(repo, issues, 'AGENTS.md')).toContain('npm run --silent build');
+    expect(await applyNamed(repo, issues, 'AGENTS.md')).toContain('npm run --silent build');
   });
 
   it('stays advisory when two scripts are equally close', async () => {
@@ -268,15 +288,15 @@ describe('command_validity: mistyped script with one close match', () => {
     expect(await applyAll(repo, issues, 'AGENTS.md')).toBe(text);
   });
 
-  it('keeps buidl -> build auto-applicable beside release scripts (pcic-1ik0.11)', async () => {
+  it('keeps the buidl -> build edit beside release scripts (pcic-1ik0.11)', async () => {
     const repo = repoWith({
       'package.json': JSON.stringify({ name: 'app', scripts: { build: 'tsc', 'minor-release': 'x', 'release:minor': 'y' } }),
       'AGENTS.md': '# Agents\n\n```bash\nnpm run buidl\n```\n',
     });
     const issues = commandIssues(await issuesIn(repo));
     expect(issues).toHaveLength(1);
-    expect(issues[0]!.autoApplySafe).toBe(true);
-    expect(await applyAll(repo, issues, 'AGENTS.md')).toContain('npm run build\n');
+    expect(issues[0]!.autoApplySafe).toBe(false);
+    expect(await applyNamed(repo, issues, 'AGENTS.md')).toContain('npm run build\n');
   });
 
   /**
@@ -435,7 +455,9 @@ describe('command_validity: no rewrite where the surroundings change what the co
 
   it('still rewrites a plain command in a fence and in prose', async () => {
     const repo = repoWith({ 'package.json': MANIFEST, 'AGENTS.md': '# Agents\n\n```bash\nnpm run bulid\n```\n' });
-    expect(commandIssues(await issuesIn(repo))[0]!.autoApplySafe).toBe(true);
+    const [issue] = commandIssues(await issuesIn(repo));
+    expect(issue!.autoApplySafe).toBe(false);
+    expect(issue!.fixEdits).toHaveLength(1);
   });
 });
 
@@ -620,7 +642,7 @@ describe('structure: broken link whose basename is unique in the tree', () => {
       const original = '# Agents\n\nComments start with `<!--`.\n\n```bash\nnpm run bulid\n```\n';
       const repo = repoWith({ 'package.json': MANIFEST, 'AGENTS.md': original });
       const issues = commandIssues(await issuesIn(repo));
-      expect(await applyAll(repo, issues, 'AGENTS.md')).toBe(original.replace('bulid', 'build'));
+      expect(await applyNamed(repo, issues, 'AGENTS.md')).toBe(original.replace('bulid', 'build'));
     });
 
     it('still hides a real comment that follows such text', async () => {
@@ -653,8 +675,8 @@ describe('structure: broken link whose basename is unique in the tree', () => {
       const fenced = '# Agents\n\n```bash\nnpm run bulid\n```\n';
       const repo2 = repoWith({ 'package.json': MANIFEST, 'AGENTS.md': fenced });
       const issues = commandIssues(await issuesIn(repo2));
-      expect(issues.some((i) => i.autoApplySafe === true)).toBe(true);
-      expect(await applyAll(repo2, issues, 'AGENTS.md')).toBe('# Agents\n\n```bash\nnpm run build\n```\n');
+      expect(issues.some((i) => isScriptRenameRecipe(i))).toBe(true);
+      expect(await applyNamed(repo2, issues, 'AGENTS.md')).toBe('# Agents\n\n```bash\nnpm run build\n```\n');
     });
   });
 
@@ -904,7 +926,7 @@ describe('applyFixRecipe — line-anchored edits are all-or-nothing', () => {
       autoApplySafe: true,
       fixEdits: [{ filePath: 'AGENTS.md', line: 1, find: 'beta', replace: 'gamma' }],
     };
-    expect(await applyFixRecipe(issue, repo)).toEqual([]);
+    expect(await applyFixRecipe(issue, repo, { optIn: true })).toEqual([]);
     expect(fs.readFileSync(path.join(outside, 'target.md'), 'utf-8')).toBe('alpha beta\n');
   });
 
@@ -924,7 +946,7 @@ describe('applyFixRecipe — line-anchored edits are all-or-nothing', () => {
       autoApplySafe: true,
       fixEdits: [{ filePath: '../outside.md', line: 1, find: 'a', replace: 'b' }],
     };
-    await expect(applyFixRecipe(issue, repo)).rejects.toThrow(/Path traversal/);
+    await expect(applyFixRecipe(issue, repo, { optIn: true })).rejects.toThrow(/Path traversal/);
   });
 
   /**
@@ -962,7 +984,7 @@ describe('applyFixRecipe — line-anchored edits are all-or-nothing', () => {
       autoApplySafe: true,
       fixEdits: [{ filePath: 'AGENTS.md', line: 1, find: 'beta', replace: '$& $1 $$' }],
     };
-    const [change] = await applyFixRecipe(issue, repo);
+    const [change] = await applyFixRecipe(issue, repo, { optIn: true });
     expect(change!.newContent).toBe('alpha $& $1 $$\n');
   });
 
@@ -972,7 +994,7 @@ describe('applyFixRecipe — line-anchored edits are all-or-nothing', () => {
       'AGENTS.md': '# Agents\r\n\r\n```bash\r\nnpm run bulid\r\n```\r\n\r\nTrailing prose, no newline at EOF.',
     });
     const issues = commandIssues(await issuesIn(repo));
-    expect(await applyAll(repo, issues, 'AGENTS.md')).toBe(
+    expect(await applyNamed(repo, issues, 'AGENTS.md')).toBe(
       '# Agents\r\n\r\n```bash\r\nnpm run build\r\n```\r\n\r\nTrailing prose, no newline at EOF.',
     );
   });
@@ -981,15 +1003,15 @@ describe('applyFixRecipe — line-anchored edits are all-or-nothing', () => {
 // ── The committed fixture ────────────────────────────────────────────────────
 
 describe('fixture-fix-recipes', () => {
-  it('offers exactly one auto-applicable fix per recipe and leaves the twins advisory', async () => {
+  it('offers exactly one fix per recipe and leaves the twins advisory', async () => {
     const issues = await issuesIn(FIXTURE);
 
     const commands = commandIssues(issues);
-    expect(commands.filter((i) => i.autoApplySafe === true).map((i) => i.fixEdits?.[0]?.replace)).toEqual([
-      'npm run build',
-    ]);
+    // pcic-1ik0.18: the script rename is offered, but only on opt-in.
+    expect(commands.filter((i) => i.autoApplySafe === true)).toEqual([]);
+    expect(commands.filter(isScriptRenameRecipe).map((i) => i.fixEdits?.[0]?.replace)).toEqual(['npm run build']);
     // The tied, the real-sibling and the unrecognisable command are all still reported.
-    expect(commands.filter((i) => i.autoApplySafe !== true)).toHaveLength(3);
+    expect(commands.filter((i) => !isScriptRenameRecipe(i))).toHaveLength(3);
     // The real-sibling case names its candidate, cautiously, in the recommendation only.
     const sibling = commands.find((i) => i.summary.includes('migrate:db'))!;
     expect(sibling.autoApplySafe).toBeUndefined();
