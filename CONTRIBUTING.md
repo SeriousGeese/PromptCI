@@ -48,10 +48,9 @@ the correct key for a pnpm workspace — there is no separate `pnpm` value) and 
 Routine minor/patch updates are grouped into one PR per ecosystem per week; majors get their own
 PR so each is reviewed against its own release notes.
 
-There are currently **no `pnpm.overrides`**. A pair of them once pinned `vite` and `esbuild`
-above their security advisories, because vitest's range was wide enough that pnpm kept resolving
-a flagged version. Both declared ranges have since moved past the patched versions on their own,
-so the overrides were removed — they had begun blocking the very updates Dependabot was opening.
+There are currently **no `pnpm.overrides`**. The `vite` and `esbuild` pins that once lived there
+were removed when both declared ranges moved past their advisories; they had begun blocking
+Dependabot's updates.
 
 If you add an override for a future advisory, say so here and state the condition for removing
 it. An override that outlives its advisory silently caps a dependency.
@@ -90,11 +89,8 @@ value spliced into a shell line is a script-injection sink.
 
 ## Releasing
 
-**Nothing unreviewed reaches a tag.** A PR that changes the scanner or a fix recipe
-(`packages/core/src/`, `packages/cli/src/`) merges only with a review signal: the `reviewed`
-label, set after a second review of its head commit, or an approving review of that commit (see
-[Docs/ci-automation.md](Docs/ci-automation.md)). Before tagging, check that every such PR merged
-since the last tag had one.
+**Nothing unreviewed reaches a tag:** scanner and fix-recipe PRs merge only with a review
+signal ([Docs/ci-automation.md](Docs/ci-automation.md)); check that before tagging.
 
 `@promptci/cli` and `@promptci/core` publish together from a pushed tag, via
 [.github/workflows/publish.yml](.github/workflows/publish.yml). Core is bundled into cli's dist
