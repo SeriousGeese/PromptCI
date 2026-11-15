@@ -1048,7 +1048,6 @@ interface CompetingPairDef {
  *
  * BUG-B1: naming conventions
  * BUG-B2: ORM / data-access / state-management / package manager
- * BUG-B3: Next.js routing strategy
  * BUG-B5: export style
  * BUG-B6: Unity async patterns
  */
@@ -1066,8 +1065,8 @@ const COMPETING_PAIRS: CompetingPairDef[] = [
   { termA: 'redux', termB: 'mobx', dimension: 'state management library' },
   // B2 — Python package manager
   { termA: 'pip', termB: 'poetry', dimension: 'Python package manager' },
-  // B3 — Next.js routing
-  { termA: 'pages router', termB: 'app router', dimension: 'Next.js routing strategy' },
+  // B3 — Next.js routing: retired (#187). The Pages Router and App Router coexist by design, so
+  // recommending one for existing routes and the other for new ones is not a conflict.
   // B5 — export style
   { termA: 'named exports', termB: 'default exports', dimension: 'module export style' },
   // B6 — Unity async patterns (singular and plural — instruction files usually use plural)

@@ -83,7 +83,9 @@ describe('fixture-source-bin (#161)', () => {
       // The same listing, declared complete, is plain build output.
       const complete = (await scan({ repoPath: root, knownPaths, knownPathsComplete: true })).issues
         .find((i) => i.id === 'security-pack-unignored-dirs');
-      expect(complete?.evidence).toEqual(['Directory "bin" exists but is not ignored in .gitignore.']);
+      expect(complete?.evidence).toEqual([
+        'Directory "bin" exists but is not ignored in .gitignore; it holds 1 tracked file(s), so ignoring it does not untrack them.',
+      ]);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
@@ -107,15 +109,15 @@ describe('fixture-source-bin (#161)', () => {
         'Directory "obj" exists but is not ignored in .gitignore.',
       ]);
       expect(partial?.autoApplySafe).toBe(false);
-      // The same listing, declared complete, is identical but auto-applicable.
+      // The same listing, declared complete, says the files are tracked, so it is never auto-applicable either (#212).
       const complete = (await scan({ repoPath: root, knownPaths, knownPathsComplete: true })).issues
         .find((i) => i.id === 'security-pack-unignored-dirs');
-      expect(complete?.autoApplySafe).toBe(true);
-      expect({ ...partial, autoApplySafe: true }).toEqual(complete);
+      expect(complete?.autoApplySafe).toBe(false);
       expect(complete?.evidence).toEqual([
-        'Directory "dist" exists but is not ignored in .gitignore.',
-        'Directory "obj" exists but is not ignored in .gitignore.',
+        'Directory "dist" exists but is not ignored in .gitignore; it holds 1 tracked file(s), so ignoring it does not untrack them.',
+        'Directory "obj" exists but is not ignored in .gitignore; it holds 1 tracked file(s), so ignoring it does not untrack them.',
       ]);
+      expect(complete?.recommendation).toContain('git rm -r --cached dist obj');
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }

@@ -18,7 +18,8 @@ vi.mock('node:fs');
  * a path ending in `/` is a directory with nothing readable in it.
  */
 function repo(files: Record<string, string>): RepoTree {
-  const knownPaths = Object.keys(files).map((rel) => (rel.endsWith('/') ? rel + '.keep' : rel));
+  // A trailing-slash path stays an explicit empty directory (not a .keep placeholder, which #212 treats as deliberate).
+  const knownPaths = Object.keys(files);
   vi.mocked(fs.readFileSync).mockImplementation((target: unknown) => {
     // `/repo` resolves to `C:/repo` on Windows, so match the root by suffix.
     const rel = String(target).replace(/\\/g, '/').replace(/^.*\/repo\//, '');
@@ -373,6 +374,7 @@ describe('detectSecurityPack', () => {
 
     // #161: in a 43-repository corpus `bin` fired on 5 repositories, every time
     // for one hand-written, tracked entry script. These are those five shapes.
+    const BIN_REPORTED = /^Directory "bin" exists but is not ignored in \.gitignore(?:;|\.)/;
     const unignored = (files: Record<string, string>) =>
       detectSecurityPack({ ...mockContext, tree: repo({ '.gitignore': '.promptci/', ...files }), files: [makeFile('# Rules')] })
         .find((i) => i.id === 'security-pack-unignored-dirs');
@@ -398,7 +400,7 @@ describe('detectSecurityPack', () => {
     it('still reports bin/ next to a Gradle or Maven build, but not obj/', () => {
       for (const build of ['build.gradle', 'build.gradle.kts', 'pom.xml']) {
         const issue = unignored({ [build]: '', 'bin/': '', 'obj/': '' });
-        expect(issue?.evidence, build).toEqual(['Directory "bin" exists but is not ignored in .gitignore.']);
+        expect(issue?.evidence, build).toEqual([expect.stringMatching(BIN_REPORTED)]);
       }
     });
 
@@ -430,7 +432,7 @@ describe('detectSecurityPack', () => {
 
     it('a package.json bin target that climbs out of bin/ does not make bin/ source', () => {
       const issue = unignored({ 'pom.xml': '<project/>', 'package.json': '{"bin":{"x":"bin/../dist/cli.js"}}', 'bin/Debug/App.class': 'x' });
-      expect(issue?.evidence).toEqual(['Directory "bin" exists but is not ignored in .gitignore.']);
+      expect(issue?.evidence).toEqual([expect.stringMatching(BIN_REPORTED)]);
       expect(unignored({ 'pom.xml': '<project/>', 'package.json': '{"bin":"./bin/./cli.js"}', 'bin/Debug/App.class': 'x' })).toBeUndefined();
     });
 
@@ -444,18 +446,19 @@ describe('detectSecurityPack', () => {
 
     it('an extensionless file without #! (a compiled apphost) does not make bin/ source', () => {
       const issue = unignored({ 'App.csproj': '<Project />', 'bin/App': 'MZ\u0090\u0000' });
-      expect(issue?.evidence).toEqual(['Directory "bin" exists but is not ignored in .gitignore.']);
+      expect(issue?.evidence).toEqual([expect.stringMatching(BIN_REPORTED)]);
     });
 
     it('a well-formed package.json without a bin target does not block a build-output bin/', () => {
       const issue = unignored({ 'pom.xml': '<project/>', 'package.json': '{"name":"x"}', 'bin/Debug/App.class': 'x' });
-      expect(issue?.evidence).toEqual(['Directory "bin" exists but is not ignored in .gitignore.']);
+      expect(issue?.evidence).toEqual([expect.stringMatching(BIN_REPORTED)]);
     });
 
     it('still reports a bin/ of build output (subdirectories, .dll) beside a .NET project file', () => {
       const issue = unignored({ 'App.csproj': '<Project />', 'bin/Debug/net8.0/App.dll': 'MZ', 'bin/App.pdb': 'x' });
-      expect(issue?.evidence).toEqual(['Directory "bin" exists but is not ignored in .gitignore.']);
-      expect(issue?.autoApplySafe).toBe(true);
+      expect(issue?.evidence).toEqual([expect.stringMatching(BIN_REPORTED)]);
+      // #212: the inventory is complete and lists files under bin/, so they are tracked: never auto-applied.
+      expect(issue?.autoApplySafe).toBe(false);
     });
 
     // #206: 0.4.0 looked only at bin/'s own files and called anything that was
@@ -499,8 +502,8 @@ describe('detectSecurityPack', () => {
       ['a jar and a placeholder dotfile', { 'bin/app.jar': 'PK', 'bin/.gitkeep': '' }],
     ])('still reports a bin/ of %s beside a build file (#206)', (_label, files) => {
       const issue = unignored({ 'pom.xml': '<project/>', 'App.csproj': '<Project />', ...files });
-      expect(issue?.evidence).toEqual(['Directory "bin" exists but is not ignored in .gitignore.']);
-      expect(issue?.autoApplySafe).toBe(true);
+      expect(issue?.evidence).toEqual([expect.stringMatching(BIN_REPORTED)]);
+      expect(issue?.autoApplySafe).toBe(false); // #212: listed files are tracked
     });
 
     it('reports dist/ beside a source bin/ and proposes ignoring only dist/', () => {
