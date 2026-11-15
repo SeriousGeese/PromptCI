@@ -1588,8 +1588,9 @@ function computeCommandAnalysis(context: RepoContext): CommandAnalysis {
         continue;
       }
 
+      const id = issueId(fileIdPath(file), cmd.text);
       issues.push({
-        id: issueId(fileIdPath(file), cmd.text),
+        id,
         severity: 'warning',
         category: 'command_validity',
         title: `Possible reference to missing command or file: \`${cmd.text.split(/\s+/).slice(0, 3).join(' ')}\``,
@@ -1602,12 +1603,20 @@ function computeCommandAnalysis(context: RepoContext): CommandAnalysis {
         recommendation:
           'Verify the command. If the script was renamed, update the instruction file. ' +
           'If it is an illustrative example, wrap it in a placeholder like <script-name> to suppress this finding.' +
+          (fix ? ` If "${fix.candidate}" is what was meant, \`promptci fix --issue ${id}\` makes the rename.` : '') +
           hint,
         ...(fix
           ? {
               fixRecipe: `Rename the script in this command: \`${fix.find}\` -> \`${fix.replace}\`.`,
-              // `applyFixRecipe` replaces that one occurrence on that one line.
-              autoApplySafe: true,
+              // pcic-1ik0.18: OPT-IN ONLY. A slip inside one word can still
+              // turn a command into a different, existing one (`test:from` ->
+              // `test:form`, `db:seed` -> `db:speed`), and no rule over two
+              // names can tell which was meant. So the edit is never applied
+              // unattended: `promptci fix` and an autopilot skip it, and
+              // `applyFixRecipe` applies it only with `optIn` (the caller named
+              // the finding: `promptci fix --issue <id>`), replacing that one
+              // occurrence on that one line.
+              autoApplySafe: false,
               fixEdits: [{ filePath: file.path, line: cmd.line, find: fix.find, replace: fix.replace }],
             }
           : {}),

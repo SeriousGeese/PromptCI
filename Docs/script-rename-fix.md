@@ -1,11 +1,18 @@
-# When a mistyped script name is fixed automatically
+# When a mistyped script name can be fixed
 
-`promptci fix` (and the hosted fix pull request) can rewrite a command in an instruction file when it
-names a package script that does not exist and exactly one script is a typo away
-(`npm run bulid` -> `npm run build`). The edit is applied without a person looking, on a repository
-that may not be yours, so the rule is default-deny: a missed fix costs nothing, a wrong one lands in a
-stranger's repository. In every other case the finding stays, names the close match in its
-recommendation and carries no edit.
+A finding for a command that names a package script that does not exist, with exactly one script a
+typo away (`npm run bulid` -> `npm run build`), can carry an edit that rewrites the command.
+
+**The edit is opt-in only (since 0.4.3).** It is never applied unattended: `promptci fix` on its own
+lists it ("Opt-in fix available") and leaves the command alone, and no autopilot or hosted fix pull
+request applies it (`autoApplySafe` is `false`). Naming the finding, `promptci fix --issue <id>`,
+applies it; the id is in the finding's recommendation. Even a slip inside one word can turn a
+command into a different, existing one (`test:from` and `test:form`, `db:seed` and `db:speed`,
+`sign` and `sing`), and no rule over two names can tell which was meant, so a person chooses.
+
+The rules below still decide whether the edit is offered at all. They are default-deny: a missed
+fix costs nothing, a wrong one runs the wrong command. In every other case the finding stays, names
+the close match in its recommendation and carries no edit.
 
 The edit is offered only when ALL of these hold:
 

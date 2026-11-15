@@ -1,6 +1,6 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
-import { scan, applyFixRecipe, isRepairable, isOptInRecipe, planMirrorImport } from '@promptci/core';
+import { scan, applyFixRecipe, isRepairable, isScriptRenameRecipe, requiresOptIn, planMirrorImport } from '@promptci/core';
 import type { PromptCiIssue } from '@promptci/core';
 import { loadConfig } from '../config.js';
 import { applyChangesInteractively, NonInteractiveError, type ApplyUnit } from '../lib/interactive-apply.js';
@@ -51,15 +51,19 @@ export async function runFix(options: FixOptions): Promise<void> {
   });
 
   let repairable = report.issues.filter(issue => isRepairable(issue));
-  // pcic-1ik0.10: an opt-in recipe (the mirrored-files CLAUDE.md import) is
-  // never applied by a plain `fix`; naming the finding with --issue is the
-  // opt-in. Its plan is re-checked on disk and printed with any refusal.
+  // pcic-1ik0.10 / pcic-1ik0.18: an opt-in recipe (the mirrored-files
+  // CLAUDE.md import, a script rename) is never applied by a plain `fix`;
+  // naming the finding with --issue is the opt-in. The import's plan is
+  // re-checked on disk and printed with any refusal.
   let optIn = false;
   if (options.issueId) {
     let target = repairable.find(issue => issue.id === options.issueId);
     if (!target) {
-      const named = report.issues.find(issue => issue.id === options.issueId && isOptInRecipe(issue));
-      if (named) {
+      const named = report.issues.find(issue => issue.id === options.issueId && requiresOptIn(issue));
+      if (named && isScriptRenameRecipe(named)) {
+        target = named;
+        optIn = true;
+      } else if (named) {
         const plan = await planMirrorImport(named, resolvedPath);
         for (const line of plan.untouched) console.log(`  ${line}`);
         if (plan.changes.length === 0) {
@@ -77,7 +81,7 @@ export async function runFix(options: FixOptions): Promise<void> {
     }
     repairable = [target];
   } else {
-    for (const issue of report.issues.filter(isOptInRecipe)) {
+    for (const issue of report.issues.filter(requiresOptIn)) {
       console.log(`Opt-in fix available (not applied by default): promptci fix --issue ${issue.id}  (${issue.title})`);
     }
   }
@@ -97,7 +101,7 @@ export async function runFix(options: FixOptions): Promise<void> {
       `Severity:   ${issue.severity.toUpperCase()}`,
       `Summary:    ${issue.summary}`,
     ],
-    changes: () => applyFixRecipe(issue, resolvedPath, { optIn: optIn && isOptInRecipe(issue) }),
+    changes: () => applyFixRecipe(issue, resolvedPath, { optIn: optIn && requiresOptIn(issue) }),
     // Duplicate consolidation replaces the line ranges recorded at scan time.
     // If an earlier unit in this run rewrote one of the same files, those
     // ranges point at shifted content, so the unit must be skipped and picked

@@ -14,7 +14,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { scan } from '../src/scan.js';
-import { applyFixRecipe, isOptInRecipe } from '../src/fix-engine.js';
+import { applyFixRecipe, isOptInRecipe, isScriptRenameRecipe } from '../src/fix-engine.js';
 import { parseSections } from '../src/scanner.js';
 import { sameSectionText } from '../src/same-text.js';
 import { MIRROR_CANONICAL_BASENAME, isImportOnlySection, resolvedImports } from '../src/mirror-import.js';
@@ -81,7 +81,7 @@ describe('every opt-in mirror recipe, on every fixture, loses, moves and adds no
   });
 });
 
-describe('every autoApplySafe recipe, on every fixture, never makes the next scan worse', () => {
+describe('every autoApplySafe recipe and every script rename (opt-in, pcic-1ik0.18), on every fixture, never makes the next scan worse', () => {
   it('has fixtures to check', () => {
     expect(FIXTURES.length).toBeGreaterThan(10);
   });
@@ -89,14 +89,14 @@ describe('every autoApplySafe recipe, on every fixture, never makes the next sca
   it.each(FIXTURES)('%s', async (name) => {
     const fixture = path.join(EXAMPLES, name);
     const report = await scan({ repoPath: fixture });
-    const fixable = report.issues.filter((i) => i.autoApplySafe === true);
+    const fixable = report.issues.filter((i) => i.autoApplySafe === true || isScriptRenameRecipe(i));
     for (const finding of fixable) {
       const root = fs.mkdtempSync(path.join(os.tmpdir(), `promptci-guard-${name}-`));
       try {
         fs.cpSync(fixture, root, { recursive: true });
         const before = await scan({ repoPath: root });
         const target = before.issues.find((i) => i.id === finding.id)!;
-        const changes = await applyFixRecipe(target, root);
+        const changes = await applyFixRecipe(target, root, { optIn: isScriptRenameRecipe(target) });
         expect(changes.length, `${name}: ${finding.id} produced an edit`).toBeGreaterThan(0);
         for (const change of changes) fs.writeFileSync(change.filePath, change.newContent);
         const after = await scan({ repoPath: root });

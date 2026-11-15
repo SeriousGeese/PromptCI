@@ -116,13 +116,13 @@ perform as a mechanical, reviewable edit, and a finding opts in explicitly — t
 those with `autoApplySafe`. Everything else is reported and left alone, so on a healthy
 repository `fix` may well have nothing to offer.
 
-The four it can apply today:
+The four it can apply today (one of them only when you name the finding):
 
 | Finding | What it does | Only when |
 | --- | --- | --- |
 | `security-pack-no-promptci-gitignore` | Appends the baseline-preserving `.promptci/` stanza to `.gitignore` | No active line already covers `.promptci` |
 | `security-pack-unignored-dirs` | Appends each flagged build/dependency directory to `.gitignore` | No active line already covers that directory |
-| `cmd-validity-*` | Rewrites a **misspelled** package-manager script name to the one the manifest defines | Exactly one defined script is a close match **and** the difference is a misspelling rather than a different script — see below. The command must name a single script, and the text to replace must appear once on its line |
+| `cmd-validity-*` | **Opt-in only:** rewrites a **misspelled** package-manager script name to the one the manifest defines | You name the finding (`promptci fix --issue <id>`), exactly one defined script is a close match **and** the difference is a misspelling rather than a different script (see below). The command must name a single script, and the text to replace must appear once on its line |
 | `dead-ref-*` | Re-points a broken relative markdown link at the file it names | Exactly one non-ignored file in the repository carries that basename, the scan could read the whole tree, every occurrence of that target is a plain inline **file** link outside any code fence or span, the path it would be rewritten to needs no escaping and is not the linking file itself, and each occurrence appears once on its line |
 
 ### Opt-in: a mirrored CLAUDE.md
@@ -161,10 +161,19 @@ A `CLAUDE.md` whose live `@AGENTS.md` import reaches the scanned `AGENTS.md` cou
 with an HTML tag (a `<br>`, or `<b>Note</b>` prose) is read as part of an HTML block and not
 counted, though Claude Code loads it; the cost is a false "No behavioral guidance" finding.
 
-A close match is not enough to rewrite a script name, because most one-edit neighbours of a
+### Opt-in: a script rename
+
+A script-rename finding carries its edit with `autoApplySafe: false`: `promptci fix` on its own
+lists it ("Opt-in fix available") and does not change it, and no autopilot applies it. Naming it,
+`promptci fix --issue <id>`, applies the rename; its recommendation gives the command. It is
+opt-in because even a slip inside one word can spell a different, existing script (`test:from`
+and `test:form`, `db:seed` and `db:speed`), and only a person knows which was meant. See
+[script-rename-fix.md](script-rename-fix.md).
+
+A close match is not enough to offer a rename, because most one-edit neighbours of a
 script name are a real sibling script: `test:api` → `test:app`, `test:unit` → `test:init`,
 `db:up` → `db:rm`, `build:v1` → `build:v2` are each the unique nearest neighbour, and each
-rewrite would silently run the wrong command. A rewrite is applied only when all of the
+rewrite would silently run the wrong command. A rewrite is offered only when all of the
 following hold (`packages/core/src/close-match.ts`):
 
 - the close match contains no `/` (a rewrite to `test/unit` reads as two scripts); **and**

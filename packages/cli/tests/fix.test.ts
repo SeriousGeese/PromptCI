@@ -106,6 +106,34 @@ describe('runFix CLI command', () => {
     expect(await fs.readFile(claudePath, 'utf-8')).toBe('@AGENTS.md\n');
   });
 
+  // pcic-1ik0.18: a script rename is opt-in only. A plain `fix --no-interactive`
+  // names it and leaves the command alone; `--issue <id>` makes the rename.
+  it.each([
+    ['bulid', 'build'],
+    ['test:from', 'test:form'],
+    ['db:seed', 'db:speed'],
+  ])('leaves npm run %s alone by default and renames it to %s only when the finding is named', async (written, defined) => {
+    const agentsPath = path.join(tmpDir, 'AGENTS.md');
+    const text = `# Agents\n\n\`\`\`bash\nnpm run ${written}\n\`\`\`\n`;
+    await fs.writeFile(path.join(tmpDir, 'package.json'), JSON.stringify({ name: 'app', scripts: { [defined]: 'x' } }), 'utf-8');
+    await fs.writeFile(agentsPath, text, 'utf-8');
+
+    const logs: string[] = [];
+    const spy = vi.spyOn(console, 'log').mockImplementation((...m) => { logs.push(m.join(' ')); });
+    try {
+      await runFix({ scanPath: tmpDir, interactive: false });
+      expect(await fs.readFile(agentsPath, 'utf-8')).toBe(text);
+      const hint = logs.find((l) => l.startsWith('Opt-in fix available') && l.includes(`npm run ${written}`));
+      expect(hint).toMatch(/promptci fix --issue (\S+)/);
+      const id = /--issue (\S+)/.exec(hint!)![1]!;
+
+      await runFix({ scanPath: tmpDir, issueId: id, interactive: false });
+    } finally {
+      spy.mockRestore();
+    }
+    expect(await fs.readFile(agentsPath, 'utf-8')).toBe(text.replace(`npm run ${written}`, `npm run ${defined}`));
+  });
+
   it('prints why the opt-in import is refused and edits nothing', async () => {
     const agentsPath = path.join(tmpDir, 'AGENTS.md');
     const claudePath = path.join(tmpDir, 'CLAUDE.md');

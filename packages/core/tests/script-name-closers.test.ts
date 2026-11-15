@@ -92,8 +92,8 @@ describe('a closing quote, backtick or bracket is not part of a script name (pci
     const repo = repoWith({ 'package.json': MANIFEST, 'AGENTS.md': '# Agents\n\n```bash\nnpm run build-frontedn\n```\n' });
     const issues = (await commandIssues(repo)).filter((i) => i.category === 'command_validity');
     expect(issues).toHaveLength(1);
-    expect(issues[0]!.autoApplySafe).toBe(true);
-    for (const change of await applyFixRecipe(issues[0]!, repo)) fs.writeFileSync(change.filePath, change.newContent, 'utf-8');
+    expect(issues[0]!.autoApplySafe).toBe(false);
+    for (const change of await applyFixRecipe(issues[0]!, repo, { optIn: true })) fs.writeFileSync(change.filePath, change.newContent, 'utf-8');
     expect(fs.readFileSync(path.join(repo, 'AGENTS.md'), 'utf-8')).toBe('# Agents\n\n```bash\nnpm run build-frontend\n```\n');
   });
 
