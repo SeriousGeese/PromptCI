@@ -14,6 +14,7 @@
 import * as crypto from 'node:crypto';
 import type { InstructionFile, PromptCiIssue } from './types.js';
 import { fileIdPath } from './finding-id.js';
+import { UNSCORED_TAG } from './health-score.js';
 import { aliasesWithNewType } from './alias-files.js';
 
 export type ContextBloatThresholds = {
@@ -192,7 +193,7 @@ export function detectContextBloat(
     if (file.fileType === 'copilot' && file.lineCount > t.copilotLineWarning) {
       issues.push({
         id: fileIssueId(fileIdPath(file) + ':copilot-lines'),
-        severity: 'warning',
+        severity: 'info',
         category: 'context_bloat',
         title: 'Copilot instructions file is long',
         summary:
@@ -207,7 +208,8 @@ export function detectContextBloat(
         ],
         recommendation:
           'Split into multiple focused instruction files, or move rarely-needed context to separate docs that are linked rather than inlined.',
-        confidence: 1.0,
+        confidence: 0.6,
+        tags: [UNSCORED_TAG],
       });
     }
   }

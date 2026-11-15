@@ -69,7 +69,7 @@ const PAGES = {
     readOn: '2026-11-15',
   },
   ghRepo15: {
-    url: 'https://docs.github.com/en/copilot/how-tos/configure-custom-instructions/add-repository-instructions',
+    url: 'https://docs.github.com/en/copilot/how-tos/copilot-on-github/customize-copilot/add-custom-instructions/add-repository-instructions',
     title: 'GitHub Docs: Adding repository custom instructions for GitHub Copilot',
     readOn: '2026-11-15',
   },
@@ -554,17 +554,19 @@ export const INSTRUCTION_ADVICE_PROVENANCE: readonly CheckProvenance[] = [
     detector: 'missing-context',
     title: 'Copilot topic silence',
     kind: 'tool-fact',
+    unverified: true,
     claim:
-      'GitHub Copilot reads the nearest AGENTS.md and a single CLAUDE.md or GEMINI.md in the repository root as well as its own instruction files, so a convention documented in one of those is visible to it and is not reported as missing.',
+      'GitHub Copilot does not read Cursor or Windsurf rule files, so a convention documented only there is not visible to it.',
     appliesTo: ['copilot'],
     sources: [
       src(
         'ghRepo15',
-        'supports',
-        'Says Copilot uses AGENTS.md files stored anywhere in the repository (the nearest one in the directory tree takes precedence) and, alternatively, a single CLAUDE.md or GEMINI.md in the repository root.',
+        'context',
+        'Lists the files Copilot reads: .github/copilot-instructions.md, path-specific .instructions.md files, AGENTS.md stored anywhere in the repository (the nearest one wins) and a single CLAUDE.md or GEMINI.md in the repository root. It does not mention Cursor or Windsurf rule files, but that silence is not a statement that Copilot ignores them.',
       ),
     ],
-    caveat: 'The page does not say what Copilot does not read; the check speaks only when none of AGENTS.md, a root CLAUDE.md or a root GEMINI.md exists (#185).',
+    caveat:
+      'The suppression is sourced by the page above: the check stays silent when AGENTS.md, a root CLAUDE.md or a root GEMINI.md exists, because Copilot reads those (#185). What the finding itself asserts, that Copilot does not read the rule files of other tools, is not sourced.',
     lastVerified: V15(185),
   },
 
