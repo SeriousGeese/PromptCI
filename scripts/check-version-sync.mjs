@@ -33,14 +33,22 @@ export function readWorkspaceVersion(repoRootDir, pkgRelPath) {
 // before the tag moved. A published version is served at its own URL before the
 // dist-tag follows, so a run that expects a version asks for that exact version
 // (what `npm view <pkg>@<version> version` reads) and waits longer.
-const PROPAGATION_ATTEMPTS = Number(process.env.PROMPTCI_PROPAGATION_ATTEMPTS ?? 40);
+// A value that is not a positive integer (`abc`, `0`, `-3`, `1.5`) is ignored, not
+// looped on forever as NaN.
+function positiveInt(raw, fallback) {
+  const n = Number(raw);
+  return raw !== undefined && Number.isInteger(n) && n > 0 ? n : fallback;
+}
+const PROPAGATION_ATTEMPTS = positiveInt(process.env.PROMPTCI_PROPAGATION_ATTEMPTS, 40);
+// One hung registry connection costs one attempt, not the run.
+const FETCH_TIMEOUT_MS = positiveInt(process.env.PROMPTCI_FETCH_TIMEOUT_MS, 10_000);
 const PROPAGATION_DELAY_MS = Number(process.env.PROMPTCI_PROPAGATION_DELAY_MS ?? 15_000);
 // Overridable so a test can point the script at a local stand-in registry.
 const REGISTRY_URL = (process.env.PROMPTCI_REGISTRY_URL ?? 'https://registry.npmjs.org').replace(/\/+$/, '');
 
 /** The version npm serves for exactly `name@version`, or undefined when it is not (yet) there. */
 async function fetchExactVersion(name, version) {
-  const res = await fetch(`${REGISTRY_URL}/${name}/${encodeURIComponent(version)}`);
+  const res = await fetch(`${REGISTRY_URL}/${name}/${encodeURIComponent(version)}`, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
   if (res.status === 404) return undefined;
   if (!res.ok) {
     throw new Error(`registry lookup for ${name}@${version} failed: ${res.status} ${res.statusText}`);
@@ -53,7 +61,7 @@ async function fetchPublishedVersion(name, attempts = 5, delayMs = 10_000) {
   let lastErr;
   for (let attempt = 1; attempt <= attempts; attempt++) {
     try {
-      const res = await fetch(`${REGISTRY_URL}/${name}/latest`);
+      const res = await fetch(`${REGISTRY_URL}/${name}/latest`, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
       if (!res.ok) {
         throw new Error(`registry lookup for ${name} failed: ${res.status} ${res.statusText}`);
       }

@@ -89,7 +89,7 @@ describe('fixture-source-bin (#161)', () => {
     }
   });
 
-  it('reports no directory of the family when the caller says its file inventory is partial (pcic-1ik0.19)', async () => {
+  it('still reports dist and obj under a partial inventory, but never as auto-applicable (pcic-1ik0.19)', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'promptci-partial-family-'));
     try {
       fs.writeFileSync(path.join(root, 'App.csproj'), '<Project/>\n');
@@ -102,10 +102,16 @@ describe('fixture-source-bin (#161)', () => {
       const knownPaths = ['App.csproj', '.gitignore', 'AGENTS.md', 'obj/project.assets.json', 'dist/app.js'];
       const partial = (await scan({ repoPath: root, knownPaths, knownPathsComplete: false })).issues
         .find((i) => i.id === 'security-pack-unignored-dirs');
-      expect(partial).toBeUndefined();
-      // The same listing, declared complete, still reports both.
+      expect(partial?.evidence).toEqual([
+        'Directory "dist" exists but is not ignored in .gitignore.',
+        'Directory "obj" exists but is not ignored in .gitignore.',
+      ]);
+      expect(partial?.autoApplySafe).toBe(false);
+      // The same listing, declared complete, is identical but auto-applicable.
       const complete = (await scan({ repoPath: root, knownPaths, knownPathsComplete: true })).issues
         .find((i) => i.id === 'security-pack-unignored-dirs');
+      expect(complete?.autoApplySafe).toBe(true);
+      expect({ ...partial, autoApplySafe: true }).toEqual(complete);
       expect(complete?.evidence).toEqual([
         'Directory "dist" exists but is not ignored in .gitignore.',
         'Directory "obj" exists but is not ignored in .gitignore.',
