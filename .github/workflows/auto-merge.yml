@@ -56,7 +56,7 @@ jobs:
     needs: reset-review-signal
     if: >-
       always() &&
-      needs.reset-review-signal.result != 'failure' &&
+      (needs.reset-review-signal.result == 'success' || needs.reset-review-signal.result == 'skipped') &&
       !github.event.pull_request.draft &&
       (github.event.pull_request.user.login == 'dependabot[bot]' ||
        contains(github.event.pull_request.labels.*.name, 'automerge'))
@@ -71,7 +71,7 @@ jobs:
           # by the main ruleset) before merging. A do-not-merge/hold/blocked
           # label is respected here too: skip enabling rather than queueing a
           # merge a human parked.
-          pr="$(gh pr view "$PR_URL" --json labels,files,changedFiles,reviews,headRefOid)"
+          pr="$(gh pr view "$PR_URL" --json labels,files,changedFiles,latestReviews,headRefOid)"
           labels="$(jq -r '[.labels[].name | ascii_downcase] | join(",")' <<<"$pr")"
           case ",${labels}," in
             *,do-not-merge,*|*,hold,*|*,blocked,*)
@@ -83,7 +83,8 @@ jobs:
           sensitive="$(jq --arg re "$REVIEW_SIGNAL_PATHS" \
             '([.files[].path | select(test($re))] | length) > 0 or (.files | length) != .changedFiles' <<<"$pr")"
           signal="$(jq 'any(.labels[]; (.name | ascii_downcase) == "reviewed")
-            or (.headRefOid as $h | any(.reviews[]; .state == "APPROVED" and .commit.oid == $h))' <<<"$pr")"
+            or (.headRefOid as $h | any(.latestReviews[]; .state == "APPROVED" and .commit.oid == $h
+              and (.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR"))))' <<<"$pr")"
           if [ "$sensitive" = "true" ] && [ "$signal" != "true" ]; then
             echo "PR changes the scanner or a fix recipe and has no review signal (the reviewed label or an approving review of the head) — not enabling auto-merge"
             exit 0

@@ -30,7 +30,7 @@ type Pr = {
   files: string[];
   changedFiles?: number;
   labels?: string[];
-  reviews?: Array<{ state: string; oid: string }>;
+  reviews?: Array<{ state: string; oid: string; assoc?: string }>;
   autoMerge?: boolean;
 };
 
@@ -39,7 +39,8 @@ function prJson(pr: Pr): string {
     files: pr.files.map((f) => ({ path: f, additions: 1, deletions: 0 })),
     changedFiles: pr.changedFiles ?? pr.files.length,
     labels: (pr.labels ?? []).map((name) => ({ name })),
-    reviews: (pr.reviews ?? []).map((r) => ({ state: r.state, commit: { oid: r.oid } })),
+    // gh's latestReviews: one per reviewer, their latest.
+    latestReviews: (pr.reviews ?? []).map((r) => ({ state: r.state, commit: { oid: r.oid }, authorAssociation: r.assoc ?? 'MEMBER' })),
     headRefOid: HEAD,
     autoMergeRequest: pr.autoMerge ? { mergeMethod: 'SQUASH' } : null,
   });
@@ -137,6 +138,10 @@ describe('review_signal_status', SLOW, () => {
     ['an approving review of the head', { files: ['packages/cli/src/x.ts'], reviews: [{ state: 'APPROVED', oid: HEAD }] }, 'present'],
     ['an approving review of an older commit', { files: ['packages/core/src/x.ts'], reviews: [{ state: 'APPROVED', oid: 'deadbeef' }] }, 'missing'],
     ['a comment review of the head', { files: ['packages/core/src/x.ts'], reviews: [{ state: 'COMMENTED', oid: HEAD }] }, 'missing'],
+    ['an approval of the head from a collaborator', { files: ['packages/core/src/x.ts'], reviews: [{ state: 'APPROVED', oid: HEAD, assoc: 'COLLABORATOR' }] }, 'present'],
+    ['an approval of the head from anyone on the internet', { files: ['packages/core/src/x.ts'], reviews: [{ state: 'APPROVED', oid: HEAD, assoc: 'NONE' }] }, 'missing'],
+    ['an approval from a contributor who is not a collaborator', { files: ['packages/core/src/x.ts'], reviews: [{ state: 'APPROVED', oid: HEAD, assoc: 'CONTRIBUTOR' }] }, 'missing'],
+    ['a reviewer whose latest review requests changes', { files: ['packages/core/src/x.ts'], reviews: [{ state: 'CHANGES_REQUESTED', oid: HEAD }] }, 'missing'],
     ['a hold-like label is not a signal', { files: ['packages/core/src/x.ts'], labels: ['automerge', 'reviewed-later'] }, 'missing'],
     ['a truncated file list (fails closed)', { files: ['README.md'], changedFiles: 150 }, 'missing'],
     ['a src-like path elsewhere', { files: ['scripts/packages/core/src/x.ts', 'packages/core/srcx/y.ts'] }, 'not_needed'],
@@ -240,7 +245,11 @@ describe('auto-merge.yml (the automerge-label path)', SLOW, () => {
 
   it('resets before it enables, and does not enable after a failed reset', () => {
     expect(autoMerge).toMatch(/enable-automerge:\n\s+needs: reset-review-signal/);
-    expect(autoMerge).toMatch(/needs\.reset-review-signal\.result != 'failure'/);
+    // A cancelled or failed reset may have left a stale `reviewed` label: only success or skipped.
+    expect(autoMerge).toContain("(needs.reset-review-signal.result == 'success' || needs.reset-review-signal.result == 'skipped') &&");
+    expect(autoMerge).not.toMatch(/result != 'failure'/);
+    // Without always(), a skipped reset (every non-push event) would skip enabling too.
+    expect(autoMerge).toMatch(/enable-automerge:\n\s+needs: reset-review-signal\n\s+if: >-\n\s+always\(\) &&/);
     expect(autoMerge).toMatch(/reset-review-signal:\n\s+if: github\.event\.action == 'synchronize'/);
   });
 
@@ -253,6 +262,7 @@ describe('auto-merge.yml (the automerge-label path)', SLOW, () => {
     ['a scanner PR with automerge and reviewed', { files: ['packages/core/src/x.ts'], labels: ['automerge', 'reviewed'] }, true],
     ['a scanner PR approved at the head', { files: ['packages/cli/src/x.ts'], labels: ['automerge'], reviews: [{ state: 'APPROVED', oid: HEAD }] }, true],
     ['a scanner PR approved at an older commit', { files: ['packages/core/src/x.ts'], labels: ['automerge'], reviews: [{ state: 'APPROVED', oid: 'old' }] }, false],
+    ['a scanner PR approved by a non-collaborator', { files: ['packages/core/src/x.ts'], labels: ['automerge'], reviews: [{ state: 'APPROVED', oid: HEAD, assoc: 'NONE' }] }, false],
     ['a truncated file list', { files: ['README.md'], changedFiles: 300, labels: ['automerge'] }, false],
     ['a held PR', { files: ['README.md'], labels: ['automerge', 'hold'] }, false],
   ])('enable-automerge: %s -> %s', (_name, pr, expected) => {
@@ -268,6 +278,11 @@ describe('auto-merge.yml (the automerge-label path)', SLOW, () => {
     ],
     ['leaves queued auto-merge on a docs PR', { files: ['README.md'], autoMerge: true }, []],
     ['does nothing to a scanner PR with nothing queued', { files: ['packages/core/src/x.ts'] }, []],
+    [
+      'treats a truncated file list as a scanner PR and turns off queued auto-merge',
+      { files: ['README.md'], changedFiles: 150, autoMerge: true },
+      ['pr merge --disable-auto https://github.com/SeriousGeese/PromptCI/pull/216'],
+    ],
   ])('reset-review-signal: %s', (_name, pr, expected) => {
     expect(runStep('A new head needs its own review', pr).calls).toEqual(expected);
   });

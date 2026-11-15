@@ -49,8 +49,8 @@ Routine minor/patch updates are grouped into one PR per ecosystem per week; majo
 PR so each is reviewed against its own release notes.
 
 There are currently **no `pnpm.overrides`**. The `vite` and `esbuild` pins that once lived there
-were removed when both declared ranges moved past their advisories; they had begun blocking
-Dependabot's updates.
+were removed when both declared ranges moved past their advisories; they had begun to block
+Dependabot.
 
 If you add an override for a future advisory, say so here and state the condition for removing
 it. An override that outlives its advisory silently caps a dependency.
@@ -89,8 +89,8 @@ value spliced into a shell line is a script-injection sink.
 
 ## Releasing
 
-**Nothing unreviewed reaches a tag:** scanner and fix-recipe PRs merge only with a review
-signal ([Docs/ci-automation.md](Docs/ci-automation.md)); check that before tagging.
+**Nothing unreviewed reaches a tag:** check each PR since the last tag was reviewed; scanner
+and fix-recipe PRs need it to merge ([Docs/ci-automation.md](Docs/ci-automation.md)).
 
 `@promptci/cli` and `@promptci/core` publish together from a pushed tag, via
 [.github/workflows/publish.yml](.github/workflows/publish.yml). Core is bundled into cli's dist

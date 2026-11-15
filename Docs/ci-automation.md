@@ -31,12 +31,17 @@ tracker IDs, kept as provenance for the incidents that shaped the design).
   that changes any path under `packages/core/src/` or `packages/cli/src/`
   (`REVIEW_SIGNAL_PATHS` in `scripts/pr-review.sh`) is merged by the bot only
   when it carries the `reviewed` label or an approving review of its head
-  commit. Until then the run ends green with "Auto-merge waits for a review
-  signal" in its comment, and the bot pushes no fixes of its own to the PR.
-  Set `reviewed` only after a second reviewer (a person, or an agent on a
-  different model than the author) gave its verdict on the current head;
-  `auto-merge.yml` removes the label on every push, so it never vouches for
-  commits the reviewer did not see. Then re-run the review or merge by hand.
+  commit (from an owner, member or collaborator, and still that reviewer's
+  latest review). Until then the run ends green with "Auto-merge waits for a
+  review signal" in its comment, and the bot pushes no fixes of its own to the
+  PR. Set `reviewed` only after a second reviewer (a person, or an agent on a
+  different model than the author) gave its verdict on the current head.
+  `auto-merge.yml` removes the label, and turns off auto-merge already queued
+  on such a PR, on every push a person makes; the bot's own base-sync merges
+  (main into the branch, nothing to review) fire no workflow and leave it.
+  Then re-run the review or merge by hand. A merge already queued by hand
+  before the gate existed, or with `--auto` after the label, is not undone by
+  this; `--match-head-commit` pins it to the reviewed head.
   Docs-only and dependency PRs are unchanged. The check fails closed: an
   unreadable PR, or one with more changed files than gh lists, needs the
   signal.

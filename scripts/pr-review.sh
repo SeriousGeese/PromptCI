@@ -237,7 +237,9 @@ has_do_not_merge_label() {
 # does it have one? Echoes exactly one of:
 #   not_needed     no changed path matches REVIEW_SIGNAL_PATHS
 #   present        it matches, and the PR carries REVIEW_SIGNAL_LABEL or an
-#                  APPROVED review whose commit is the current head
+#                  APPROVED review whose commit is the current head, from an
+#                  owner, member or collaborator (the repo is public: anyone can
+#                  leave an approving review), and still that reviewer's latest
 #   missing        it matches and has neither
 #   lookup_failed  the PR could not be read
 # FAILS CLOSED like has_do_not_merge_label: an unreadable PR, or a file list
@@ -246,8 +248,8 @@ review_signal_status() {
   local json rc=0 err_file listed total sensitive
   err_file="$(mktemp "/tmp/pr-review-signal-${PR_NUMBER}-XXXXXX")"
   json="$($GH_CLI pr view "$PR_NUMBER" --repo "$REPO" \
-    --json files,changedFiles,labels,reviews,headRefOid 2>"$err_file")" || rc=$?
-  if [ "$rc" -ne 0 ] || ! printf '%s' "$json" | jq -e '.files and .labels and .reviews and .headRefOid' >/dev/null 2>&1; then
+    --json files,changedFiles,labels,latestReviews,headRefOid 2>"$err_file")" || rc=$?
+  if [ "$rc" -ne 0 ] || ! printf '%s' "$json" | jq -e '.files and .labels and .latestReviews and .headRefOid' >/dev/null 2>&1; then
     log "review-signal lookup FAILED (rc=${rc}): $(tr '\n' ' ' < "$err_file" | cut -c1-300)"
     rm -f "$err_file"
     echo "lookup_failed"
@@ -267,7 +269,8 @@ review_signal_status() {
     return 0
   fi
   if printf '%s' "$json" | jq -e \
-      '.headRefOid as $h | any(.reviews[]; .state == "APPROVED" and .commit.oid == $h)' >/dev/null; then
+      '.headRefOid as $h | any(.latestReviews[]; .state == "APPROVED" and .commit.oid == $h
+        and (.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR")))' >/dev/null; then
     echo "present"
     return 0
   fi
