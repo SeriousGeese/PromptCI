@@ -11,7 +11,7 @@ tracker IDs, kept as provenance for the incidents that shaped the design).
 | CI | `.github/workflows/ci.yml` | GitHub-hosted | lint / typecheck / build / test / version-sync / self-scan. The `ci` check is required by the `main` ruleset. |
 | PR Auto-Review | `.github/workflows/pr-auto-review.yml` + `scripts/pr-review.sh`, `scripts/review-prompt.md`, `scripts/extract-fixes.py` | **self-hosted, label `pr-review`** | LLM review of every same-repo PR; auto-fix + squash-merge for allow-listed authors. |
 | Auto-merge | `.github/workflows/auto-merge.yml` | GitHub-hosted | LLM-free path that squash-merges Dependabot and `automerge`-labeled PRs once required checks pass. Deliberately disjoint from the review bot. |
-| Labels | `scripts/setup-labels.sh` | one-time | merge-control labels (`do-not-merge`, `hold`, `blocked`, `automerge`) + changelog categories. |
+| Labels | `scripts/setup-labels.sh` | one-time | merge-control labels (`do-not-merge`, `hold`, `blocked`, `automerge`, `reviewed`) + changelog categories. |
 | Release notes | `.github/release.yml` | GitHub | maps changelog labels into generated release notes. |
 
 ## Behavior summary
@@ -27,6 +27,24 @@ tracker IDs, kept as provenance for the incidents that shaped the design).
 - A `do-not-merge`, `hold`, or `blocked` label (case-insensitive) stops the
   bot from merging or pushing fixes, regardless of author. The label check
   **fails closed**: if labels can't be read, nothing merges.
+- **Scanner and fix-recipe PRs wait for a review signal** (pcic-lb52). A PR
+  that changes any path under `packages/core/src/` or `packages/cli/src/`
+  (`REVIEW_SIGNAL_PATHS` in `scripts/pr-review.sh`) is merged by the bot only
+  when it carries the `reviewed` label or an approving review of its head
+  commit (from an owner, member or collaborator, and still that reviewer's
+  latest review). Until then the run ends green with "Auto-merge waits for a
+  review signal" in its comment, and the bot pushes no fixes of its own to the
+  PR. Set `reviewed` only after a second reviewer (a person, or an agent on a
+  different model than the author) gave its verdict on the current head.
+  `auto-merge.yml` removes the label, and turns off auto-merge already queued
+  on such a PR, on every push a person makes; the bot's own base-sync merges
+  (main into the branch, nothing to review) fire no workflow and leave it.
+  Then re-run the review or merge by hand. A merge already queued by hand
+  before the gate existed, or with `--auto` after the label, is not undone by
+  this; `--match-head-commit` pins it to the reviewed head.
+  Docs-only and dependency PRs are unchanged. The check fails closed: an
+  unreadable PR, or one with more changed files than gh lists, needs the
+  signal.
 - Dependabot and `automerge`-labeled PRs merge via `auto-merge.yml` using
   GitHub's native auto-merge, gated on the ruleset's required `ci` check. Do
   **not** add `dependabot[bot]` to `AUTO_REVIEW_AUTOMERGE_AUTHORS`.

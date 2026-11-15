@@ -53,6 +53,16 @@ OPENROUTER_API_KEY="${OPENROUTER_API_KEY:-}"
 # durable signal — it survives ready/draft toggles and is visible in the PR UI.
 : "${DO_NOT_MERGE_LABELS:=do-not-merge,hold,blocked}"
 
+# pcic-lb52: a PR that changes the scanner or a fix recipe is merged only after
+# an explicit second review. On 2026-11-14 four such PRs (163 to 166) merged on
+# green CI 10 to 20 minutes after they opened, and all four needed follow-up
+# fixes for wrong automatic edits. The signal is the REVIEW_SIGNAL_LABEL label
+# (removed by auto-merge.yml on every push, so it vouches for the commits it was
+# set on) or an approving review of the head commit. Docs and dependency PRs
+# are unchanged. REVIEW_SIGNAL_PATHS is an extended regex over changed paths.
+: "${REVIEW_SIGNAL_LABEL:=reviewed}"
+: "${REVIEW_SIGNAL_PATHS:=^packages/(core|cli)/src/}"
+
 # EVERY $GH_CLI call must pass --repo "$REPO" (DnD-m3uj3). Without it, gh infers
 # the repository from the git remote of the CURRENT WORKING DIRECTORY — and this
 # workflow deliberately runs no actions/checkout, so the step's default cwd
@@ -125,6 +135,10 @@ LABEL_LOOKUP_FAILED='<label lookup failed>'
 # Recorded by the callers so the PR comment reports the same answer the merge
 # decision actually used, rather than re-querying and quietly disagreeing with it.
 HOLD_LABEL=""
+
+# Why merge_pr declined for want of a review signal (pcic-lb52): "missing",
+# "lookup_failed", or "" when the review-signal gate did not stop the merge.
+REVIEW_SIGNAL=""
 
 # Set by review_llm when EVERY tier was skipped for a missing API key, i.e. no
 # call was attempted. Distinct from "all tiers failed": nothing was tried, so
@@ -217,6 +231,64 @@ has_do_not_merge_label() {
     esac
   done
   return 1
+}
+
+# pcic-lb52: does this PR need a review signal before the bot merges it, and
+# does it have one? Echoes exactly one of:
+#   not_needed     no changed path matches REVIEW_SIGNAL_PATHS
+#   present        it matches, and the PR carries REVIEW_SIGNAL_LABEL or an
+#                  APPROVED review whose commit is the current head, from an
+#                  owner, member or collaborator (the repo is public: anyone can
+#                  leave an approving review), and still that reviewer's latest
+#   missing        it matches and has neither
+#   lookup_failed  the PR could not be read
+# FAILS CLOSED like has_do_not_merge_label: an unreadable PR, or a file list
+# shorter than changedFiles (gh lists at most 100), counts as needing a signal.
+review_signal_status() {
+  local json rc=0 err_file listed total sensitive
+  err_file="$(mktemp "/tmp/pr-review-signal-${PR_NUMBER}-XXXXXX")"
+  json="$($GH_CLI pr view "$PR_NUMBER" --repo "$REPO" \
+    --json files,changedFiles,labels,latestReviews,headRefOid 2>"$err_file")" || rc=$?
+  if [ "$rc" -ne 0 ] || ! printf '%s' "$json" | jq -e '.files and .labels and .latestReviews and .headRefOid' >/dev/null 2>&1; then
+    log "review-signal lookup FAILED (rc=${rc}): $(tr '\n' ' ' < "$err_file" | cut -c1-300)"
+    rm -f "$err_file"
+    echo "lookup_failed"
+    return 0
+  fi
+  rm -f "$err_file"
+  listed="$(printf '%s' "$json" | jq '.files | length')"
+  total="$(printf '%s' "$json" | jq '.changedFiles // -1')"
+  sensitive="$(printf '%s' "$json" | jq --arg re "$REVIEW_SIGNAL_PATHS" '[.files[].path | select(test($re))] | length')"
+  if [ "$sensitive" -eq 0 ] && [ "$listed" -eq "$total" ]; then
+    echo "not_needed"
+    return 0
+  fi
+  if printf '%s' "$json" | jq -e --arg l "$REVIEW_SIGNAL_LABEL" \
+      'any(.labels[]; (.name | ascii_downcase) == ($l | ascii_downcase))' >/dev/null; then
+    echo "present"
+    return 0
+  fi
+  if printf '%s' "$json" | jq -e \
+      '.headRefOid as $h | any(.latestReviews[]; .state == "APPROVED" and .commit.oid == $h
+        and (.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR")))' >/dev/null; then
+    echo "present"
+    return 0
+  fi
+  echo "missing"
+}
+
+# The finish() result for a merge the review-signal gate declined: waiting on a
+# person is a deliberate state (green), a failed lookup is a fault (red).
+review_signal_result() {
+  if [ "$REVIEW_SIGNAL" = "missing" ]; then echo "held_awaiting_review"; else echo "blocked"; fi
+}
+
+review_signal_reason() {
+  if [ "$REVIEW_SIGNAL" = "missing" ]; then
+    echo "this PR changes the scanner or a fix recipe, so auto-merge waits for the \`${REVIEW_SIGNAL_LABEL}\` label or an approving review of the head commit"
+  else
+    echo "the PR could not be read to check for a review signal, so the merge failed closed"
+  fi
 }
 
 # This pipeline's own branch pushes (base-sync merges, auto-review fixes) are
@@ -336,6 +408,24 @@ merge_pr() {
     fi
     return 1
   fi
+
+  # pcic-lb52: re-read at merge time too, for the same reason as the hold.
+  local signal
+  signal="$(review_signal_status)"
+  case "$signal" in
+    not_needed|present) ;;
+    missing)
+      REVIEW_SIGNAL="missing"
+      log "MERGE WAITING: PR #${PR_NUMBER} changes a path matching ${REVIEW_SIGNAL_PATHS} — needs the '${REVIEW_SIGNAL_LABEL}' label or an approving review of the head commit."
+      return 1
+      ;;
+    *)
+      REVIEW_SIGNAL="lookup_failed"
+      annotate error "PR #${PR_NUMBER} was not auto-merged: the review-signal lookup failed, so the gate failed closed (pcic-lb52)."
+      log "MERGE BLOCKED: PR #${PR_NUMBER} — review-signal lookup failed, failing closed."
+      return 1
+      ;;
+  esac
 
   if $GH_CLI pr merge "$PR_NUMBER" --repo "$REPO" --squash 2>&1; then
     merged=true
@@ -1000,6 +1090,7 @@ review:
   llm_completion_tokens: ${LLM_COMPLETION_TOKENS}
   automerge_eligible: $(is_automerge_author && echo true || echo false)
   do_not_merge_label: ${HOLD_LABEL:-none}
+  review_signal: ${REVIEW_SIGNAL:-not_blocking}
   started_at: ${STARTED_AT}
   completed_at: ${completed_at}
   duration_seconds: ${duration}
@@ -1044,6 +1135,29 @@ HOLDEOF
 The review ran, but the merge is deliberately blocked. Remove the label to let
 the next review merge this PR.
 HOLDEOF
+  fi
+
+  # pcic-lb52: say why a green PR that changes the scanner is still open.
+  if [ "$REVIEW_SIGNAL" = "missing" ]; then
+    cat >> "$COMMENT_FILE" <<SIGNALEOF
+
+### ⏸️ Auto-merge waits for a review signal
+
+This PR changes the scanner or a fix recipe (a path matching \`${REVIEW_SIGNAL_PATHS}\`).
+Unreviewed changes there have shipped wrong automatic edits, so the bot merges
+them only after a second review:
+
+- add the \`${REVIEW_SIGNAL_LABEL}\` label once the reviewer's verdict covers the head commit (any later push removes it), **or** approve the head commit;
+- then re-run this review (\`gh workflow run pr-auto-review.yml --ref ${PR_HEAD_REF} -f pr_number=${PR_NUMBER}\`) or merge by hand.
+SIGNALEOF
+  elif [ "$REVIEW_SIGNAL" = "lookup_failed" ]; then
+    cat >> "$COMMENT_FILE" <<SIGNALEOF
+
+### ⛔ Auto-merge held — the review-signal check could not read this PR
+
+The merge failed closed. Re-run this review; if it recurs on every PR, check the
+\`review-signal lookup FAILED\` line in the run log.
+SIGNALEOF
   fi
 
   # Any non-success result fails the workflow (red check) so the PR is not
@@ -1106,6 +1220,9 @@ main() {
   local qg_last="none"
   local qg_failure_context=""
   local automerge_eligible=false
+  # pcic-lb52: true when this PR needs a review signal before it merges (or the
+  # PR could not be read to tell). The bot then pushes no fixes to it.
+  local review_gated=false
 
   # Dependabot short-circuit. auto-merge.yml (GitHub-hosted, LLM-free) is the merge
   # authority for Dependabot PRs — the comment above is_automerge_author has said so
@@ -1144,6 +1261,16 @@ main() {
     automerge_eligible=false
   else
     HOLD_LABEL=""
+  fi
+
+  # Informational here as well; merge_pr re-checks and is the real gate.
+  if [ "$automerge_eligible" = "true" ]; then
+    local early_signal
+    early_signal="$(review_signal_status)"
+    if [ "$early_signal" != "not_needed" ]; then
+      review_gated=true
+      log "REVIEW SIGNAL: ${early_signal} — this PR changes a path matching ${REVIEW_SIGNAL_PATHS}; the bot will push no fixes, and merges only with the '${REVIEW_SIGNAL_LABEL}' label or an approving review of the head commit."
+    fi
   fi
 
   log "=== PR Auto-Review Start: #${PR_NUMBER} ==="
@@ -1209,6 +1336,8 @@ main() {
       if merge_pr; then
         merge_sha="$($GH_CLI pr view "$PR_NUMBER" --repo "$REPO" --json mergeCommit --jq '.mergeCommit.oid' 2>/dev/null || echo "$HEAD_SHA")"
         finish "✅ Previous auto-review fixes passed CI. PR merged." "merged" 0 "$merge_sha"
+      elif [ -n "$REVIEW_SIGNAL" ]; then
+        finish "⏸️ Previous auto-review fixes passed CI. Not merged: $(review_signal_reason)." "$(review_signal_result)" 0
       else
         finish "⚠️ CI passed but merge failed (may already be merged, or needs manual intervention)." "blocked" 0
       fi
@@ -1358,14 +1487,21 @@ ${qg_failure_context}"
     # Comment-only mode when fixes won't be applied: report findings, never
     # touch the author's branch. Two reasons: a blocking label, or a
     # non-allowlisted author. Distinguish them so the message is honest.
-    if [ "$automerge_eligible" != "true" ]; then
+    # pcic-lb52: a third reason, the PR needs a review signal. The bot pushes
+    # no code of its own to such a PR (a review signal vouches for the commits
+    # a person reviewed, not for bot commits added after), but it still waits
+    # for CI and merges once the signal is there.
+    if [ "$automerge_eligible" != "true" ] || [ "$review_gated" = "true" ]; then
       local skip_reason
       if [ -n "$HOLD_LABEL" ]; then
         skip_reason="blocked by the '${HOLD_LABEL}' label"
         log "The '${HOLD_LABEL}' label blocks auto-fix — reporting ${has_fixes} suggested fixes without applying"
-      else
+      elif [ "$automerge_eligible" != "true" ]; then
         skip_reason="author not in auto-merge allowlist"
         log "Author '${PR_AUTHOR}' is not in AUTOMERGE_AUTHORS — reporting ${has_fixes} suggested fixes without applying"
+      else
+        skip_reason="this PR changes the scanner or a fix recipe; the bot does not add unreviewed code to it"
+        log "PR changes a path matching ${REVIEW_SIGNAL_PATHS} — reporting ${has_fixes} suggested fixes without applying"
       fi
       local suggestions
       suggestions="$(echo "$json_fixes" | jq -r '.fixes[] | "- **\(.path)** — \(.description)"' 2>/dev/null || echo "- (could not render suggestions)")"
@@ -1375,6 +1511,12 @@ ${qg_failure_context}"
 
 ${suggestions}"
       CONVERGE_ATTEMPTS="$(echo "$CONVERGE_ATTEMPTS" | jq '. += [{"check":"review","result":"suggestions_only"}]' 2>/dev/null || true)"
+      if [ "$automerge_eligible" = "true" ]; then
+        # Gated, not ineligible: carry the suggestions into the final comment
+        # and go on to CI and merge_pr, which waits for the review signal.
+        review_summary="${summary}"
+        break
+      fi
       finish "$summary" "commented" "$iterations"
     fi
 
@@ -1587,6 +1729,8 @@ $(cat "$DROPPED_FIXES_FILE")"
     if merge_pr; then
       merge_sha="$($GH_CLI pr view "$PR_NUMBER" --repo "$REPO" --json mergeCommit --jq '.mergeCommit.oid' 2>/dev/null || echo "$push_sha")"
       finish "✅ Review complete, CI green. PR merged.${review_note}" "merged" "$iterations" "$merge_sha"
+    elif [ -n "$REVIEW_SIGNAL" ]; then
+      finish "⏸️ Review complete, CI green. Not merged: $(review_signal_reason).${review_note}" "$(review_signal_result)" "$iterations"
     else
       finish "✅ CI passed but merge failed (may already be merged, or needs manual intervention).${review_note}" "blocked" "$iterations"
     fi
