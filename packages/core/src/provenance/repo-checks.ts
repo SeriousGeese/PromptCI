@@ -403,8 +403,9 @@ const OWASP_UPLOAD = src(
 const CURSOR_IGNORE = src(
   'https://cursor.com/docs/reference/ignore-file',
   'Cursor ignore files',
-  'contradicts',
-  'Says Cursor ignores files in .gitignore and also a default ignore list (.env*, *.lock, node_modules/, .git/) and blocks Agent and Tab access to files in .cursorignore, so it skips more than gitignored paths; terminal and MCP tools are not blocked.',
+  'supports',
+  'Says Cursor ignores files in .gitignore and also a default ignore list (.env*, *.lock, node_modules/, .git/) and blocks Agent and Tab access to files in .cursorignore, and that the terminal and MCP tools Agent uses cannot block access; the detector accounts for .cursorignore and does not claim Cursor skips only gitignored paths.',
+  REREAD_ON,
 );
 const CLAUDE_SETTINGS_REFERENCE = src(
   'https://code.claude.com/docs/en/settings-reference',
@@ -946,15 +947,14 @@ export const REPO_CHECKS_PROVENANCE: readonly CheckProvenance[] = [
   },
   {
     id: 'security-pack/generated-directories',
-    refuted: true,
     detector: 'security-pack',
     title: 'Unignored generated directories reach AI tools',
     kind: 'tool-fact',
     claim:
-      'Directories such as coverage, dist, build and .next that are not gitignored can be read into the context of AI coding tools, which inflates token cost, because tools such as Cursor skip only gitignored paths.',
+      'Cursor skips .gitignore paths, a default list (.env*, *.lock, node_modules/, .git/) and .cursorignore paths for Agent and Tab but not what its terminal and MCP tools read, so a generated directory such as coverage, dist, build or .next that none of those cover can be read into context, which inflates token cost.',
     appliesTo: ['cursor', 'claude-code'],
     sources: [CURSOR_IGNORE, CLAUDE_SETTINGS_REFERENCE],
-    lastVerified: VERIFIED,
+    lastVerified: REVERIFIED(188),
   },
 
   // ── framework-packs ─────────────────────────────────────────────────────────

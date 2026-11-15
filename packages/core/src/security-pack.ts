@@ -232,6 +232,132 @@ function holdsSourceFiles(tree: Tree, dir: string): boolean {
   return walk(dir, 1);
 }
 
+/**
+ * #212: what sits under a reported directory, at any depth. `files` counts the
+ * non-dotfiles, `dotfiles` the placeholders (`.gitkeep`); `partial` is true when
+ * the walk stopped at its bounds or could not list a directory, so the counts
+ * are a lower bound.
+ */
+function contentsOf(tree: Tree, dir: string): { files: number; dotfiles: number; partial: boolean } {
+  const out = { files: 0, dotfiles: 0, partial: false };
+  const walk = (rel: string, depth: number): void => {
+    const entries = tree.entries(rel);
+    if (typeof entries === 'string') {
+      out.partial = true;
+      return;
+    }
+    for (const entry of entries.values()) {
+      if (out.files + out.dotfiles > BIN_WALK_MAX_FILES) {
+        out.partial = true;
+        return;
+      }
+      if (entry.isDirectory()) {
+        if (depth >= BIN_WALK_MAX_DEPTH) out.partial = true;
+        else walk(`${rel}/${entry.name}`, depth + 1);
+      } else if (entry.name.startsWith('.')) out.dotfiles++;
+      else out.files++;
+    }
+  };
+  walk(dir, 1);
+  return out;
+}
+
+/** `p` as a repo-relative POSIX path without `./`, a leading slash or glob tail; the first segment names the directory. */
+function firstSegment(p: string): string {
+  const normalized = path.posix.normalize(p.replace(/\\/g, '/').replace(/^!/, '')).replace(/^(?:\.\/)+/, '').replace(/^\/+/, '');
+  return normalized.split('/')[0] ?? '';
+}
+
+function stringsIn(value: unknown, out: string[] = []): string[] {
+  if (typeof value === 'string') out.push(value);
+  else if (Array.isArray(value)) for (const v of value) stringsIn(v, out);
+  else if (typeof value === 'object' && value !== null) for (const v of Object.values(value)) stringsIn(v, out);
+  return out;
+}
+
+/**
+ * #212: directories the repository's own manifests point into on purpose, so
+ * the directory is committed deliberately and is not a stray build artifact:
+ * a package.json `main` / `module` / `types` / `bin` / `files` / `exports`
+ * (and `directories.bin`) target, and an Action's `runs.main` / `pre` / `post`.
+ * Unreadable or unfetched files name nothing: a hosted scan that listed them
+ * without fetching them is covered by the tracked-content rule instead.
+ */
+function manifestTargetDirs(tree: Tree): Set<string> {
+  const dirs = new Set<string>();
+  const add = (target: string): void => {
+    const first = firstSegment(target);
+    if (first && first !== '..' && first !== '.') dirs.add(first);
+  };
+  const pkg = tree.readText('package.json', { maxBytes: 1_000_000 });
+  if (pkg.state === 'found') {
+    try {
+      const parsed = JSON.parse(pkg.content) as Record<string, unknown> | null;
+      if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+        for (const key of ['main', 'module', 'types', 'typings', 'browser', 'bin', 'files', 'exports']) {
+          for (const target of stringsIn(parsed[key])) add(target);
+        }
+        const directories = parsed.directories;
+        if (typeof directories === 'object' && directories !== null) {
+          for (const target of stringsIn((directories as Record<string, unknown>).bin)) add(target);
+        }
+      }
+    } catch {
+      // not JSON: names nothing
+    }
+  }
+  for (const name of ['action.yml', 'action.yaml']) {
+    const action = tree.readText(name, { maxBytes: 256 * 1024 });
+    if (action.state !== 'found') continue;
+    for (const line of action.content.split(/\r?\n/)) {
+      const m = /^\s+(?:main|pre|post)\s*:\s*['"]?([^'"\s#]+)/.exec(line);
+      if (m?.[1]) add(m[1]);
+    }
+  }
+  return dirs;
+}
+
+/** Markdown files read for links into a directory: the root's own, plus the instruction files. */
+const MARKDOWN_LINK_FILES = 30;
+
+/**
+ * #212: true when a markdown file links or embeds a file under `dir` that the
+ * repository holds (a coverage badge: `![coverage](coverage/badge.svg)`).
+ * Only link and image targets count; a sentence that merely names `dist/cli.js`
+ * is not a reference, and the target must exist.
+ */
+function markdownLinksInto(tree: Tree, dir: string, texts: string[]): boolean {
+  const escaped = dir.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const re = new RegExp(`(?:\\]\\(\\s*<?|(?:src|href)\\s*=\\s*["'])(?:\\./)?(${escaped}/[^)\\s>"'#?]+)`, 'gi');
+  for (const text of texts) {
+    for (const m of text.matchAll(re)) {
+      const found = tree.lookup(m[1]!);
+      if (found.state === 'found' && !found.isDir) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * #212: `bin/` holding a tool the build needs and the repository commits on
+ * purpose (a Gradle `files('bin/google-java-format.jar')`, a Maven `systemPath`
+ * into `bin/`, a .NET target running `bin\nuget.exe`). A build file naming a
+ * FILE under `bin/` is a dependency; an `OutputPath` such as `bin\Debug\` is the
+ * output location and names no file, and a `Debug`/`Release` path is output.
+ */
+function buildFileNamesToolInBin(tree: Tree, rootNames: string[]): boolean {
+  const re = /(?:^|[\s"'>(=,]|[})][\\/]?)bin[\\/]([^\s"'<>)]*\.\w+)/g;
+  for (const name of rootNames) {
+    if (!isDotnetBuildFile(name) && !isJvmBuildFile(name)) continue;
+    const read = tree.readText(name, { maxBytes: 1_000_000 });
+    if (read.state !== 'found') continue;
+    for (const m of read.content.matchAll(re)) {
+      if (!/(?:^|[\\/])(?:Debug|Release)[\\/]/i.test(m[1]!)) return true;
+    }
+  }
+  return false;
+}
+
 function issueId(checkId: string): string {
   const hash = crypto.createHash('sha1').update(checkId).digest('hex').slice(0, 12);
   return `security-pack-${hash}`;
@@ -488,12 +614,59 @@ export function detectSecurityPack(context: RepoContext): PromptCiIssue[] {
   // 7. Unignored build, output, or coverage directories (Cost 9)
   const commonDirs = ['coverage', 'dist', 'build', '.next', 'bin', 'obj', 'temp', 'tmp', 'logs'];
   const rootNames = rootFileNames(tree);
+  // #188: Cursor skips .gitignore paths, its default list (.env*, *.lock, node_modules/, .git/) and
+  // .cursorignore for Agent and Tab, but not what its terminal and MCP tools read.
+  const cursorignoreRead = tree.readText('.cursorignore');
+  const cursorignoreLines = (cursorignoreRead.state === 'found' ? cursorignoreRead.content : '')
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l && !l.startsWith('#'));
+  const onlyCursorEvidenced = files.length > 0 && files.every((f) => f.fileType === 'cursor');
+  // #212: what a repository's own files say is committed on purpose.
+  let deliberateDirs: Set<string> | undefined;
+  let markdownTexts: string[] | undefined;
+  const loadMarkdown = (): string[] => {
+    if (markdownTexts) return markdownTexts;
+    const texts = files.filter((f) => /\.(?:md|mdx|markdown)$/i.test(f.path)).map((f) => f.content);
+    const rootEntries = tree.entries(tree.root);
+    if (typeof rootEntries !== 'string') {
+      for (const entry of rootEntries.values()) {
+        if (texts.length >= MARKDOWN_LINK_FILES) break;
+        if (entry.isDirectory() || !/\.(?:md|mdx|markdown)$/i.test(entry.name)) continue;
+        const read = tree.readText(entry.name, { maxBytes: 256 * 1024 });
+        if (read.state === 'found') texts.push(read.content);
+      }
+    }
+    markdownTexts = texts;
+    return texts;
+  };
+  const trackedCounts = new Map<string, number>();
+  const cursorExcluded = new Set<string>();
   const unignoredDirs = gitignoreUnknown ? [] : commonDirs.filter((d) => {
     if (!tree.isDir(d)) return false;
     // #161: `bin`/`obj` are build output only where the build that writes them lives.
     const gate = ECOSYSTEM_OUTPUT_DIRS[d];
     if (gate && !gate(tree, rootNames)) return false;
-    return !gitignoreLines.some((line) => gitignoreLineMatchesTarget(line, d));
+    if (gitignoreLines.some((line) => gitignoreLineMatchesTarget(line, d))) return false;
+    // #188: a directory .cursorignore lists is not read by Cursor's Agent or Tab. When Cursor is the only
+    // tool the instruction files evidence there is nothing left to report; otherwise say so and keep it.
+    if (cursorignoreLines.some((line) => gitignoreLineMatchesTarget(line, d))) {
+      if (onlyCursorEvidenced) return false;
+      cursorExcluded.add(d);
+    }
+    // #212: a directory holding only placeholder dotfiles (`logs/.gitkeep`) is committed on purpose.
+    const contents = contentsOf(tree, d);
+    if (contents.files === 0 && contents.dotfiles > 0 && !contents.partial) return false;
+    // #212: a directory a manifest, an Action, a markdown link or a build file points into is deliberate.
+    deliberateDirs ??= manifestTargetDirs(tree);
+    if (deliberateDirs.has(d)) return false;
+    if (markdownLinksInto(tree, d, loadMarkdown())) return false;
+    if (d === 'bin' && buildFileNamesToolInBin(tree, rootNames)) return false;
+    // #212: with a complete inventory, files listed under the directory are tracked by definition.
+    if (tree.inventory?.complete === true && (contents.files > 0 || contents.partial)) {
+      trackedCounts.set(d, contents.files);
+    }
+    return true;
   });
 
   if (unignoredDirs.length > 0) {
@@ -504,12 +677,28 @@ export function detectSecurityPack(context: RepoContext): PromptCiIssue[] {
       title: 'Unignored build, output, or coverage directories',
       summary:
         `The repository contains directory/directories (${unignoredDirs.join(', ')}) that are ` +
-        `commonly generated but not ignored in .gitignore. AI tools may ingest these, ` +
-        `inflating token costs.`,
+        `commonly generated but not ignored in .gitignore. AI coding tools may read these into ` +
+        `their context, inflating token costs; each tool decides what it skips (Cursor skips ` +
+        `.gitignore, .cursorignore and a default list, but not what its terminal and MCP tools read).` +
+        (trackedCounts.size > 0
+          ? ` ${[...trackedCounts.keys()].join(', ')} already holds tracked files, which a .gitignore entry does not untrack.`
+          : ''),
       filePaths: ['.gitignore'],
       locations: [],
-      evidence: unignoredDirs.map((d) => `Directory "${d}" exists but is not ignored in .gitignore.`),
-      recommendation: `Add generated directories to .gitignore. For example: "${unignoredDirs.map((d) => `${d}/`).join(', ')}"`,
+      evidence: unignoredDirs.map((d) => {
+        const tracked = trackedCounts.get(d);
+        const base = `Directory "${d}" exists but is not ignored in .gitignore`;
+        const parts: string[] = [];
+        if (tracked !== undefined) parts.push(`it holds ${tracked > 0 ? `${tracked} ` : ''}tracked file(s), so ignoring it does not untrack them`);
+        if (cursorExcluded.has(d)) parts.push('Cursor already skips it through .cursorignore, other tools may not');
+        return parts.length > 0 ? `${base}; ${parts.join('; ')}.` : `${base}.`;
+      }),
+      recommendation:
+        `Add generated directories to .gitignore. For example: "${unignoredDirs.map((d) => `${d}/`).join(', ')}"` +
+        (trackedCounts.size > 0
+          ? `. Files already committed stay committed: run \`git rm -r --cached ${[...trackedCounts.keys()].join(' ')}\` as well, ` +
+            'or leave the directory out of .gitignore if it is committed on purpose.'
+          : ''),
       fixRecipe: unignoredDirs.map((d) => `echo "${d}/" >> .gitignore`).join('\n'),
       // `applyFixRecipe` appends each missing directory to .gitignore — a
       // mechanical, reversible edit, so `promptci fix` may auto-apply it.
@@ -518,7 +707,8 @@ export function detectSecurityPack(context: RepoContext): PromptCiIssue[] {
       // directory, so the finding is still reported (`bin` is withheld above)
       // and the human decides. There is no `fixEdits` to drop: the edit is
       // derived from the id and evidence, which only `autoApplySafe` gates.
-      autoApplySafe: tree.inventory?.complete !== false,
+      // #212: and not when a reported directory holds tracked files: the recipe is then not the complete fix.
+      autoApplySafe: tree.inventory?.complete !== false && trackedCounts.size === 0,
       confidence: 0.8,
     });
   }
