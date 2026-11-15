@@ -22,7 +22,7 @@
  *      installed). Reported instead of (a) for those names.
  *  (c) VERSION-GATED API — `ReactDOM.render` against React >= 18 (warning) or
  *      >= 19 (removed: high), `getInitialProps` in a Next.js app that uses the
- *      app/ router, and NgModule-centric guidance for an Angular >= 17 project
+ *      app/ router, and NgModule-centric guidance for an Angular >= 19 project
  *      that has no `*.module.ts` files.
  *
  * Only agent-facing instruction files are read (not README/docs, which mostly
@@ -134,7 +134,7 @@ const DEPRECATED_PACKAGES: Readonly<Record<string, DeprecatedPackage>> = {
     command: true,
   },
   'node-sass': {
-    status: 'is deprecated (LibSass is no longer maintained)',
+    status: 'is deprecated (LibSass is deprecated; maintained best-effort, no new features)',
     replacement: 'sass (Dart Sass)',
     distinctive: true,
     command: true,
@@ -1011,7 +1011,7 @@ function checkNgModule(context: RepoContext, files: InstructionFile[], manifests
   if (hits.length === 0) return [];
   loadLazyFacts(context, manifests);
   const angular = lowestMajor(manifests, ['@angular/core']);
-  if (angular === null || angular.major < 17) return [];
+  if (angular === null || angular.major < 19) return [];
   // A project that still has NgModule files is genuinely module-based; the guidance is right for it.
   if (hasNgModuleFiles(context.repoRoot)) return [];
   return [
@@ -1019,7 +1019,7 @@ function checkNgModule(context: RepoContext, files: InstructionFile[], manifests
       id: issueId('ngmodule', 'NgModule'),
       severity: 'info',
       category: 'stale_instruction',
-      title: 'Instructions are NgModule-centric in an Angular 17+ project with no modules',
+      title: 'Instructions are NgModule-centric in an Angular 19+ project with no modules',
       summary:
         `Instruction files describe NgModules, but package.json declares @angular/core ${angular.spec} ` +
         'and the repo has no `*.module.ts` files. New Angular projects use standalone components, so an agent ' +

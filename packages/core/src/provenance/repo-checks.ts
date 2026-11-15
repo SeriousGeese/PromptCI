@@ -13,10 +13,14 @@ import type { CheckProvenance, ProvenanceSource, SourceStance } from './types.js
 const READ_ON = '2026-11-13';
 const VERIFIED = { date: '2026-11-13', by: 'Claude agent backfill (pcic-kvv3.1), pending human review' } as const;
 
-const src = (url: string, title: string, stance: SourceStance, note: string): ProvenanceSource => ({
+/** Re-read during the 2026-11-15 vendor-doc fixes; those records carry this date, not the backfill date. */
+const REREAD_ON = '2026-11-15';
+const REVERIFIED = (issue: number) => ({ date: REREAD_ON, by: `agent run ${REREAD_ON} (issue #${issue})` }) as const;
+
+const src = (url: string, title: string, stance: SourceStance, note: string, readOn: string = READ_ON): ProvenanceSource => ({
   url,
   title,
-  readOn: READ_ON,
+  readOn,
   stance,
   note,
 });
@@ -182,8 +186,9 @@ const REACT_18 = src(
 const ANGULAR_COMPONENTS = src(
   'https://angular.dev/guide/components',
   'Angular components guide',
-  'contradicts',
-  'Says components are standalone by default and that in versions before 19.0.0 the standalone option defaults to false, while the detector treats Angular 17 and 18 as already standalone by default; the page does not say what ng new generated in those versions.',
+  'supports',
+  'Says that in Angular versions before 19.0.0 the standalone option defaults to false, so components are standalone by default from 19.0.0, which is the version the detector now starts at.',
+  REREAD_ON,
 );
 const ANGULAR_NGMODULES = src(
   'https://angular.dev/guide/ngmodules/overview',
@@ -209,8 +214,9 @@ const TSLINT_README = src(
 const LIBSASS_DEPRECATED = src(
   'https://sass-lang.com/blog/libsass-is-deprecated/',
   'Sass blog, LibSass is deprecated',
-  'contradicts',
-  'Says LibSass and Node Sass are deprecated and Dart Sass is the replacement, but also says LibSass and Node Sass will continue to be maintained indefinitely on a best-effort basis, which contradicts the detector wording that LibSass is no longer maintained.',
+  'supports',
+  'Says LibSass and Node Sass are deprecated, no new features will be added and Dart Sass is the replacement, while they continue to be maintained indefinitely on a best-effort basis; the detector words it as deprecated (maintained best-effort, no new features), not as unmaintained.',
+  REREAD_ON,
 );
 const REQUEST_ISSUE = src(
   'https://github.com/request/request/issues/3142',
@@ -619,10 +625,10 @@ export const REPO_CHECKS_PROVENANCE: readonly CheckProvenance[] = [
     title: 'Packages their maintainers have deprecated or stopped maintaining',
     kind: 'tool-fact',
     claim:
-      'moment is in maintenance mode, request, tslint and node-sass are deprecated, react-scripts belongs to the deprecated Create React App, and enzyme has no adapter for current React versions.',
+      'moment is in maintenance mode, request, tslint and node-sass (LibSass, maintained best-effort with no new features) are deprecated, react-scripts belongs to the deprecated Create React App, and enzyme has no adapter for current React versions.',
     appliesTo: 'n/a',
     sources: [MOMENT_STATUS, REQUEST_NPM, REQUEST_ISSUE, TSLINT_README, LIBSASS_DEPRECATED, CRA_SUNSET, ENZYME_README],
-    lastVerified: VERIFIED,
+    lastVerified: REVERIFIED(190),
   },
   {
     id: 'dependency-staleness/version-gated-apis',
@@ -642,17 +648,16 @@ export const REPO_CHECKS_PROVENANCE: readonly CheckProvenance[] = [
 
   {
     id: 'dependency-staleness/angular-standalone-default',
-    refuted: true,
     detector: 'dependency-staleness',
     title: 'Angular standalone components by default',
     kind: 'tool-fact',
-    claim: 'Angular 17 and later projects default to standalone components rather than NgModules.',
+    claim: 'Angular projects from 19.0.0 default to standalone components rather than NgModules.',
     appliesTo: 'n/a',
     sources: [ANGULAR_COMPONENTS, { ...ANGULAR_NGMODULES, stance: 'context' }],
     thresholds: [
-      { name: 'NgModule guidance stale from Angular major (the detector value; the standalone default arrives in 19.0.0)', value: 17, unit: 'major version', where: 'dependency-staleness.ts:checkNgModule', source: 'unverified' },
+      { name: 'NgModule guidance stale from Angular major (standalone is the default from 19.0.0)', value: 19, unit: 'major version', where: 'dependency-staleness.ts:checkNgModule', source: ANGULAR_COMPONENTS },
     ],
-    lastVerified: VERIFIED,
+    lastVerified: REVERIFIED(186),
   },
 
   // ── ci-alignment ────────────────────────────────────────────────────────────
