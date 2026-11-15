@@ -28,15 +28,32 @@ export function readWorkspaceVersion(repoRootDir, pkgRelPath) {
   return pkg.version;
 }
 
-// 12 x 15s = three minutes, about 2.5x the propagation lag seen on 2026-11-07.
-const PROPAGATION_ATTEMPTS = Number(process.env.PROMPTCI_PROPAGATION_ATTEMPTS ?? 12);
+// 40 x 15s = ten minutes. The 0.4.2 publish run reported FAILED although both
+// packages had published: the old wait (12 x 15s on the `latest` dist-tag) ran out
+// before the tag moved. A published version is served at its own URL before the
+// dist-tag follows, so a run that expects a version asks for that exact version
+// (what `npm view <pkg>@<version> version` reads) and waits longer.
+const PROPAGATION_ATTEMPTS = Number(process.env.PROMPTCI_PROPAGATION_ATTEMPTS ?? 40);
 const PROPAGATION_DELAY_MS = Number(process.env.PROMPTCI_PROPAGATION_DELAY_MS ?? 15_000);
+// Overridable so a test can point the script at a local stand-in registry.
+const REGISTRY_URL = (process.env.PROMPTCI_REGISTRY_URL ?? 'https://registry.npmjs.org').replace(/\/+$/, '');
+
+/** The version npm serves for exactly `name@version`, or undefined when it is not (yet) there. */
+async function fetchExactVersion(name, version) {
+  const res = await fetch(`${REGISTRY_URL}/${name}/${encodeURIComponent(version)}`);
+  if (res.status === 404) return undefined;
+  if (!res.ok) {
+    throw new Error(`registry lookup for ${name}@${version} failed: ${res.status} ${res.statusText}`);
+  }
+  const body = await res.json();
+  return typeof body.version === 'string' && body.version.length > 0 ? body.version : undefined;
+}
 
 async function fetchPublishedVersion(name, attempts = 5, delayMs = 10_000) {
   let lastErr;
   for (let attempt = 1; attempt <= attempts; attempt++) {
     try {
-      const res = await fetch(`https://registry.npmjs.org/${name}/latest`);
+      const res = await fetch(`${REGISTRY_URL}/${name}/latest`);
       if (!res.ok) {
         throw new Error(`registry lookup for ${name} failed: ${res.status} ${res.statusText}`);
       }
@@ -87,25 +104,46 @@ async function main() {
 
   if (!registryMode) return;
 
-  // The registry does not serve a freshly published version immediately: the
-  // v0.2.0 publish (run 42386457663) reported both `+ @promptci/*@0.2.0`
-  // lines, yet /latest kept answering 0.1.0 for about 75 seconds, so this
-  // step failed a release that had in fact succeeded. When a tag is expected,
-  // keep re-reading until both packages report it (or the attempts run out).
+  // The registry does not serve a freshly published version immediately, and
+  // the `latest` dist-tag lags the version itself: the v0.2.0 publish (run
+  // 42386457663) saw /latest answer 0.1.0 for about 75 seconds, and the 0.4.2
+  // run gave up on the dist-tag although both packages had published. When a
+  // tag is expected, ask for that exact version until both packages serve it
+  // (or the attempts run out). With no tag there is nothing to wait for.
   let publishedCli;
   let publishedCore;
-  for (let attempt = 1; ; attempt++) {
+  if (tagVersion === undefined) {
     [publishedCli, publishedCore] = await Promise.all([
       fetchPublishedVersion('@promptci/cli'),
       fetchPublishedVersion('@promptci/core'),
     ]);
-    const propagated = tagVersion === undefined || (publishedCli === tagVersion && publishedCore === tagVersion);
-    if (propagated || attempt >= PROPAGATION_ATTEMPTS) break;
-    console.error(
-      `check-version-sync: npm serves cli@${publishedCli} core@${publishedCore}, expected ${tagVersion}; ` +
-        `waiting ${PROPAGATION_DELAY_MS / 1000}s for propagation (attempt ${attempt}/${PROPAGATION_ATTEMPTS}).`,
-    );
-    await new Promise(resolve => setTimeout(resolve, PROPAGATION_DELAY_MS));
+  } else {
+    let lastErr;
+    for (let attempt = 1; ; attempt++) {
+      const lookup = name =>
+        fetchExactVersion(name, tagVersion).catch(err => {
+          lastErr = err;
+          return undefined;
+        });
+      [publishedCli, publishedCore] = await Promise.all([lookup('@promptci/cli'), lookup('@promptci/core')]);
+      if (publishedCli === tagVersion && publishedCore === tagVersion) break;
+      if (attempt >= PROPAGATION_ATTEMPTS) {
+        console.error(
+          `check-version-sync: after ${PROPAGATION_ATTEMPTS} attempts npm serves cli@${publishedCli ?? 'nothing'} ` +
+            `and core@${publishedCore ?? 'nothing'} for ${tagVersion}. The publish may not have propagated, ` +
+            'or it did not actually publish that version.' +
+            (lastErr ? ` Last registry error: ${lastErr instanceof Error ? lastErr.message : String(lastErr)}` : ''),
+        );
+        process.exitCode = 1;
+        return;
+      }
+      console.error(
+        `check-version-sync: npm serves cli@${publishedCli ?? 'nothing'} core@${publishedCore ?? 'nothing'} ` +
+          `for ${tagVersion}; waiting ${PROPAGATION_DELAY_MS / 1000}s for propagation ` +
+          `(attempt ${attempt}/${PROPAGATION_ATTEMPTS}).`,
+      );
+      await new Promise(resolve => setTimeout(resolve, PROPAGATION_DELAY_MS));
+    }
   }
 
   if (publishedCli !== publishedCore) {

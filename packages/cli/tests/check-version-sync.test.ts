@@ -9,7 +9,9 @@
  * the real packages/cli and packages/core package.json files.
  */
 import { describe, it, expect, afterEach } from 'vitest';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
+import * as http from 'node:http';
+import type { AddressInfo } from 'node:net';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -81,6 +83,72 @@ describe('check-version-sync script', () => {
     const result = run(dir, ['--tag', '9.9.9']);
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain('does not match the workspace version');
+  });
+
+  // pcic-1ik0.19: the 0.4.2 publish run reported FAILED although both packages
+  // had published, because the final check waited on the `latest` dist-tag.
+  describe('--registry with --tag', () => {
+    async function withRegistry(
+      exactMissesBeforeServing: number,
+      body: (url: string, hits: { exact: number; latest: number }) => Promise<void>,
+    ): Promise<void> {
+      const hits = { exact: 0, latest: 0 };
+      const server = http.createServer((req, res) => {
+        res.setHeader('content-type', 'application/json');
+        if (req.url?.endsWith('/latest')) {
+          hits.latest++;
+          res.end(JSON.stringify({ version: '1.2.2' })); // the dist-tag has not moved
+        } else if (req.url?.endsWith('/1.2.3')) {
+          hits.exact++;
+          if (hits.exact <= exactMissesBeforeServing * 2) {
+            res.statusCode = 404;
+            res.end('{}');
+          } else {
+            res.end(JSON.stringify({ version: '1.2.3' }));
+          }
+        } else {
+          res.statusCode = 404;
+          res.end('{}');
+        }
+      });
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+      try {
+        const { port } = server.address() as AddressInfo;
+        await body(`http://127.0.0.1:${port}`, hits);
+      } finally {
+        await new Promise((resolve) => server.close(resolve));
+      }
+    }
+
+    function runAsync(cwd: string, registry: string, extraEnv: Record<string, string>): Promise<{ status: number; stderr: string }> {
+      return new Promise((resolve) => {
+        const child = spawn('node', [path.join(cwd, 'scripts', 'check-version-sync.mjs'), '--registry', '--tag', '1.2.3'], {
+          env: { ...process.env, PROMPTCI_REGISTRY_URL: registry, PROMPTCI_PROPAGATION_DELAY_MS: '10', ...extraEnv },
+        });
+        let stderr = '';
+        child.stderr.on('data', (chunk) => (stderr += String(chunk)));
+        child.on('close', (code) => resolve({ status: code ?? 1, stderr }));
+      });
+    }
+
+    it('passes once the exact version is served, although the latest dist-tag still lags', async () => {
+      const dir = makeWorkspace('1.2.3', '1.2.3');
+      await withRegistry(3, async (url, hits) => {
+        const result = await runAsync(dir, url, { PROMPTCI_PROPAGATION_ATTEMPTS: '10' });
+        expect(result.stderr).toContain('npm agrees at 1.2.3');
+        expect(result.status).toBe(0);
+        expect(hits.latest).toBe(0);
+      });
+    });
+
+    it('fails when the exact version never appears', async () => {
+      const dir = makeWorkspace('1.2.3', '1.2.3');
+      await withRegistry(1000, async (url) => {
+        const result = await runAsync(dir, url, { PROMPTCI_PROPAGATION_ATTEMPTS: '3' });
+        expect(result.status).not.toBe(0);
+        expect(result.stderr).toContain('after 3 attempts');
+      });
+    });
   });
 
   it('checks the real repo (packages/cli and packages/core currently agree)', () => {

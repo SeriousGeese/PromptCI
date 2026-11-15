@@ -124,6 +124,13 @@ describe('isMechanicalRename', () => {
     ['test', 'dist', 'two edits in a short name'],
     ['test', 'best', 'another real word in a short segment'],
     ['build:v1', 'build:v2', 'a trailing-digit version suffix'],
+    // pcic-1ik0.19: pins the trailing-digit stem guard. A digit swap is refused
+    // anyway, so the second row is a doubled trailing digit only the guard stops.
+    ['build:v12', 'build:v21', 'two trailing digits swapped'],
+    ['build:stage1', 'build:stage11', 'a doubled trailing digit'],
+    // pcic-1ik0.19: a digit transposition outside the trailing position.
+    ['test:e12e', 'test:e21e', 'two adjacent digits swapped mid-name'],
+    ['deploy:k3s', 'deploy:3ks', 'a digit swapped with a letter'],
     ['test:py2', 'test:py3', 'a trailing-digit target suffix'],
     ['build', 'build:web', 'a different number of segments'],
     ['test:unit', 'lint:unit', 'a difference in the scoping segment, short'],
