@@ -7,8 +7,16 @@ name: Auto-merge (Dependabot + automerge label)
 # DISJOINT from the pr-auto-review bot: dependabot[bot] must NOT be added to
 # AUTO_REVIEW_AUTOMERGE_AUTHORS.
 #
-# pull_request_target is safe here because this job never checks out or
-# executes PR code — it only calls the GitHub API on the PR.
+# pcic-lb52: a PR that changes the scanner or a fix recipe (REVIEW_SIGNAL_PATHS
+# below, the same regex as scripts/pr-review.sh) merges only with a review
+# signal: the `reviewed` label, or an approving review of its head commit. An
+# `automerge` label is not a review. The `reviewed` label vouches for the
+# commits the reviewer saw, so reset-review-signal removes it on every push and
+# turns off any auto-merge already queued for such a PR; the new head needs its
+# own review. enable-automerge runs after it, so it reads the labels as reset.
+#
+# pull_request_target is safe here because these jobs never check out or
+# execute PR code — they only call the GitHub API on the PR.
 on:
   pull_request_target:
     types: [opened, reopened, synchronize, labeled, ready_for_review]
@@ -17,9 +25,38 @@ permissions:
   contents: write
   pull-requests: write
 
+env:
+  REVIEW_SIGNAL_PATHS: '^packages/(core|cli)/src/'
+
 jobs:
+  reset-review-signal:
+    if: github.event.action == 'synchronize'
+    runs-on: ubuntu-latest
+    steps:
+      - name: A new head needs its own review
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: |
+          pr="$(gh pr view "$PR_URL" --json labels,files,changedFiles,autoMergeRequest)"
+          if jq -e 'any(.labels[]; (.name | ascii_downcase) == "reviewed")' <<<"$pr" >/dev/null; then
+            gh pr edit "$PR_URL" --remove-label reviewed
+            echo "New commits: removed the reviewed label."
+          fi
+          # Fails closed: a file list shorter than changedFiles (gh lists at most
+          # 100) counts as touching the scanner.
+          sensitive="$(jq --arg re "$REVIEW_SIGNAL_PATHS" \
+            '([.files[].path | select(test($re))] | length) > 0 or (.files | length) != .changedFiles' <<<"$pr")"
+          if [ "$sensitive" = "true" ] && jq -e '.autoMergeRequest != null' <<<"$pr" >/dev/null; then
+            gh pr merge --disable-auto "$PR_URL"
+            echo "New commits on a scanner or fix-recipe PR: auto-merge turned off until the new head is reviewed."
+          fi
+
   enable-automerge:
+    needs: reset-review-signal
     if: >-
+      always() &&
+      needs.reset-review-signal.result != 'failure' &&
       !github.event.pull_request.draft &&
       (github.event.pull_request.user.login == 'dependabot[bot]' ||
        contains(github.event.pull_request.labels.*.name, 'automerge'))
@@ -34,12 +71,22 @@ jobs:
           # by the main ruleset) before merging. A do-not-merge/hold/blocked
           # label is respected here too: skip enabling rather than queueing a
           # merge a human parked.
-          labels="$(gh pr view "$PR_URL" --json labels --jq '[.labels[].name | ascii_downcase] | join(",")')"
+          pr="$(gh pr view "$PR_URL" --json labels,files,changedFiles,reviews,headRefOid)"
+          labels="$(jq -r '[.labels[].name | ascii_downcase] | join(",")' <<<"$pr")"
           case ",${labels}," in
             *,do-not-merge,*|*,hold,*|*,blocked,*)
               echo "PR carries a merge-hold label (${labels}) — not enabling auto-merge"
               exit 0
               ;;
           esac
+          # pcic-lb52: the review-signal gate, as in scripts/pr-review.sh.
+          sensitive="$(jq --arg re "$REVIEW_SIGNAL_PATHS" \
+            '([.files[].path | select(test($re))] | length) > 0 or (.files | length) != .changedFiles' <<<"$pr")"
+          signal="$(jq 'any(.labels[]; (.name | ascii_downcase) == "reviewed")
+            or (.headRefOid as $h | any(.reviews[]; .state == "APPROVED" and .commit.oid == $h))' <<<"$pr")"
+          if [ "$sensitive" = "true" ] && [ "$signal" != "true" ]; then
+            echo "PR changes the scanner or a fix recipe and has no review signal (the reviewed label or an approving review of the head) — not enabling auto-merge"
+            exit 0
+          fi
           gh pr merge --auto --squash "$PR_URL"
           echo "Auto-merge enabled for $PR_URL"

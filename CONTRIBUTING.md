@@ -90,6 +90,12 @@ value spliced into a shell line is a script-injection sink.
 
 ## Releasing
 
+**Nothing unreviewed reaches a tag.** A PR that changes the scanner or a fix recipe
+(`packages/core/src/`, `packages/cli/src/`) merges only with a review signal: the `reviewed`
+label, set after a second review of its head commit, or an approving review of that commit (see
+[Docs/ci-automation.md](Docs/ci-automation.md)). Before tagging, check that every such PR merged
+since the last tag had one.
+
 `@promptci/cli` and `@promptci/core` publish together from a pushed tag, via
 [.github/workflows/publish.yml](.github/workflows/publish.yml). Core is bundled into cli's dist
 as a frozen esbuild snapshot (a devDependency, not a runtime one), so nothing on npm ties their
