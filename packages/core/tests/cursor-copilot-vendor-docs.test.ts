@@ -66,8 +66,8 @@ describe('a plain .md under .github/instructions/ is not a live Copilot instruct
       const forFile = (name: string) =>
         issues.filter((i) => i.filePaths.some((f) => f.replace(/\\/g, '/').endsWith(name)));
       const plain = forFile('instructions/plain.md');
-      expect(plain.some((i) => i.title.includes('Copilot instructions file exceeds'))).toBe(false);
-      expect(forFile('real.instructions.md').some((i) => i.title.includes('Copilot instructions file exceeds'))).toBe(true);
+      expect(plain.some((i) => i.title === 'Copilot instructions file is long')).toBe(false);
+      expect(forFile('real.instructions.md').some((i) => i.title === 'Copilot instructions file is long')).toBe(true);
       const hint = plain.find((i) => i.title.includes('not named .instructions.md'));
       expect(hint?.tags).toContain(UNSCORED_TAG);
     } finally {
@@ -79,7 +79,8 @@ describe('a plain .md under .github/instructions/ is not a live Copilot instruct
     const mk = (path: string, fileType: InstructionFile['fileType'], content: string): InstructionFile => ({
       path, fileType, content, sections: [], lineCount: 2, charCount: content.length, estimatedTokens: 10,
     });
-    const claude = mk('/repo/CLAUDE.md', 'claude', '## File Naming\nUse kebab-case for all file and directory names.');
+    // A nested CLAUDE.md: Copilot reads only a root one (#185), so the silence check still runs.
+    const claude = mk('/repo/packages/app/CLAUDE.md', 'claude', '## File Naming\nUse kebab-case for all file and directory names.');
     const root = mk('/repo/.github/copilot-instructions.md', 'copilot', '## Tech Stack\nThis is a Next.js project.');
     // Typed as the scanner now types it (not 'copilot'); the path alone must not count either.
     const plain = mk('/repo/.github/instructions/naming.md', 'unknown', '## Naming\nAlways use kebab-case for file names.');
