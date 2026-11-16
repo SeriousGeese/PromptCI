@@ -189,10 +189,36 @@ describe('detectMissingContext — BUG-010 copilot topic silence', () => {
     };
   }
 
-  it('flags copilot-instructions.md as silent on file naming when other files document it', () => {
-    const claudeFile = makeFile(
-      '## File Naming\nUse kebab-case for all file and directory names in this project.',
-    );
+  function otherFile(path: string, fileType: InstructionFile['fileType'], content: string): InstructionFile {
+    return { ...makeFile(content, path), fileType };
+  }
+  const NAMING = '## File Naming\nUse kebab-case for all file and directory names in this project.';
+  const namingIssue = (issues: ReturnType<typeof detectMissingContext>) =>
+    issues.find((i) => i.title.toLowerCase().includes('copilot') && i.title.toLowerCase().includes('naming'));
+
+  it('#185: stays silent when AGENTS.md documents the convention (Copilot reads it)', () => {
+    const copilotFile = makeCopilotFile('## Tech Stack\nThis is a Next.js project.');
+    const issues = detectMissingContext([otherFile('/repo/AGENTS.md', 'agents', NAMING), copilotFile], 'unknown');
+    expect(namingIssue(issues)).toBeUndefined();
+  });
+
+  it('#185: stays silent when a root CLAUDE.md or GEMINI.md documents the convention', () => {
+    const copilotFile = makeCopilotFile('## Tech Stack\nThis is a Next.js project.');
+    expect(namingIssue(detectMissingContext([makeFile(NAMING), copilotFile], 'unknown'))).toBeUndefined();
+    expect(
+      namingIssue(detectMissingContext([otherFile('/repo/GEMINI.md', 'gemini', NAMING), copilotFile], 'unknown')),
+    ).toBeUndefined();
+  });
+
+  it('#185: a CLAUDE.md that is not in the repository root does not silence it', () => {
+    const copilotFile = makeCopilotFile('## Tech Stack\nThis is a Next.js project.');
+    const cursorFile = otherFile('/repo/.cursorrules', 'cursor', NAMING);
+    const nested = otherFile('/repo/packages/app/CLAUDE.md', 'claude', 'Be brief.');
+    expect(namingIssue(detectMissingContext([cursorFile, nested, copilotFile], 'unknown'))).toBeDefined();
+  });
+
+  it('flags copilot-instructions.md as silent on file naming when a file Copilot does not read documents it', () => {
+    const claudeFile = otherFile('/repo/.cursorrules', 'cursor', NAMING);
     const copilotFile = makeCopilotFile(
       '## Tech Stack\nThis is a Next.js project. We use TypeScript and Tailwind CSS.',
     );
@@ -205,7 +231,7 @@ describe('detectMissingContext — BUG-010 copilot topic silence', () => {
   });
 
   it('does NOT flag copilot-instructions.md when it mentions the naming convention', () => {
-    const claudeFile = makeFile('Use kebab-case for all file names.');
+    const claudeFile = otherFile('/repo/.cursorrules', 'cursor', 'Use kebab-case for all file names.');
     const copilotFile = makeCopilotFile(
       '## Style\nAlways use kebab-case for file names. TypeScript strict mode is required.',
     );

@@ -161,17 +161,27 @@ function liveLines(content: string): boolean[] {
   return live;
 }
 
-/** Import targets on live lines of their own (outside fences and HTML comments), normalised. */
-export function importTargets(content: string): string[] {
+/**
+ * Live import lines (outside fences, HTML comments and HTML blocks), as the
+ * 1-based line number and the normalised target. The one reader of import
+ * lines: agent-practices (does the file forward?) and dead-references (does
+ * the import resolve?) both go through it.
+ */
+export function liveImportLines(content: string): Array<{ line: number; target: string }> {
   const lines = content.split(/\r?\n/);
   const live = liveLines(content);
-  const out: string[] = [];
+  const out: Array<{ line: number; target: string }> = [];
   lines.forEach((line, i) => {
     if (!live[i]) return;
     const m = IMPORT_LINE_RE.exec(line);
-    if (m) out.push(normImport(m[1]!));
+    if (m) out.push({ line: i + 1, target: normImport(m[1]!) });
   });
   return out;
+}
+
+/** Import targets on live lines of their own (outside fences and HTML comments), normalised. */
+export function importTargets(content: string): string[] {
+  return liveImportLines(content).map((l) => l.target);
 }
 
 /**

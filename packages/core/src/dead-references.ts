@@ -42,6 +42,7 @@ import { createGitIgnoreChecker } from './gitignore.js';
 import type { IgnoreVerdict } from './gitignore.js';
 import { isWithinRoot } from './path-containment.js';
 import { htmlCommentRanges, indentedCodeLines, inRanges } from './sample-text.js';
+import { liveImportLines, importingToolFor } from './mirror-import.js';
 import { RepoTree, errorCode, incompleteCheckIssue, isAbsoluteAnywhere } from './repo-tree.js';
 import type { Lookup } from './repo-tree.js';
 
@@ -149,6 +150,12 @@ type CollectedRef = {
    * documentation's example would change what the example says.
    */
   inCodeContext?: boolean;
+  /**
+   * A live `@path` import line in a file whose tool loads imports (CLAUDE.md,
+   * GEMINI.md). The tool resolves it from the importing file's directory and
+   * nowhere else, so it is judged only there: no repository-root fallback.
+   */
+  importLine?: boolean;
 };
 
 /**
@@ -601,7 +608,7 @@ function extractLayoutTreePaths(
 
 function collectRefs(
   content: string,
-  opts: { skipSourceBackticks?: boolean } = {},
+  opts: { skipSourceBackticks?: boolean; importFile?: boolean } = {},
 ): CollectedRef[] {
   const found: CollectedRef[] = [];
   const lineOffsets = buildLineOffsets(content);
@@ -667,10 +674,26 @@ function collectRefs(
     pushLink(stripFragment(raw), m[0].trim(), m.index);
   }
 
+  // Live `@path` import lines of a file whose tool loads imports are imports,
+  // not mentions: checked from the file's own directory (#204). Any other `@`
+  // text goes through the @-file pattern below.
+  const importLineNumbers = new Set<number>();
+  if (opts.importFile) {
+    for (const { line, target } of liveImportLines(content)) {
+      importLineNumbers.add(line);
+      // `@README`, `@types/node` and `@octocat` are mentions or package names, not paths: like the
+      // @-file pattern, only a target ending in a file extension is checked (`@types/node` is a package).
+      if (target && /\.[A-Za-z0-9]+$/.test(target) && !isExternalRef(target)) {
+        found.push({ ref: target, evidence: `@${target}`, line, kind: 'file', importLine: true });
+      }
+    }
+  }
+
   // @-file refs
   const atRe = new RegExp(AT_FILE_RE.source, AT_FILE_RE.flags);
   while ((m = atRe.exec(content)) !== null) {
     const ref = m[1] ?? '';
+    if (importLineNumbers.has(lineForOffset(lineOffsets, m.index))) continue;
     if (ref && !isExternalRef(ref)) {
       found.push({ ref, evidence: `@${ref}`, line: lineForOffset(lineOffsets, m.index), kind: 'file' });
     }
@@ -686,14 +709,17 @@ function collectRefs(
   // checked like any other file because they are usually real script refs.
   const btRe = new RegExp(BACKTICK_PATH_RE.source, BACKTICK_PATH_RE.flags);
   while ((m = btRe.exec(content)) !== null) {
-    const ref = m[1] ?? '';
+    // #204: `@AGENTS.md` in a code span is the import syntax written down; the
+    // file it names is what exists or not, so the leading `@` is not part of it.
+    const written = m[1] ?? '';
+    const ref = written.startsWith('@') ? written.slice(1) : written;
     if (ref && !isExternalRef(ref) && !ref.includes('*') && !ref.includes('?')) {
       const ext = path.extname(ref).toLowerCase();
       const rooted =
         opts.skipSourceBackticks && BACKTICK_SKIP_SOURCE_EXTENSIONS.has(ext) && !STALE_SOURCE_REF_RE.test(ref);
       found.push({
         ref,
-        evidence: `\`${ref}\``,
+        evidence: `\`${written}\``,
         line: lineForOffset(lineOffsets, m.index),
         kind: rooted ? 'rootedSource' : 'file',
         codeSpan: true,
@@ -901,6 +927,7 @@ function judgeReference(
   codeSpan: boolean,
   fileDir: string,
   ctx: JudgeContext,
+  fromFileDirOnly = false,
 ): number | null | typeof UNJUDGED {
   const { tree, isIgnored } = ctx;
   // `.git/…` is a directory in one checkout and a file in a worktree.
@@ -930,7 +957,8 @@ function judgeReference(
   // that drive's working directory, Linux reads it as a file name.
   if (isAbsoluteAnywhere(target)) return null;
   const lookups: Array<{ abs: string; found: Lookup }> = [];
-  for (const abs of new Set([path.resolve(fileDir, target), path.resolve(tree.root, target)])) {
+  const bases = fromFileDirOnly ? [path.resolve(fileDir, target)] : [path.resolve(fileDir, target), path.resolve(tree.root, target)];
+  for (const abs of new Set(bases)) {
     if (!isWithinRoot(tree.root, abs)) continue;
     const found = tree.lookup(abs);
     if (found.state !== 'outside') lookups.push({ abs, found });
@@ -1229,12 +1257,13 @@ export function detectDeadReferences(
     const fileDir = path.dirname(file.path);
     const refs = collectRefs(file.content, {
       skipSourceBackticks: SKIP_SOURCE_BACKTICK_FILE_TYPES.has(file.fileType),
+      importFile: importingToolFor(file.path) !== undefined,
     });
     // pcic-oonz: the file's own lines, so a rewrite can be confirmed
     // unambiguous on the line it would edit.
     const fileLineTexts = file.content.split(/\r?\n/);
 
-    for (const { ref, evidence, line, kind, codeSpan, linkRaw, inCodeContext } of refs) {
+    for (const { ref, evidence, line, kind, codeSpan, linkRaw, inCodeContext, importLine } of refs) {
       // BUG-009: Skip obvious placeholder/example filenames (foo.ts, bar.go, etc.)
       if (isPlaceholderRef(ref)) continue;
 
@@ -1252,7 +1281,7 @@ export function detectDeadReferences(
         nameIndex,
         dirIndex: () => (dirIndexCache ??= buildDirIndex(nameIndex())),
       };
-      const confidence = judgeReference(ref, kind, codeSpan ?? false, fileDir, ctx);
+      const confidence = judgeReference(ref, kind, codeSpan ?? false, fileDir, ctx, importLine === true);
       if (confidence === null) continue;
       if (confidence === UNJUDGED) {
         const evidenceText = `Not checked: ${evidence}`;

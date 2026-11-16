@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { detectPromptCacheFriendliness } from '../src/prompt-cache.js';
 import type { InstructionFile } from '../src/types.js';
 
-function makeFile(content: string, fileType: InstructionFile['fileType'] = 'claude', path = '/repo/CLAUDE.md'): InstructionFile {
+function makeFile(content: string, fileType: InstructionFile['fileType'] = 'cursor', path = '/repo/.cursorrules'): InstructionFile {
   return {
     path,
     fileType,
@@ -13,6 +13,34 @@ function makeFile(content: string, fileType: InstructionFile['fileType'] = 'clau
     estimatedTokens: Math.round(content.length / 4),
   };
 }
+
+// #181, #182: the volatile-content and local-path hints are for tools other than Claude Code.
+describe('detectPromptCacheFriendliness — Claude Code files and hint level', () => {
+  const claudeMd = (content: string) => makeFile(content, 'claude', '/repo/CLAUDE.md');
+  const volatile =
+    '# Rules\nLast updated: 2026-06-05\nCurrent branch: feat/x\nPromptCI Report\nSave to C:\\Users\\dev\\out.\n';
+
+  it('gives CLAUDE.md-family files no volatile-content or local-path finding', () => {
+    expect(detectPromptCacheFriendliness([claudeMd(volatile)])).toEqual([]);
+  });
+
+  it('still reports a large table in a CLAUDE.md', () => {
+    let table = '# Data\n| A | B |\n|---|---|\n';
+    for (let i = 0; i < 20; i++) table += `| a${i} | b${i} |\n`;
+    const issues = detectPromptCacheFriendliness([claudeMd(table)]);
+    expect(issues).toHaveLength(1);
+    expect(issues[0]!.id.startsWith('prompt-cache-large-table')).toBe(true);
+  });
+
+  it('reports volatile content and local paths for other tools as unscored info hints', () => {
+    const issues = detectPromptCacheFriendliness([makeFile(volatile)]);
+    expect(issues).toHaveLength(4);
+    for (const issue of issues) {
+      expect(issue.severity).toBe('info');
+      expect(issue.tags).toEqual(['unscored']);
+    }
+  });
+});
 
 describe('detectPromptCacheFriendliness', () => {
   it('returns no issues for clean/stable instruction files', () => {
@@ -89,9 +117,9 @@ describe('detectPromptCacheFriendliness', () => {
 
   // ── B4: id must not collide across two files of the same fileType ─────────
 
-  it('B4: emits a distinct id for two different "claude"-fileType files with the same volatile-timestamp issue', () => {
-    const fileA = makeFile('# Instructions\nLast Updated: 2026-06-05', 'claude', '/repo/CLAUDE.md');
-    const fileB = makeFile('# Notes\nLast Updated: 2026-06-06', 'claude', '/repo/.claude/notes.md');
+  it('B4: emits a distinct id for two different "cursor"-fileType files with the same volatile-timestamp issue', () => {
+    const fileA = makeFile('# Instructions\nLast Updated: 2026-06-05', 'cursor', '/repo/.cursorrules');
+    const fileB = makeFile('# Notes\nLast Updated: 2026-06-06', 'cursor', '/repo/.cursor/notes.md');
     const issues = detectPromptCacheFriendliness([fileA, fileB]);
     const matches = issues.filter((i) => i.id.startsWith('prompt-cache-volatile-timestamp'));
     expect(matches).toHaveLength(2);

@@ -202,9 +202,9 @@ describe('type-gated generic detectors see an alias only when the real file\'s t
   const run = (id: string, files: InstructionFile[], aliases: InstructionFile[]) =>
     DETECTORS.find((d) => d.id === id)!.run(contextOf(files, aliases));
 
-  it('checks CLAUDE.md -> README.md as the CLAUDE.md it is (README is not an instruction type)', () => {
+  it('checks .cursorrules -> README.md as the Cursor file it is (README is not an instruction type)', () => {
     const readme = synthetic('README.md', DATED, 'readme');
-    const alias = synthetic('CLAUDE.md', DATED, 'claude', 'README.md');
+    const alias = synthetic('.cursorrules', DATED, 'cursor', 'README.md');
     expect(run('prompt-cache-friendliness', [readme], [])).toEqual([]);
     const issues = run('prompt-cache-friendliness', [readme], [alias]);
     expect(issues.length).toBeGreaterThan(0);
