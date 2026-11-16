@@ -51,6 +51,7 @@ describe('discoverAiConfigFiles', () => {
       mcp: ['.mcp.json'],
       cursorRules: ['.cursor/rules/style.mdc'],
       copilotInstructions: ['.github/instructions/ts.instructions.md'],
+      copilotPlainMd: [],
     });
   });
 

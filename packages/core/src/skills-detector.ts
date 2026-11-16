@@ -4,10 +4,14 @@
  * Audits Agent Skills — `SKILL.md` files under `.claude/`, `.agents/skills/`
  * and plugin `skills/<name>/` directories — against filesystem reality:
  *
- *  - Frontmatter validity: present, closed, required `name`/`description`, and
- *    `name` matching the skill's directory (how Claude resolves a skill).
- *  - Trigger descriptions: an empty `description` never triggers the skill; two
- *    skills sharing a description compete for the same triggers.
+ *  - Frontmatter validity: closed and parseable. Every field is optional for
+ *    Claude Code (`name` defaults to the directory name, `description` to the
+ *    first body line) and nested maps such as `hooks` and `metadata` are valid,
+ *    so a missing `name`/`description`/frontmatter block, or a `name` that
+ *    differs from the directory, is only an unscored portability hint: the
+ *    Agent Skills specification and Codex ask for them.
+ *  - Trigger descriptions: a missing, very short or duplicated `description` is
+ *    reported as an unscored hint (advice, not a documented limit).
  *  - Dead file references: paths in the skill body (scripts, references) that
  *    resolve neither beside the skill nor from the repo root.
  *
@@ -29,6 +33,7 @@ import {
 } from './ai-config.js';
 import type { FrontmatterSurface } from './ai-config.js';
 import { isHomeRooted } from './dead-references.js';
+import { UNSCORED_TAG } from './health-score.js';
 import { createGitIgnoreChecker } from './gitignore.js';
 import type { IgnoreVerdict } from './gitignore.js';
 import { treeFor } from './repo-tree.js';
@@ -40,12 +45,32 @@ const SURFACE: FrontmatterSurface = {
   idPrefix: 'skill',
   noun: 'Skill',
   why:
-    'Claude Code treats frontmatter as optional, but strict Agent Skills loaders (for example Codex) skip ' +
-    'a skill without `name` and `description`.',
-  recommendation: 'Add a frontmatter block with `name` and `description` at the top of the SKILL.md file.',
-  // Optional for Claude Code itself, so a missing block is a portability warning, not a hard break.
-  noFrontmatterSeverity: 'warning',
+    'Claude Code does not need frontmatter (the directory name becomes the command and the first line of the ' +
+    'body the description), but the Agent Skills specification and Codex ask for `name` and `description`.',
+  recommendation:
+    'If the skill should also work in other Agent Skills tools, add a frontmatter block with `name` and ' +
+    '`description` at the top of the SKILL.md file.',
+  // Optional for Claude Code itself, so a missing block is a portability hint, not a defect.
+  noFrontmatterSeverity: 'info',
 };
+
+/** Frontmatter-structure findings for a skill, with the Claude Code-valid cases removed or softened. */
+function skillStructureIssues(
+  filePath: string,
+  content: string,
+  parsedFm: ReturnType<typeof parseFrontmatter>,
+): PromptCiIssue[] {
+  // `hooks` and `metadata` are documented nested maps in skill frontmatter, so the parser's
+  // "nested key" errors are not findings here.
+  const fm = { ...parsedFm, errors: parsedFm.errors.filter((e) => !e.startsWith('Nested frontmatter key')) };
+  return frontmatterStructureIssues(filePath, content, fm, SURFACE).map((issue) => {
+    if (issue.id.startsWith('ai-config-skill-no-frontmatter-')) return { ...issue, tags: [UNSCORED_TAG] };
+    if (issue.id.startsWith('ai-config-skill-fm-error-')) {
+      return { ...issue, recommendation: 'Fix the frontmatter so it is valid YAML with unique keys.' };
+    }
+    return issue;
+  });
+}
 
 type ParsedSkill = {
   filePath: string;
@@ -183,57 +208,83 @@ export function detectSkills(context: RepoContext): PromptCiIssue[] {
     const dirName = toPosix(path.dirname(filePath)).split('/').pop() ?? '';
     const fm = parseFrontmatter(content);
 
-    issues.push(...frontmatterStructureIssues(filePath, content, fm, SURFACE));
+    issues.push(...skillStructureIssues(filePath, content, fm));
     if (!fm.present) continue;
 
     const name = typeof fm.data.name === 'string' ? fm.data.name.trim() : undefined;
     const description = typeof fm.data.description === 'string' ? fm.data.description.trim() : undefined;
 
+    // Claude Code: every frontmatter field is optional; `name` defaults to the directory name and
+    // sets the /command (the directory name still invokes the skill), so neither of the next two is
+    // a defect there. The Agent Skills specification requires `name` and requires it to match the
+    // parent directory, and Codex asks for `name` too, so they stay as unscored portability hints.
     if (!name) {
       issues.push(base({
         id: id('missing-name', filePath),
+        severity: 'info',
         title: 'Skill frontmatter is missing `name`',
-        summary: `${filePath} has no \`name\` field. Claude uses \`name\` to identify and invoke the skill.`,
+        summary:
+          `${filePath} has no \`name\` field. Claude Code uses the directory name${dirName ? ` (\`${dirName}\`)` : ''} as the ` +
+          'skill\'s command, so this only matters for other tools: the Agent Skills specification and Codex ask for `name`.',
         filePaths: [filePath],
         locations: [{ filePath, startLine: 1, endLine: fm.fenceEndLine > 0 ? fm.fenceEndLine : 1 }],
         evidence: [`Keys present: ${Object.keys(fm.data).join(', ') || '(none)'}`],
-        recommendation: 'Add a `name` field to the frontmatter matching the skill directory name.',
-        confidence: 0.85,
+        recommendation: 'If the skill should also work in other Agent Skills tools, add a `name` field that matches the skill directory name.',
+        confidence: 0.5,
+        tags: [UNSCORED_TAG],
       }));
     } else if (name !== dirName && dirName) {
       issues.push(base({
         id: id('name-dir-mismatch', filePath),
+        severity: 'info',
         title: 'Skill `name` does not match its directory',
-        summary: `${filePath}: frontmatter \`name: ${name}\` does not match the skill directory \`${dirName}/\`. Claude resolves skills by directory name.`,
+        summary:
+          `${filePath}: frontmatter \`name: ${name}\` differs from the skill directory \`${dirName}/\`. Claude Code accepts this ` +
+          '(`name` sets the command and the directory name still invokes the skill); the Agent Skills specification says ' +
+          '`name` must match the parent directory, so another Agent Skills tool may treat the skill as invalid.',
         filePaths: [filePath],
         locations: [{ filePath, startLine: fm.keyLines.name ?? 1, endLine: fm.keyLines.name ?? 1 }],
         evidence: [`name: ${name}`, `directory: ${dirName}`],
-        recommendation: 'Rename the directory or the `name` field so they match.',
-        confidence: 0.6,
+        recommendation: 'If the skill should also work in other Agent Skills tools, make the directory name and `name` match; otherwise ignore this hint.',
+        confidence: 0.4,
+        tags: [UNSCORED_TAG],
       }));
     }
 
+    // Description hints (advice, not a documented defect): without a `description` Claude Code falls
+    // back to the first non-empty line of the body, and it truncates `description` plus `when_to_use`
+    // at 1,536 characters in the skill listing, so the key use case belongs first.
     if (!description) {
       issues.push(base({
         id: id('missing-description', filePath),
+        severity: 'info',
         title: 'Skill frontmatter is missing `description`',
-        summary: `${filePath} has no \`description\`. The description is the trigger text Claude matches against — without it the skill rarely activates.`,
+        summary:
+          `${filePath} has no \`description\`. Claude Code falls back to the first non-empty line of the body for the skill ` +
+          'listing, and the Agent Skills specification and Codex ask for a description, so an explicit one may help the agent pick the skill.',
         filePaths: [filePath],
         locations: [{ filePath, startLine: 1, endLine: fm.fenceEndLine > 0 ? fm.fenceEndLine : 1 }],
         evidence: [`Keys present: ${Object.keys(fm.data).join(', ') || '(none)'}`],
-        recommendation: 'Add a `description` that says what the skill does and when to use it.',
-        confidence: 0.85,
+        recommendation:
+          'Consider adding a `description` that says what the skill does and when to use it, with the key use case first ' +
+          '(Claude Code truncates `description` plus `when_to_use` at 1,536 characters in its skill listing).',
+        confidence: 0.5,
+        tags: [UNSCORED_TAG],
       }));
     } else if (description.length < MIN_DESCRIPTION_CHARS) {
       issues.push(base({
         id: id('empty-description', filePath),
+        severity: 'info',
         title: 'Skill `description` is too short to trigger reliably',
-        summary: `${filePath}: \`description\` is only ${description.length} characters. Claude matches the description against the user's request to decide when to invoke the skill.`,
+        summary: `${filePath}: \`description\` is only ${description.length} characters. The description is what the agent reads to decide when to use the skill, so a very short one may give it little to match on (advice, not a documented limit).`,
         filePaths: [filePath],
         locations: [{ filePath, startLine: fm.keyLines.description ?? 1, endLine: fm.keyLines.description ?? 1 }],
         evidence: [`description: ${description}`],
-        recommendation: 'Expand the description to describe the task and its trigger conditions.',
-        confidence: 0.7,
+        recommendation:
+          'Consider expanding the description to say what the skill does and when to use it, with the key use case first ' +
+          '(Claude Code truncates `description` plus `when_to_use` at 1,536 characters in its skill listing).',
+        confidence: 0.4,
+        tags: [UNSCORED_TAG],
       }));
     }
 
@@ -301,13 +352,15 @@ function detectOverlappingDescriptions(skills: ParsedSkill[]): PromptCiIssue[] {
     const paths = sorted.map((s) => s.filePath);
     issues.push(base({
       id: id('overlap', paths.join('|')),
+      severity: 'info',
       title: 'Multiple skills share the same trigger description',
-      summary: `${paths.length} skills have effectively identical \`description\` text, so Claude cannot tell which to invoke for a given request.`,
+      summary: `${paths.length} skills have effectively identical \`description\` text, so the agent may find it hard to tell which to invoke for a given request.`,
       filePaths: paths,
       locations: sorted.map((s) => ({ filePath: s.filePath, startLine: 1, endLine: 1 })),
       evidence: [`Shared description: ${sorted[0]!.description}`, `Skills: ${paths.join(', ')}`],
-      recommendation: 'Give each skill a distinct description that states its unique trigger conditions.',
-      confidence: 0.75,
+      recommendation: 'Consider giving each skill a distinct description that states its unique trigger conditions.',
+      confidence: 0.5,
+      tags: [UNSCORED_TAG],
     }));
   }
 

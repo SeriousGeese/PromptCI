@@ -125,7 +125,12 @@ const AI_CONFIG_GLOBS = {
   // GitHub Copilot per-file instructions. The legacy single-file
   // `.github/copilot-instructions.md` has no `applyTo` support, so it is NOT
   // discovered here — only the per-file format under `.github/instructions/`.
-  copilotInstructions: ['.github/instructions/**/*.md'],
+  // Copilot loads a path-specific file only when its name ends `.instructions.md`
+  // (GitHub Docs), so only those are audited as live instruction files.
+  copilotInstructions: ['.github/instructions/**/*.instructions.md'],
+  // Plain `.md` files in the same directory: Copilot will not load them as
+  // path-specific instructions. Discovered only to report that (cautiously).
+  copilotPlainMd: ['.github/instructions/**/*.md'],
 } as const;
 
 /** Pre-discovered config files per surface, as sorted repo-relative POSIX paths. */
@@ -168,8 +173,10 @@ export type AiConfigFiles = {
   mcp: string[];
   /** Cursor project rules: `.cursor/rules/**\/*.mdc`. */
   cursorRules: string[];
-  /** GitHub Copilot per-file instructions: `.github/instructions/**\/*.md`. */
+  /** GitHub Copilot per-file instructions: `.github/instructions/**\/*.instructions.md`. */
   copilotInstructions: string[];
+  /** Plain `.md` files under `.github/instructions/` (not `*.instructions.md`), which Copilot does not load as path-specific instructions. */
+  copilotPlainMd?: string[];
 };
 
 export type SkillBundleSkip = {
@@ -361,6 +368,9 @@ export function discoverAiConfigFiles(
     mcp: discover(AI_CONFIG_GLOBS.mcp),
     cursorRules: discover(AI_CONFIG_GLOBS.cursorRules),
     copilotInstructions: discover(AI_CONFIG_GLOBS.copilotInstructions),
+    copilotPlainMd: discover(AI_CONFIG_GLOBS.copilotPlainMd).filter(
+      (f) => !f.endsWith('.instructions.md') && !/(^|\/)readme\.md$/i.test(f),
+    ),
   };
 }
 

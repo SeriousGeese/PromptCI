@@ -429,7 +429,8 @@ function checkCopilotTopicSilences(files: InstructionFile[]): PromptCiIssue[] {
       normalized.endsWith('/.github/copilot-instructions.md');
   };
   const isCopilotInstructionFile = (file: InstructionFile) =>
-    file.fileType === 'copilot' || normalizedPath(file).includes('/.github/instructions/');
+    file.fileType === 'copilot' ||
+    (normalizedPath(file).includes('/.github/instructions/') && normalizedPath(file).endsWith('.instructions.md'));
 
   const copilotFile = files.find(isRootCopilotFile);
   if (!copilotFile) return [];

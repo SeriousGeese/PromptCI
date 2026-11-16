@@ -9,6 +9,8 @@
  *  - Placeholder env values never filled in (`"<your-key>"`, `"changeme"`, …).
  *  - stdio servers whose local `command`/script path does not exist, and
  *    servers declaring neither a `command` nor a `url`.
+ *  - A `url` entry with no `type`: Claude Code reads it as stdio and skips it,
+ *    so it is reported as an unscored info hint (not a scored warning).
  *
  * PATH lookups for bare binaries (`npx`, `node`, `docker`) are intentionally out
  * of scope — they are not verifiable deterministically or offline. Only
@@ -27,6 +29,7 @@ import {
   aiConfigIssue as base,
 } from './ai-config.js';
 import { treeFor } from './repo-tree.js';
+import { UNSCORED_TAG } from './health-score.js';
 
 function id(kind: string, key: string): string {
   return `ai-config-mcp-${kind}-${shortHash(key)}`;
@@ -173,6 +176,23 @@ export function detectMcpConfig(context: RepoContext): PromptCiIssue[] {
           evidence: [`Server: ${name}`, `Keys: ${Object.keys(def).join(', ') || '(none)'}`],
           recommendation: 'Add a `command` (with `args`) for a stdio server, or a `url` for a remote server.',
           confidence: 0.8,
+        }));
+      }
+
+      // The Claude Code MCP docs: an entry with a `url` but no `type` is read as a stdio server and
+      // skipped with a configuration error. Reported as an unscored info hint, not a scored warning.
+      if (url && !command && typeof def.type !== 'string') {
+        issues.push(base({
+          id: id('url-without-type', `${filePath}|${name}`),
+          severity: 'info',
+          title: 'MCP server has a url but no type',
+          summary: `${filePath}: server "${name}" has a \`url\` but no \`type\`. Claude Code may skip this server: an entry with a url but no type is read as a stdio server.`,
+          filePaths: [filePath],
+          locations: [{ filePath, startLine: serverLine, endLine: serverLine }],
+          evidence: [`Server: ${name}`, `url: ${url}`],
+          recommendation: 'Add `"type": "http"` (or `"sse"` / `"ws"`) to this entry.',
+          confidence: 0.6,
+          tags: [UNSCORED_TAG],
         }));
       }
 

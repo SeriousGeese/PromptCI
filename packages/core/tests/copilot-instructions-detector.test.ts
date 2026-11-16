@@ -55,13 +55,29 @@ describe('detectCopilotInstructions', () => {
     expect(ignored!.evidence.join(' ')).toContain('dist/**/*.js');
   });
 
-  it('flags a file with no applyTo key', () => {
+  it('reports a file with neither applyTo nor description as manual-attachment info', () => {
+    const dir = repo();
+    writeFile(dir, INSTR, ['---', 'excludeAgent: code-review', '---', 'body'].join('\n'));
+    const issues = detectCopilotInstructions(ctx(dir));
+    const noApply = issues.find((i) => i.title.includes('no applyTo glob or description'));
+    expect(noApply).toBeDefined();
+    expect(noApply!.severity).toBe('info');
+    expect(noApply!.summary).toContain('manual attachment');
+  });
+
+  it('does not flag a file with a description but no applyTo', () => {
     const dir = repo();
     writeFile(dir, INSTR, ['---', 'description: general rules', '---', 'body'].join('\n'));
+    expect(detectCopilotInstructions(ctx(dir))).toEqual([]);
+  });
+
+  it('reports a plain .md under .github/instructions/ and does not audit it as live', () => {
+    const dir = repo();
+    writeFile(dir, '.github/instructions/ts.md', ['---', 'applyTo: "src/**/*.py"', '---', 'body'].join('\n'));
     const issues = detectCopilotInstructions(ctx(dir));
-    const noApply = issues.find((i) => i.title.includes('no applyTo glob'));
-    expect(noApply).toBeDefined();
-    expect(noApply!.severity).toBe('warning');
+    expect(issues).toHaveLength(1);
+    expect(issues[0]!.title).toContain('not named .instructions.md');
+    expect(issues[0]!.severity).toBe('info');
   });
 
   it('flags missing frontmatter', () => {
@@ -78,12 +94,20 @@ describe('detectCopilotInstructions', () => {
     expect(issues.some((i) => i.title.includes('not closed'))).toBe(true);
   });
 
-  it('does not flag a slashless extension glob that matches nested files', () => {
+  it('flags a slashless glob that only matches nested files (current directory only per GitHub docs)', () => {
     const dir = repo();
     writeFile(dir, 'src/nested/app.tsx', 'export {};');
     writeFile(dir, INSTR, ['---', 'applyTo: "*.tsx"', '---', 'body'].join('\n'));
     const issues = detectCopilotInstructions(ctx(dir));
-    expect(issues.some((i) => i.title.includes('matches no files'))).toBe(false);
+    expect(issues.some((i) => i.title.includes('matches no files'))).toBe(true);
+  });
+
+  it('accepts a slashless glob matching a root file, and **/ for any depth', () => {
+    const dir = repo();
+    writeFile(dir, 'root.py', 'x = 1');
+    writeFile(dir, 'src/nested/app.tsx', 'export {};');
+    writeFile(dir, INSTR, ['---', 'applyTo: "*.py,**/*.tsx"', '---', 'body'].join('\n'));
+    expect(detectCopilotInstructions(ctx(dir))).toEqual([]);
   });
 
   it('handles a comma-separated applyTo list, flagging only the dead glob', () => {

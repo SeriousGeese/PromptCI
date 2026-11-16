@@ -64,7 +64,7 @@ function realSkillFiles(root: string, policy: { include?: string[]; exclude?: st
  */
 function realAiConfigFiles(root: string, policy: { include?: string[]; exclude?: string[] } = {}): Set<string> {
   const aiConfig = discoverAiConfigFiles(root, policy);
-  return new Set([...aiConfig.settings, ...aiConfig.mcp, ...aiConfig.agents, ...aiConfig.cursorRules, ...aiConfig.copilotInstructions]);
+  return new Set([...aiConfig.settings, ...aiConfig.mcp, ...aiConfig.agents, ...aiConfig.cursorRules, ...aiConfig.copilotInstructions, ...(aiConfig.copilotPlainMd ?? [])]);
 }
 
 /**

@@ -95,4 +95,17 @@ describe('detectMcpConfig', () => {
     }));
     expect(detectMcpConfig(ctx(dir))).toEqual([]);
   });
+
+  it('reports a url entry with no type as an unscored info hint (Claude Code reads it as stdio and skips it)', () => {
+    const dir = repo();
+    writeFile(dir, '.mcp.json', JSON.stringify({
+      mcpServers: { remote: { url: 'https://mcp.example.com/mcp' }, typed: { type: 'http', url: 'https://mcp.example.com/mcp' } },
+    }));
+    const issues = detectMcpConfig(ctx(dir));
+    expect(issues.length).toBe(1);
+    expect(issues[0]!.title).toBe('MCP server has a url but no type');
+    expect(issues[0]!.severity).toBe('info');
+    expect(issues[0]!.tags).toContain('unscored');
+    expect(issues[0]!.summary).toContain('Claude Code may skip this server');
+  });
 });

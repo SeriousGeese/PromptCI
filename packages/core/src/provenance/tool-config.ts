@@ -53,11 +53,6 @@ const PAGES = {
     title: 'VS Code: Custom instructions reference',
     readOn: D2,
   },
-  vscodeInstructions: {
-    url: 'https://code.visualstudio.com/docs/agent-customization/custom-instructions',
-    title: 'VS Code: Custom instructions',
-    readOn: D2,
-  },
   windsurfRules: { url: 'https://docs.devin.ai/desktop/devin-local/customizations', title: 'Devin Local docs: Customizations (docs.windsurf.com redirects here; Windsurf has no docs of its own to read, so this is another product\'s documentation)', readOn: D2 },
   rfc8259: { url: 'https://www.rfc-editor.org/info/rfc8259/', title: 'RFC 8259: The JSON Data Interchange Format', readOn: D2 },
 } as const satisfies Record<string, Page>;
@@ -73,6 +68,11 @@ const unverified = (
   unit?: string,
 ): ProvenanceThreshold => ({ name, value, ...(unit ? { unit } : {}), where, source: 'unverified' });
 
+/** Pages re-read on 2026-11-15 for the issue #176-#196 fixes (vendor docs alignment). */
+const READ_1115 = '2026-11-15';
+const reread = (page: Page): Page => ({ ...page, readOn: READ_1115 });
+const VERIFIED_1115 = (issue: string) => ({ date: READ_1115, by: `agent run 2026-11-15 (issue ${issue})` }) as const;
+
 export const TOOL_CONFIG_PROVENANCE: readonly CheckProvenance[] = [
   // ── ai-config-skills ────────────────────────────────────────────────────────
   {
@@ -81,86 +81,80 @@ export const TOOL_CONFIG_PROVENANCE: readonly CheckProvenance[] = [
     title: 'Skill frontmatter fields',
     kind: 'tool-fact',
     claim:
-      'A SKILL.md without `name` and `description` frontmatter is skipped by strict loaders such as Codex, Claude Code needs `name` to identify and invoke a skill, and nested maps in the frontmatter are unsupported.',
+      'Claude Code treats every SKILL.md frontmatter field as optional (`name` defaults to the directory name, `description` to the first non-empty body line, nested maps such as `hooks` and `metadata` are valid and unknown keys are ignored), while the Agent Skills specification and OpenAI Codex docs both say a SKILL.md must include `name` and `description`.',
     appliesTo: ['claude-code', 'codex'],
     sources: [
       cite(
-        PAGES.ccSkills,
-        'contradicts',
-        'Says every frontmatter field is optional and that `name` defaults to the directory name, so Claude Code does not need `name` to identify the skill and the missing-name finding overstates it.',
-      ),
-      cite(
-        PAGES.ccSkills,
-        'contradicts',
-        'Documents `hooks` and `metadata` as nested YAML maps in skill frontmatter and says an unrecognised key is ignored without error, so the finding that a nested key is unsupported is wrong for Claude Code.',
-      ),
-      cite(
-        PAGES.agentSkillsSpec,
+        reread(PAGES.ccSkills),
         'supports',
-        'Marks `name` and `description` as required frontmatter fields, which is why a portable skill needs both.',
+        'Says all frontmatter fields are optional, that `name` defaults to the directory name and `description` falls back to the first non-empty line of the body, that `hooks` and `metadata` are nested maps, and that a field Claude Code does not recognise is ignored without an error.',
       ),
       cite(
-        PAGES.codexSkills,
+        reread(PAGES.agentSkillsSpec),
         'supports',
-        'States that SKILL.md must include `name` and `description`, but does not say what Codex does with a skill that lacks them, so "skipped" is not confirmed.',
+        'Marks `name` and `description` as required frontmatter fields and `metadata` as an optional map, which is why a portable skill needs both fields.',
+      ),
+      cite(
+        reread(PAGES.codexSkills),
+        'supports',
+        'States that SKILL.md must include `name` and `description`; it does not say what Codex does with a skill that lacks them, so the detector only words the missing-field finding as a Codex-and-spec portability hint.',
       ),
     ],
-    lastVerified: VERIFIED,
+    lastVerified: VERIFIED_1115('#191'),
   },
   {
     id: 'ai-config-skills/name-matches-directory',
     detector: 'ai-config-skills',
     title: 'Skill name matches its directory',
     kind: 'tool-fact',
-    claim: 'Claude resolves a skill by its directory name, so a frontmatter `name` that differs from the skill directory is a mistake.',
+    claim:
+      "In Claude Code a skill's `name` sets its command and defaults to the directory name, so a `name` that differs from the directory is valid there, while the Agent Skills specification requires `name` to match the parent directory name.",
     appliesTo: ['claude-code', 'codex'],
     sources: [
       cite(
-        PAGES.ccSkills,
-        'contradicts',
-        'Describes `name` as the command name shown in the `/` menu that only defaults to the directory name, and does not require the two to match, so the page does not say Claude resolves skills by directory name.',
+        reread(PAGES.ccSkills),
+        'supports',
+        'Says `name` sets the command shown in the `/` menu and typed by the user, defaults to the directory name, and that the directory name also invokes the skill, so the two need not match.',
       ),
       cite(
-        PAGES.agentSkillsSpec,
+        reread(PAGES.agentSkillsSpec),
         'supports',
-        'The portable spec says `name` must match the parent directory name, which supports the check for the open format but is not Claude Code behaviour.',
+        'Says `name` must match the parent directory name, which is why a difference is reported as a portability hint (info, unscored) for other Agent Skills tools.',
       ),
-      cite(PAGES.codexSkills, 'context', 'Does not say whether `name` must match the directory.'),
+      cite(reread(PAGES.codexSkills), 'context', 'Does not say whether `name` must match the directory.'),
     ],
-    lastVerified: VERIFIED,
+    lastVerified: VERIFIED_1115('#192'),
   },
   {
     id: 'ai-config-skills/description-trigger',
     detector: 'ai-config-skills',
     title: 'Skill description is the trigger text',
-    kind: 'tool-fact',
+    kind: 'opinion',
     claim:
-      "A skill's `description` is the text the agent matches against a request to decide whether to invoke it, so an empty or very short description rarely triggers and two identical descriptions compete for the same triggers.",
+      "A skill's `description` is the text the agent reads to decide when to use it, so a missing, very short or duplicated description makes it harder for the agent to pick the right skill.",
     appliesTo: ['claude-code', 'codex'],
     sources: [
       cite(
-        PAGES.skillsOverview,
-        'supports',
-        'Says the description is what Claude matches a request against to decide whether to trigger the skill, and requires it to be non-empty and at most 1,024 characters.',
+        reread(PAGES.ccSkills),
+        'context',
+        'Says an omitted description falls back to the first non-empty line of the body and that description plus `when_to_use` is truncated at 1,536 characters in the skill listing, so the key use case belongs first; it sets no minimum length and does not discuss duplicate descriptions.',
       ),
       cite(
-        PAGES.ccSkills,
-        'contradicts',
-        'Says an omitted description falls back to the first non-empty line of the body, so a missing description does not always leave a skill untriggerable, and truncates description plus when_to_use at 1,536 characters in the listing.',
+        reread(PAGES.codexSkills),
+        'context',
+        'Says Codex can choose a skill when a task matches its description and advises front-loading the key use case; it does not measure how length or duplication changes selection.',
       ),
       cite(
-        PAGES.codexSkills,
-        'supports',
-        'Says Codex can select a skill when a task matches its description and advises front-loading the key use case.',
-      ),
-      cite(
-        PAGES.agentSkillsSpec,
+        reread(PAGES.agentSkillsSpec),
         'context',
         'Requires a description of 1 to 1,024 characters that says what the skill does and when to use it, with no 12-character minimum.',
       ),
     ],
+    unverified: true,
+    caveat:
+      'Reported as an info-level, unscored hint: no page or eval shows that a short or duplicated description changes whether a skill is chosen, and the 12-character cut-off is the author\'s own.',
     thresholds: [unverified('MIN_DESCRIPTION_CHARS', 12, 'skills-detector.ts:MIN_DESCRIPTION_CHARS', 'characters')],
-    lastVerified: VERIFIED,
+    lastVerified: VERIFIED_1115('#193'),
   },
   {
     id: 'ai-config-skills/locations-and-bundled-refs',
@@ -193,62 +187,64 @@ export const TOOL_CONFIG_PROVENANCE: readonly CheckProvenance[] = [
     title: 'Subagent file and frontmatter',
     kind: 'tool-fact',
     claim:
-      'Claude Code registers a subagent from a Markdown file under `.claude/agents/` only when its frontmatter has `name` and `description`, and nested maps in that frontmatter are unsupported.',
+      'Claude Code requires `name` and `description` in subagent frontmatter, scans `.claude/agents/` recursively, and documents nested maps (`hooks`, `mcpServers`, `experimental`) as valid frontmatter.',
     appliesTo: ['claude-code'],
     sources: [
       cite(
-        PAGES.ccSubagents,
+        reread(PAGES.ccSubagents),
         'supports',
         'Says only `name` and `description` are required and that .claude/agents/ is scanned recursively.',
       ),
       cite(
-        PAGES.ccSubagents,
-        'contradicts',
-        'Documents `hooks`, `mcpServers` and `experimental` as nested YAML maps in subagent frontmatter, so the finding that a nested key is unsupported is wrong for Claude Code.',
+        reread(PAGES.ccSubagents),
+        'supports',
+        'Documents `hooks`, `mcpServers` and `experimental` as nested maps in subagent frontmatter and says an unrecognised field is ignored without an error, so the detector reports none of them.',
       ),
     ],
-    lastVerified: VERIFIED,
+    lastVerified: VERIFIED_1115('#194'),
   },
   {
     id: 'ai-config-subagents/model-values',
-    refuted: true,
     detector: 'ai-config-subagents',
     title: 'Subagent model values',
     kind: 'tool-fact',
     claim:
-      "A subagent's `model` frontmatter accepts only the aliases sonnet, opus, haiku, inherit, default or opusplan, or a full `claude-*` model id.",
+      "A subagent's `model` frontmatter accepts `sonnet`, `opus`, `haiku`, `fable`, `inherit` or a full model ID, which the page defines as a value the `--model` flag accepts.",
     appliesTo: ['claude-code'],
     sources: [
       cite(
-        PAGES.ccSubagents,
-        'contradicts',
-        'Lists the accepted values as sonnet, opus, haiku, fable, a full model ID or inherit, so `fable` is valid but missing from the detector alias set, and `default` and `opusplan` are not listed as valid values.',
+        reread(PAGES.ccSubagents),
+        'supports',
+        'Lists the accepted values as sonnet, opus, haiku, fable, a full model ID such as claude-opus-5-5, or inherit, and describes a full model ID as "a value the --model flag accepts".',
       ),
     ],
-    lastVerified: VERIFIED,
+    caveat:
+      'The detector also accepts `default` and `opusplan`, a `[1m]` suffix and Bedrock or Vertex style ids (`anthropic.claude-…`, `arn:aws:bedrock:…`, `claude-…@date`) silently as `--model` values; the subagents page does not enumerate them, and no page read here lists the `--model` values. Anything else is reported at info.',
+    lastVerified: VERIFIED_1115('#176'),
   },
   {
     id: 'ai-config-subagents/tool-names',
-    refuted: true,
     detector: 'ai-config-subagents',
     title: 'Subagent tool names',
     kind: 'tool-fact',
     claim:
-      'A subagent `tools` entry must be one of a fixed list of built-in tool names, an `mcp__` tool name or `*`, and any other name is a likely typo.',
+      'A subagent `tools` entry is a tool name from the Claude Code tools reference, the `Task` alias of `Agent`, a parenthesised form such as `Agent(worker)`, an `mcp__` tool name or `*`, so any other name (apart from legacy names the detector still accepts silently) is a likely typo.',
     appliesTo: ['claude-code'],
     sources: [
       cite(
-        PAGES.ccSubagents,
-        'contradicts',
-        'Documents `Agent(agent_type)` parenthesised entries (honoured for a main-thread agent, ignored in a subagent definition), the legacy `Task(...)` alias, and built-in tools such as Skill, LSP, PowerShell, ToolSearch and Monitor that the detector list omits, so valid entries are reported as typos.',
+        reread(PAGES.ccSubagents),
+        'supports',
+        'Documents `Agent(agent_type)` parenthesised entries, the `Task(...)` alias that still works after the rename to Agent, and `mcp__server__*` entries in `tools`; it does not say how a name that matches no tool is handled when other entries resolve.',
       ),
       cite(
-        PAGES.ccTools,
-        'contradicts',
-        'Its tool table lists current tools such as Skill, LSP, PowerShell, Monitor, TaskStop, SendMessage and ToolSearch that the detector list omits, and has no row for LS, MultiEdit, NotebookRead, BashOutput, KillBash, KillShell or SlashCommand, which the detector list still accepts.',
+        reread(PAGES.ccTools),
+        'supports',
+        'Its tool table lists the names the detector accepts, including Skill, LSP, PowerShell, Monitor, TaskStop, SendMessage and ToolSearch, and says the names are the exact strings used in subagent tool lists.',
       ),
     ],
-    lastVerified: VERIFIED,
+    caveat:
+      'LS, MultiEdit, NotebookRead, BashOutput, KillBash, KillShell and SlashCommand have no row in the tools reference but are accepted silently because real configs still use them.',
+    lastVerified: VERIFIED_1115('#177'),
   },
   {
     id: 'ai-config-subagents/duplicate-prompts',
@@ -296,21 +292,27 @@ export const TOOL_CONFIG_PROVENANCE: readonly CheckProvenance[] = [
     detector: 'ai-config-hooks-settings',
     title: 'Quoting the project directory in hook commands',
     kind: 'tool-fact',
-    claim: 'An unquoted `$CLAUDE_PROJECT_DIR` path in a hook command breaks when the project path contains a space.',
+    claim:
+      'In a shell-form command hook (no `args`) an unquoted `$CLAUDE_PROJECT_DIR` path is split by the shell when the project path contains a space, while a hook with `args` set runs in exec form with no shell, needs no quoting, and has the braced `${CLAUDE_PROJECT_DIR}` placeholder substituted into `command` and `args`.',
     appliesTo: ['claude-code'],
     sources: [
       cite(
-        PAGES.ccHooks,
+        reread(PAGES.ccHooks),
         'supports',
-        'Says that in shell form the command string is tokenized by a shell and each path placeholder should be wrapped in double quotes.',
+        'Says a command hook runs in shell form when `args` is omitted, where the shell tokenizes the string and each path placeholder should be wrapped in double quotes.',
       ),
       cite(
-        PAGES.ccHooks,
-        'contradicts',
-        'Says a hook with `args` set runs in exec form with no shell, so a placeholder needs no quotes there, and its own example passes an unquoted ${CLAUDE_PROJECT_DIR} path with `"args": []`, which the detector would still flag.',
+        reread(PAGES.ccHooks),
+        'supports',
+        'Says a hook with `args` set runs in exec form with no shell and each element is passed as one argument with no quoting, so the quoting hint is not raised for exec-form hooks.',
+      ),
+      cite(
+        reread(PAGES.ccHooks),
+        'supports',
+        'Documents `${CLAUDE_PROJECT_DIR}` (braced) as the path placeholder, substituted as plain strings into `command` and each `args` element in exec form; the unbraced `$CLAUDE_PROJECT_DIR` appears only as an environment variable or shell expansion, so the detector reports an unbraced use in exec form as an info hint.',
       ),
     ],
-    lastVerified: VERIFIED,
+    lastVerified: VERIFIED_1115('#195'),
   },
   {
     id: 'ai-config-hooks-settings/remote-pipe',
@@ -342,21 +344,21 @@ export const TOOL_CONFIG_PROVENANCE: readonly CheckProvenance[] = [
     title: 'Project MCP config format',
     kind: 'tool-fact',
     claim:
-      'Claude Code reads project MCP servers from `.mcp.json` under a top-level `mcpServers` key, where a stdio server needs a `command` and a remote server needs only a `url`.',
+      'Claude Code reads project MCP servers from `.mcp.json` under a top-level `mcpServers` key, where a stdio server is defined by a `command` (with `args` and `env`) and a remote server by a `url` plus a `type`; an entry with a `url` but no `type` is read as a stdio server and skipped with a configuration error.',
     appliesTo: ['claude-code'],
     sources: [
       cite(
-        PAGES.ccMcp,
+        reread(PAGES.ccMcp),
         'supports',
-        'Shows project servers in .mcp.json under a top-level mcpServers key, with command, args and env for stdio servers and type plus url for http or sse servers.',
+        'Shows project servers in .mcp.json under a top-level mcpServers key, with command, args and env for stdio servers and a url (with a type) for remote servers.',
       ),
       cite(
-        PAGES.ccMcp,
-        'contradicts',
-        'Says an entry with a `url` but no `type` is read as a stdio server and skipped with a configuration error, so the detector accepting any `url` as a valid remote server is too lax.',
+        reread(PAGES.ccMcp),
+        'supports',
+        'Says an entry with a `url` but no `type` is read as a stdio server and skipped with a configuration error, which is why the detector reports it as an info-level, unscored hint rather than a scored warning.',
       ),
     ],
-    lastVerified: VERIFIED,
+    lastVerified: VERIFIED_1115('#196'),
   },
   {
     id: 'ai-config-mcp/duplicate-names',
@@ -417,20 +419,19 @@ export const TOOL_CONFIG_PROVENANCE: readonly CheckProvenance[] = [
   },
   {
     id: 'ai-config-cursor-rules/no-trigger',
-    refuted: true,
     detector: 'ai-config-cursor-rules',
     title: 'Cursor rule with no trigger',
     kind: 'tool-fact',
-    claim: 'A Cursor rule with no `description`, no `globs` and `alwaysApply` unset has no signal for when to apply and can never activate.',
+    claim: 'A Cursor rule with no `description`, no `globs` and `alwaysApply` false is a manual rule that Cursor includes only when it is @-mentioned in chat.',
     appliesTo: ['cursor'],
     sources: [
       cite(
-        PAGES.cursorRules,
-        'contradicts',
-        'Says a rule with alwaysApply false and neither globs nor a description is included when you @-mention it in chat, so it can activate manually rather than never.',
+        { ...PAGES.cursorRules, readOn: '2026-11-15' },
+        'supports',
+        'Lists alwaysApply false with neither globs nor a description as included only when you @-mention the rule in chat (Apply Manually).',
       ),
     ],
-    lastVerified: VERIFIED,
+    lastVerified: { date: '2026-11-15', by: 'agent run 2026-11-15 (issue #178)' },
   },
   {
     id: 'ai-config-cursor-rules/glob-semantics',
@@ -438,17 +439,17 @@ export const TOOL_CONFIG_PROVENANCE: readonly CheckProvenance[] = [
     title: 'Cursor rule glob matching',
     kind: 'tool-fact',
     claim:
-      'Cursor matches a slashless glob such as `*.tsx` at any depth, and a rule whose `globs` match no file in the repository is auto-attached to nothing.',
+      'Cursor documents a slashless glob such as `*.ts` as matching .ts files in the root only (`**/*.ts` matches any directory), and a rule whose `globs` match no file is auto-attached to nothing.',
     appliesTo: ['cursor'],
     sources: [
       cite(
-        PAGES.cursorRules,
-        'contradicts',
-        'Documents `*.ts` as the .ts files in the root and `**/*.ts` as .ts files in any directory, so a slashless glob is root-level only and the detector any-depth fallback hides rules that never fire.',
+        { ...PAGES.cursorRules, readOn: '2026-11-15' },
+        'supports',
+        'Documents `*.ts` as all .ts files in the root and `**/*.ts` as all .ts files in any directory.',
       ),
-      cite(PAGES.cursorRules, 'supports', 'Says a rule with globs is auto-attached when a matching file is in context.'),
+      cite({ ...PAGES.cursorRules, readOn: '2026-11-15' }, 'supports', 'Lists a rule with globs as applied when a file matches the specified pattern.'),
     ],
-    lastVerified: VERIFIED,
+    lastVerified: { date: '2026-11-15', by: 'agent run 2026-11-15 (issue #197)' },
   },
 
   // ── ai-config-copilot-instructions ──────────────────────────────────────────
@@ -458,67 +459,60 @@ export const TOOL_CONFIG_PROVENANCE: readonly CheckProvenance[] = [
     title: 'Copilot path-specific instruction files',
     kind: 'tool-fact',
     claim:
-      'Copilot reads path-specific instructions from `.md` files under `.github/instructions/` that scope themselves with an `applyTo` frontmatter glob, while `.github/copilot-instructions.md` is always on and has no `applyTo`.',
+      'Copilot reads path-specific instructions only from files under `.github/instructions/` (subdirectories allowed) whose name ends with `.instructions.md` and that scope themselves with an `applyTo` frontmatter glob, while `.github/copilot-instructions.md` is repository-wide and has no `applyTo`.',
     appliesTo: ['copilot'],
     sources: [
       cite(
-        PAGES.ghRepoInstructions,
-        'contradicts',
-        'Says a path-specific instructions file name must end with .instructions.md, whereas discovery audits every .md file under .github/instructions/.',
+        { ...PAGES.ghRepoInstructions, readOn: '2026-11-15' },
+        'supports',
+        'Says a path-specific file name must end with .instructions.md, may sit in subdirectories of .github/instructions, uses an applyTo frontmatter keyword, and that .github/copilot-instructions.md is repository-wide without applyTo.',
       ),
       cite(
-        PAGES.ghRepoInstructions,
+        { ...PAGES.vscodeInstructionsRef, readOn: '2026-11-15' },
         'supports',
-        'Says .github/copilot-instructions.md is repository-wide and automatically added to requests.',
-      ),
-      cite(
-        PAGES.vscodeInstructionsRef,
-        'supports',
-        'Places targeted instructions at .github/instructions/**/*.instructions.md with an optional applyTo glob and says copilot-instructions.md needs no frontmatter.',
+        'Places project instructions at .github/instructions/**/*.instructions.md with an optional YAML header and says copilot-instructions.md does not require frontmatter.',
       ),
     ],
-    lastVerified: VERIFIED,
+    lastVerified: { date: '2026-11-15', by: 'agent run 2026-11-15 (issue #198)' },
   },
   {
     id: 'ai-config-copilot-instructions/apply-to-default',
-    refuted: true,
     detector: 'ai-config-copilot-instructions',
     title: 'Copilot instructions without applyTo',
     kind: 'tool-fact',
-    claim: 'A path-specific Copilot instructions file with no `applyTo` glob is applied to every request by default.',
+    claim: 'In VS Code a path-specific Copilot instructions file with neither `description` nor `applyTo` is left available for manual attachment rather than applied automatically, and `applyTo` has no default pattern.',
     appliesTo: ['copilot'],
     sources: [
       cite(
-        PAGES.vscodeInstructionsRef,
-        'contradicts',
-        'Says that in Local sessions a file omitting both description and applyTo is left available for manual attachment rather than automatic activation, and that applyTo has no default pattern.',
+        { ...PAGES.vscodeInstructionsRef, readOn: '2026-11-15' },
+        'supports',
+        'Says that in Local sessions a file omitting both description and applyTo is left available for manual attachment rather than automatic activation, and that there is no default pattern.',
       ),
-      cite(PAGES.ghRepoInstructions, 'context', 'Does not say what happens when applyTo is omitted.'),
-      cite(PAGES.vscodeInstructions, 'context', 'Does not describe a file without applyTo.'),
+      cite({ ...PAGES.ghRepoInstructions, readOn: '2026-11-15' }, 'context', 'Does not say what happens when applyTo is omitted.'),
     ],
-    lastVerified: VERIFIED,
+    caveat: 'Stated for VS Code Local sessions; other Copilot surfaces may treat a file without applyTo differently, so the finding is informational.',
+    lastVerified: { date: '2026-11-15', by: 'agent run 2026-11-15 (issue #179)' },
   },
   {
     id: 'ai-config-copilot-instructions/glob-semantics',
-    refuted: true,
     detector: 'ai-config-copilot-instructions',
     title: 'Copilot applyTo glob matching',
     kind: 'tool-fact',
-    claim: 'An `applyTo` glob such as `*.ts` without a slash matches files at any depth, and a glob that matches no file never applies.',
+    claim: 'An `applyTo` glob such as `*.py` without a slash matches only the current (root) directory, `**` or `**/*` matches all files, and a glob that matches no file never applies.',
     appliesTo: ['copilot'],
     sources: [
       cite(
-        PAGES.ghRepoInstructions,
-        'contradicts',
-        'Gives `*.py` as matching the .py files in the current directory only, and `**` or `**/*` as matching all files in all directories.',
+        { ...PAGES.ghRepoInstructions, readOn: '2026-11-15' },
+        'supports',
+        'Gives `*.py` as matching the .py files in the current directory only, `**/*.py` as matching recursively, and `**` or `**/*` as matching all files in all directories.',
       ),
       cite(
-        PAGES.vscodeInstructionsRef,
-        'contradicts',
+        { ...PAGES.vscodeInstructionsRef, readOn: '2026-11-15' },
+        'supports',
         'Says patterns are relative to the project root and that `*.py` matches only root-level files.',
       ),
     ],
-    lastVerified: VERIFIED,
+    lastVerified: { date: '2026-11-15', by: 'agent run 2026-11-15 (issue #180)' },
   },
 
   // ── ai-config-windsurf-rules ────────────────────────────────────────────────

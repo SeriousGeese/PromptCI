@@ -1,0 +1,6 @@
+{
+  "mcpServers": {
+    "no-type": { "url": "https://mcp.example.com/mcp" },
+    "empty": { "env": { "NOTE": "x" } }
+  }
+}
