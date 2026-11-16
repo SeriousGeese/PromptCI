@@ -147,8 +147,8 @@ no tool loads one.
 replaced it for many users, documents that `@filename` does not inline the file. Copilot, Cursor
 and Windsurf files are never edited either (no import loads content).
 
-By default no edit is made, to any file, unless every section of `AGENTS.md`, the text before its first
-heading included, is in the copy byte-identically (line endings, trailing whitespace, a BOM and
+By default no edit is made, to any file, unless every section of `AGENTS.md`, the text before
+its first heading included, is in the copy byte-identically (line endings, trailing whitespace, a BOM and
 edge blank lines aside), once each and in the same order; `AGENTS.md` has no section twice; no
 section has drifted; no copy-only section comes before a copied one, and the first copy-only
 section is not nested under a copied one; `AGENTS.md` does not import the copy; and `AGENTS.md`
@@ -160,14 +160,16 @@ findings are advisory and never edited.
 **A CLAUDE.md with fewer sections than AGENTS.md** (the state a consolidation leaves, when
 `AGENTS.md` gained the other tools' rules) is refused by default: the import would add text
 Claude Code did not read before. `promptci fix --issue <id> --import-subset` makes that edit
-anyway, after printing the sections Claude Code would gain (with any `@` imports inside them,
-which then load too); without the flag, a refusal for this reason alone names the flag. Every
-other rule above still holds: what the copy has must be `AGENTS.md` sections, byte-identical,
-once each and in `AGENTS.md`'s order (it may skip some), and drift, a moved or nested copy-only
-section, a section that appears twice in `AGENTS.md`, an `AGENTS.md` that imports the copy, and
-an ignored `AGENTS.md` are still refused. A copy whose leading import lines already import
-`AGENTS.md` gains nothing (Claude Code already reads it), so no sections are listed. Nothing in `CLAUDE.md` is lost: every removed section is the same
-text in `AGENTS.md`, and copy-only sections stay below the import.
+anyway, after printing the headings of the sections Claude Code would gain; without the flag, a
+refusal for this reason alone names the flag. The headings are all it prints: a gained section
+that holds an `@` import line loads that file too, so read those sections in `AGENTS.md` first.
+Every other rule above still holds: what the copy has must be `AGENTS.md` sections,
+byte-identical, once each and in `AGENTS.md`'s order (it may skip some), and drift, a moved or
+nested copy-only section, a section that appears twice in `AGENTS.md`, an `AGENTS.md` that
+imports the copy, and an ignored `AGENTS.md` are still refused. A copy whose leading import
+lines already import `AGENTS.md` gains nothing (Claude Code already reads it), so no sections
+are listed. Nothing in `CLAUDE.md` is lost: every removed section is the same text in
+`AGENTS.md`, and copy-only sections stay below the import.
 
 A `CLAUDE.md` whose live `@AGENTS.md` import reaches the scanned `AGENTS.md` counts as forwarding
 (no "No behavioral guidance" finding). Known limit: an import line right after a line that starts

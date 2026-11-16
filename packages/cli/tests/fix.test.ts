@@ -269,6 +269,7 @@ describe('runFix CLI command', () => {
       spy.mockRestore();
     }
     expect(logs.some((l) => l.includes('fewer sections than'))).toBe(false);
+    expect(logs.filter((l) => l.trim() === '')).toEqual([]);
     expect(await fs.readFile(claudePath, 'utf-8')).toBe('@AGENTS.md\n');
   });
 
