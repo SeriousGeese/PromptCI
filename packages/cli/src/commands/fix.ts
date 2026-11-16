@@ -76,7 +76,7 @@ export async function runFix(options: FixOptions): Promise<void> {
           if (!importSubset) {
             const subset = await planMirrorImport(named, resolvedPath, { subset: true });
             if (subset.changes.length > 0) {
-              console.log(`  ${subsetImportCaveat(subset.gained)}`);
+              if (subset.gained.length > 0) console.log(`  ${subsetImportCaveat(subset.gained)}`);
               console.log(`  To import anyway: promptci fix --issue ${named.id} --import-subset`);
             }
           }

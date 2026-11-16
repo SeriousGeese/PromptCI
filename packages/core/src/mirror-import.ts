@@ -216,7 +216,9 @@ export type ImportConsolidation =
       /**
        * Headings of the canonical sections the copy lacks, in the canonical
        * order: what Claude Code reads after the edit and did not before.
-       * Always empty unless `subset` was asked for.
+       * Always empty unless `subset` was asked for, and empty when the copy's
+       * leading import lines already import the canonical file (Claude Code
+       * already reads those sections through it).
        */
       gained: string[];
     }
@@ -374,7 +376,7 @@ export function consolidateWithImport(
     newContent: out.join(eol) + finalNewline,
     dropped: dropped.map((s) => s.heading ?? '(preamble)'),
     kept: kept.map((s) => s.heading ?? '(preamble)'),
-    gained: missing.map((s) => s.heading ?? '(text before the first heading)'),
+    gained: alreadyImports ? [] : missing.map((s) => s.heading ?? '(text before the first heading)'),
   };
 }
 

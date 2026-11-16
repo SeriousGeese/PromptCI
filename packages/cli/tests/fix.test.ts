@@ -203,6 +203,75 @@ describe('runFix CLI command', () => {
     expect(await fs.readFile(claudePath, 'utf-8')).toBe('@AGENTS.md\n');
   });
 
+  // Review of PR 224: the hint only where the flag would make the edit, and no caveat line where
+  // nothing is gained.
+  it.each([
+    ['drift', 'fixture-mirrored-drift'],
+    ['another order', 'fixture-mirror-refuse-reordered'],
+  ])('a refusal for %s names no --import-subset and prints no caveat', async (_name, fixtureName) => {
+    const src = path.resolve(__dirname, '../../../examples', fixtureName);
+    for (const name of ['AGENTS.md', 'CLAUDE.md']) {
+      await fs.writeFile(path.join(tmpDir, name), await fs.readFile(path.join(src, name), 'utf-8'), 'utf-8');
+    }
+    const { scan } = await import('@promptci/core');
+    const mirror = (await scan({ repoPath: tmpDir })).issues.find((i) => (i.tags ?? []).includes('mirrored-files'));
+    expect(mirror).toBeDefined();
+    const logs: string[] = [];
+    const spy = vi.spyOn(console, 'log').mockImplementation((...m) => { logs.push(m.join(' ')); });
+    try {
+      await runFix({ scanPath: tmpDir, issueId: mirror!.id, interactive: false });
+    } finally {
+      spy.mockRestore();
+    }
+    expect(logs).toContain(`No edit for ${mirror!.id}:`);
+    expect(logs.some((l) => l.includes('--import-subset'))).toBe(false);
+    expect(logs.some((l) => l.includes('fewer sections than'))).toBe(false);
+    expect(logs.filter((l) => l.trim() === '')).toEqual([]);
+  });
+
+  it('a complete copy imports without --import-subset and prints no subset caveat or blank line', async () => {
+    const body =
+      '## Testing Conventions\n' +
+      'Run all tests before saying work is done. Ensure coverage matches or exceeds 80%.\n' +
+      'Always document design constraints in the codebase.\n';
+    await fs.writeFile(path.join(tmpDir, 'AGENTS.md'), body, 'utf-8');
+    await fs.writeFile(path.join(tmpDir, 'CLAUDE.md'), body, 'utf-8');
+    const { scan } = await import('@promptci/core');
+    const mirror = (await scan({ repoPath: tmpDir })).issues.find((i) => (i.tags ?? []).includes('mirrored-files'));
+    expect(mirror).toBeDefined();
+    const logs: string[] = [];
+    const spy = vi.spyOn(console, 'log').mockImplementation((...m) => { logs.push(m.join(' ')); });
+    try {
+      await runFix({ scanPath: tmpDir, issueId: mirror!.id, interactive: false });
+    } finally {
+      spy.mockRestore();
+    }
+    expect(await fs.readFile(path.join(tmpDir, 'CLAUDE.md'), 'utf-8')).toBe('@AGENTS.md\n');
+    expect(logs.some((l) => l.includes('fewer sections than'))).toBe(false);
+    expect(logs.filter((l) => l.trim() === '')).toEqual([]);
+  });
+
+  it('a subset copy that already imports AGENTS.md on top: the hint names the flag but lists no gained sections', async () => {
+    const src = path.resolve(__dirname, '../../../examples/fixture-mirror-refuse-canonical-extra');
+    const claudePath = path.join(tmpDir, 'CLAUDE.md');
+    await fs.writeFile(path.join(tmpDir, 'AGENTS.md'), await fs.readFile(path.join(src, 'AGENTS.md'), 'utf-8'), 'utf-8');
+    await fs.writeFile(claudePath, `@AGENTS.md\n\n${await fs.readFile(path.join(src, 'CLAUDE.md'), 'utf-8')}`, 'utf-8');
+    const { scan } = await import('@promptci/core');
+    const mirror = (await scan({ repoPath: tmpDir })).issues.find((i) => (i.tags ?? []).includes('mirrored-files'));
+    expect(mirror).toBeDefined();
+    const logs: string[] = [];
+    const spy = vi.spyOn(console, 'log').mockImplementation((...m) => { logs.push(m.join(' ')); });
+    try {
+      await runFix({ scanPath: tmpDir, issueId: mirror!.id, interactive: false });
+      expect(logs).toContain(`  To import anyway: promptci fix --issue ${mirror!.id} --import-subset`);
+      await runFix({ scanPath: tmpDir, issueId: mirror!.id, interactive: false, importSubset: true });
+    } finally {
+      spy.mockRestore();
+    }
+    expect(logs.some((l) => l.includes('fewer sections than'))).toBe(false);
+    expect(await fs.readFile(claudePath, 'utf-8')).toBe('@AGENTS.md\n');
+  });
+
   // pcic-1ik0.5 (PromptCI#160): a near-duplicate is two copies that have
   // drifted apart. Consolidating it unattended would replace the text that
   // differs with a pointer, deleting the conflict along with its evidence.

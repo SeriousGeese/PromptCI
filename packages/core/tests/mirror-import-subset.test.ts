@@ -60,6 +60,11 @@ describe('consolidateWithImport: subset mode accepts a copy that skips canonical
     expect(result).toMatchObject({ ok: true, newContent: expected, gained });
   });
 
+  it('a copy that already imports AGENTS.md on top gains nothing: Claude Code reads those sections already (review of PR 224)', () => {
+    const result = consolidateWithImport(`@AGENTS.md\n\n${join(A, B)}`, join(A, B, C), PATHS, { subset: true });
+    expect(result).toEqual({ ok: true, newContent: '@AGENTS.md\n', dropped: ['Stack', 'Commands'], kept: [], gained: [] });
+  });
+
   it('a complete copy: subset mode makes the same edit as the default, and gains nothing', () => {
     for (const [canonical, copy] of [
       [join(A, B, C), join(A, B, C)],

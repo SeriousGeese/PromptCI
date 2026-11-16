@@ -12,6 +12,7 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { spawnSync, execSync } from 'node:child_process';
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -47,6 +48,34 @@ function cli(args: string[]): { status: number; stdout: string; stderr: string }
     stderr: result.stderr ?? '',
   };
 }
+
+// ── fix --import-subset (pcic-5rop.64) ───────────────────────────────────────────
+
+describe('fix --import-subset through the Commander layer', () => {
+  it('imports AGENTS.md into a subset CLAUDE.md only with the flag', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'promptci-e2e-subset-'));
+    try {
+      const src = path.join(FIXTURES, 'fixture-mirror-refuse-canonical-extra');
+      for (const name of ['AGENTS.md', 'CLAUDE.md']) fs.copyFileSync(path.join(src, name), path.join(dir, name));
+      const claude = fs.readFileSync(path.join(dir, 'CLAUDE.md'), 'utf-8');
+      const scanned = cli(['scan', '--path', dir, '--json']);
+      const report = JSON.parse(scanned.stdout) as { issues: Array<{ id: string; tags?: string[] }> };
+      const mirror = report.issues.find((i) => (i.tags ?? []).includes('mirrored-files'));
+      expect(mirror).toBeDefined();
+
+      const refused = cli(['fix', '--path', dir, '--issue', mirror!.id, '--no-interactive']);
+      expect(refused.stdout).toContain(`To import anyway: promptci fix --issue ${mirror!.id} --import-subset`);
+      expect(fs.readFileSync(path.join(dir, 'CLAUDE.md'), 'utf-8')).toBe(claude);
+
+      const applied = cli(['fix', '--path', dir, '--issue', mirror!.id, '--no-interactive', '--import-subset']);
+      expect(applied.status).toBe(0);
+      expect(applied.stdout).toContain('Codex sandbox, Cursor background agents');
+      expect(fs.readFileSync(path.join(dir, 'CLAUDE.md'), 'utf-8')).toBe('@AGENTS.md\n');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
 
 // ── version / help ────────────────────────────────────────────────────────────
 
