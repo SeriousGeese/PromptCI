@@ -43,6 +43,7 @@ export { ADDRESSABLE_CATEGORIES, estimateTokens, annotateIssueTokens, computeAdd
 export { computeFingerprint, createBaseline, filterNewIssues, assertValidBaseline } from './baseline.js';
 export { applyFixRecipe, resolveSafePath, isRepairable, isOptInRecipe, isScriptRenameRecipe, requiresOptIn, planMirrorImport } from './fix-engine.js';
 export type { MirrorImportPlan } from './fix-engine.js';
+export { subsetImportCaveat } from './mirror-import.js';
 export {
   closestUniqueMatch,
   isMechanicalRename,

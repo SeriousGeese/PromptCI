@@ -103,17 +103,23 @@ program
   .option('--issue <id>', 'fix a specific issue by its ID; naming a mirrored-files finding or a script-rename finding opts in to its edit')
   .option('--no-interactive', 'disable interactive prompting and apply all fixes')
   .option('--dry-run', 'print proposed changes without writing to disk')
+  .option(
+    '--import-subset',
+    "with --issue on a mirrored-files finding: also import AGENTS.md into a CLAUDE.md that lacks some of its sections (Claude Code then reads those too)",
+  )
   .action(async (opts: {
     path?: string;
     issue?: string;
     interactive?: boolean;
     dryRun?: boolean;
+    importSubset?: boolean;
   }) => {
     await runFix({
       scanPath: opts.path,
       issueId: opts.issue,
       interactive: opts.interactive,
       dryRun: opts.dryRun || false,
+      importSubset: opts.importSubset === true,
     });
   });
 
