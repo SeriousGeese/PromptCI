@@ -1,0 +1,6 @@
+---
+description: Project rules
+alwaysApply: true
+---
+
+Use TypeScript for all new code and keep functions small.

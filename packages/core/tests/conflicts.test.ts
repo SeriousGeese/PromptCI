@@ -1710,3 +1710,14 @@ describe('detectVersionConflicts — C6 fence stripping', () => {
     expect(issues.some((i) => i.title.toLowerCase().includes('.net'))).toBe(true);
   });
 });
+
+// -- #187: Pages Router and App Router coexist by design --
+
+describe('Next.js Pages Router vs App Router (#187)', () => {
+  it('does not report them as a competing-technology conflict', async () => {
+    const { scan } = await import('../src/scan.js');
+    const dir = path.resolve(__dirname, '../../../examples/fixture-nextjs-routers-coexist');
+    const { issues } = await scan({ repoPath: dir, projectType: 'typescript' });
+    expect(issues.filter((i) => /routing|router/i.test(i.title + ' ' + i.summary))).toEqual([]);
+  });
+});

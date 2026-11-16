@@ -564,34 +564,38 @@ describe('getInitialProps (c)', () => {
 
 describe('NgModule (c)', () => {
   const GUIDE = 'Declare every component in an `NgModule`, and import the module in `AppModule`.';
-  const ANGULAR_17 = { '@angular/core': '^17.3.0' };
+  const ANGULAR_19 = { '@angular/core': '^19.0.0' };
 
-  it('is info on Angular 17+ with no module files', async () => {
+  it('is info on Angular 19+ with no module files', async () => {
     const issues = await detect({
-      'package.json': pkg(ANGULAR_17),
+      'package.json': pkg(ANGULAR_19),
       'src/app/app.component.ts': '',
       'CLAUDE.md': `# A\n\n${GUIDE}\n`,
     });
-    expect(titles(issues)).toEqual(['Instructions are NgModule-centric in an Angular 17+ project with no modules']);
+    expect(titles(issues)).toEqual(['Instructions are NgModule-centric in an Angular 19+ project with no modules']);
     expect(issues[0]!.severity).toBe('info');
     expect(issues[0]!.summary).toContain('standalone');
   });
 
   it('stays quiet when the project still has *.module.ts files', async () => {
     const issues = await detect({
-      'package.json': pkg(ANGULAR_17),
+      'package.json': pkg(ANGULAR_19),
       'src/app/app.module.ts': '',
       'CLAUDE.md': `# A\n\n${GUIDE}\n`,
     });
     expect(issues).toEqual([]);
   });
 
-  it('stays quiet on Angular 16 and older', async () => {
+  it('stays quiet before Angular 19 (standalone is the default from 19.0.0)', async () => {
     const issues = await detect({
       'package.json': pkg({ '@angular/core': '^16.2.0' }),
       'CLAUDE.md': `# A\n\n${GUIDE}\n`,
     });
     expect(issues).toEqual([]);
+    for (const spec of ['^17.3.0', '^18.2.0']) {
+      const older = await detect({ 'package.json': pkg({ '@angular/core': spec }), 'CLAUDE.md': `# A\n\n${GUIDE}\n` });
+      expect(older).toEqual([]);
+    }
   });
 
   it('stays quiet without Angular', async () => {
@@ -604,7 +608,7 @@ describe('NgModule (c)', () => {
     'Avoid NgModules in new code.',
   ])('stays quiet for guidance that steers away from it (%s)', async (line) => {
     const issues = await detect({
-      'package.json': pkg(ANGULAR_17),
+      'package.json': pkg(ANGULAR_19),
       'CLAUDE.md': `# A\n\n${line}\n`,
     });
     expect(issues).toEqual([]);

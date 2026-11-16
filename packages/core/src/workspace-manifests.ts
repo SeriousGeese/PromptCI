@@ -237,9 +237,30 @@ function toManifestGlob(workspaceGlob: string): string {
 }
 
 /**
+ * Where a repository's workspace globs are declared, by package manager (#200):
+ *
+ *  - pnpm reads them only from `pnpm-workspace.yaml`; the `workspaces` field of
+ *    package.json is ignored (https://pnpm.io/settings).
+ *  - npm, yarn and bun read them only from the `workspaces` field of package.json;
+ *    a `pnpm-workspace.yaml` in such a repository declares nothing.
+ *  - Unknown (no `packageManager` field and no lockfile): both sources are merged,
+ *    so a selector either tool would resolve still resolves. This is the permissive
+ *    choice: it cannot invent a missing-workspace finding.
+ */
+export type WorkspaceGlobSources = { packageJson: boolean; pnpmYaml: boolean };
+
+export function workspaceGlobSources(packageManager: string | undefined): WorkspaceGlobSources {
+  if (packageManager === 'pnpm') return { packageJson: false, pnpmYaml: true };
+  if (packageManager === 'npm' || packageManager === 'yarn' || packageManager === 'bun') {
+    return { packageJson: true, pnpmYaml: false };
+  }
+  return { packageJson: true, pnpmYaml: true };
+}
+
+/**
  * Read the root manifest and every workspace package manifest. Workspace
  * directories come from the declared `workspaces` globs (package.json or
- * pnpm-workspace.yaml) or, when none are declared, the conventional
+ * pnpm-workspace.yaml, chosen by `packageManager`: see {@link workspaceGlobSources}) or, when none are declared, the conventional
  * `apps/`, `packages/` and `libs/` roots. Only dependency trees and VCS
  * directories are ignored — a declared glob may legitimately reach
  * `tools/build/`. Paths the scan's `exclude` patterns cover (`isExcluded`) are
@@ -249,15 +270,17 @@ export async function discoverWorkspaceManifests(
   repoRoot: string,
   rawRootPackageJson: string | undefined,
   isExcluded: (posixPath: string) => boolean = () => false,
+  packageManager?: string,
 ): Promise<WorkspaceDiscovery> {
+  const sources = workspaceGlobSources(packageManager);
   let pnpmYaml: string | undefined;
   try {
-    const abs = resolveReadableWithinRoot(repoRoot, 'pnpm-workspace.yaml');
+    const abs = sources.pnpmYaml ? resolveReadableWithinRoot(repoRoot, 'pnpm-workspace.yaml') : null;
     pnpmYaml = abs ? await fs.readFile(abs, 'utf-8') : undefined;
   } catch {
     pnpmYaml = undefined;
   }
-  const declared = [...packageJsonWorkspaceGlobs(rawRootPackageJson), ...pnpmWorkspaceGlobs(pnpmYaml)];
+  const declared = [...(sources.packageJson ? packageJsonWorkspaceGlobs(rawRootPackageJson) : []), ...pnpmWorkspaceGlobs(pnpmYaml)];
   const positive = declared.filter((g) => !g.startsWith('!') && isContainedGlob(g));
   const negative = declared.filter((g) => g.startsWith('!')).map((g) => g.slice(1));
   const globs = positive.length > 0 ? positive : CONVENTIONAL_WORKSPACE_GLOBS;

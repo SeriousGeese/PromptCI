@@ -207,6 +207,24 @@ function stringRecord(value: unknown): Record<string, string> {
   return Object.fromEntries(Object.entries(value).filter((entry): entry is [string, string] => typeof entry[1] === 'string'));
 }
 
+/**
+ * The package manager workspace discovery trusts (#200): the `packageManager` field, else the lockfile;
+ * lockfiles of more than one manager with no field is a repository mid-migration, so unknown (both
+ * workspace sources are read).
+ */
+function workspacePackageManager(rawPackageJson: string | undefined, lockfiles: string[]): PackageManagerName {
+  const facts = parsePackageJsonFacts(rawPackageJson, lockfiles);
+  if (facts.packageManager !== undefined && packageManagerFromString(facts.packageManager) !== 'unknown') {
+    return facts.packageManagerName;
+  }
+  const managers = new Set<string>();
+  if (lockfiles.includes('pnpm-lock.yaml')) managers.add('pnpm');
+  if (lockfiles.includes('package-lock.json')) managers.add('npm');
+  if (lockfiles.includes('yarn.lock')) managers.add('yarn');
+  if (lockfiles.some((f) => f.startsWith('bun.lock'))) managers.add('bun');
+  return managers.size > 1 ? 'unknown' : facts.packageManagerName;
+}
+
 export function parsePackageJsonFacts(raw: string | undefined, lockfiles: string[]): PackageJsonFacts {
   const facts = emptyPackageJsonFacts();
   facts.raw = raw;
@@ -463,6 +481,8 @@ export async function buildRepoContext(input: ScanInput): Promise<RepoContext> {
     repoRoot,
     packageJson,
     (posix) => isExcludedPath(posix, input.exclude ?? []),
+    // pnpm and npm/yarn declare workspaces in different files (#200).
+    workspacePackageManager(packageJson, lockfiles),
   );
 
   const makefile = readMakefile(repoRoot, '.', tree);

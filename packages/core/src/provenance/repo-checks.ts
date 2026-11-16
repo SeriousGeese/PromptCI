@@ -13,10 +13,14 @@ import type { CheckProvenance, ProvenanceSource, SourceStance } from './types.js
 const READ_ON = '2026-11-13';
 const VERIFIED = { date: '2026-11-13', by: 'Claude agent backfill (pcic-kvv3.1), pending human review' } as const;
 
-const src = (url: string, title: string, stance: SourceStance, note: string): ProvenanceSource => ({
+/** Re-read during the 2026-11-15 vendor-doc fixes; those records carry this date, not the backfill date. */
+const REREAD_ON = '2026-11-15';
+const REVERIFIED = (issue: number) => ({ date: REREAD_ON, by: `agent run ${REREAD_ON} (issue #${issue})` }) as const;
+
+const src = (url: string, title: string, stance: SourceStance, note: string, readOn: string = READ_ON): ProvenanceSource => ({
   url,
   title,
-  readOn: READ_ON,
+  readOn,
   stance,
   note,
 });
@@ -52,18 +56,21 @@ const PNPM_FILTER = src(
   'pnpm filtering documentation',
   'context',
   'Documents --filter and -F as the workspace selector; it does not define -r or --recursive, so the detector treating pnpm -r as running in every workspace package is not covered by this page.',
+  REREAD_ON,
 );
 const NPM_WORKSPACES = src(
   'https://docs.npmjs.com/cli/v11/using-npm/workspaces',
   'npm workspaces documentation',
   'supports',
-  'Documents the workspaces field of package.json, -w and --workspace to target one workspace, and --workspaces to run in all of them; the -ws short form is not mentioned on the page.',
+  'Documents the workspaces field of package.json, -w and --workspace to target one workspace by name or folder path, and --workspaces to run in all of them; the -ws short form is not mentioned on the page.',
+  REREAD_ON,
 );
 const PNPM_WORKSPACE_YAML = src(
   'https://pnpm.io/settings',
   'pnpm-workspace.yaml documentation',
-  'contradicts',
-  'Says pnpm reads workspaces only from pnpm-workspace.yaml and not from the workspaces field of the root package.json, while workspace-manifests.ts merges package.json workspaces globs with pnpm-workspace.yaml globs for every repository whatever its package manager.',
+  'supports',
+  'Says pnpm reads the workspace from pnpm-workspace.yaml and not from the workspaces field of the root package.json; workspace-manifests.ts now reads only pnpm-workspace.yaml for a pnpm repository and only the package.json field for npm, yarn and bun.',
+  REREAD_ON,
 );
 const GNU_MAKE_NAMES = src(
   'https://www.gnu.org/software/make/manual/html_node/Makefile-Names.html',
@@ -137,12 +144,6 @@ const NEXT_SERVER_CLIENT = src(
   'supports',
   'Says layouts and pages in the App Router are Server Components by default and that the use client directive marks a Client Component boundary.',
 );
-const NEXT_MIGRATION = src(
-  'https://nextjs.org/docs/app/guides/migrating/app-router-migration',
-  'Next.js migrating from Pages to the App Router',
-  'contradicts',
-  'Says the app directory is intentionally designed to work simultaneously with the pages directory for incremental migration and that the two routers can be used together, which contradicts treating pages router and app router as mutually exclusive; it also says getServerSideProps, getStaticProps and getInitialProps are replaced inside app.',
-);
 const NEXT_MIGRATION_SUPPORTS = src(
   'https://nextjs.org/docs/app/guides/migrating/app-router-migration',
   'Next.js migrating from Pages to the App Router',
@@ -182,14 +183,16 @@ const REACT_18 = src(
 const ANGULAR_COMPONENTS = src(
   'https://angular.dev/guide/components',
   'Angular components guide',
-  'contradicts',
-  'Says components are standalone by default and that in versions before 19.0.0 the standalone option defaults to false, while the detector treats Angular 17 and 18 as already standalone by default; the page does not say what ng new generated in those versions.',
+  'supports',
+  'Says that in Angular versions before 19.0.0 the standalone option defaults to false, so components are standalone by default from 19.0.0, which is the version the detector now starts at.',
+  REREAD_ON,
 );
 const ANGULAR_NGMODULES = src(
   'https://angular.dev/guide/ngmodules/overview',
   'Angular NgModules overview',
   'supports',
   'Says the Angular team recommends standalone components instead of NgModule for all new code and bootstrapApplication instead of bootstrapModule.',
+  REREAD_ON,
 );
 
 // ── Deprecated packages ───────────────────────────────────────────────────────
@@ -199,42 +202,49 @@ const MOMENT_STATUS = src(
   'Moment.js project status',
   'supports',
   'States that Moment.js is a legacy project in maintenance mode.',
+  REREAD_ON,
 );
 const TSLINT_README = src(
   'https://github.com/palantir/tslint',
   'TSLint repository README',
   'supports',
   'Says TSLint is deprecated, points to ESLint as the replacement, and shows the repository archived on 2021-03-25.',
+  REREAD_ON,
 );
 const LIBSASS_DEPRECATED = src(
   'https://sass-lang.com/blog/libsass-is-deprecated/',
   'Sass blog, LibSass is deprecated',
-  'contradicts',
-  'Says LibSass and Node Sass are deprecated and Dart Sass is the replacement, but also says LibSass and Node Sass will continue to be maintained indefinitely on a best-effort basis, which contradicts the detector wording that LibSass is no longer maintained.',
+  'supports',
+  'Says LibSass and Node Sass are deprecated, no new features will be added and Dart Sass is the replacement, while they continue to be maintained indefinitely on a best-effort basis; the detector words it as deprecated (maintained best-effort, no new features), not as unmaintained.',
+  REREAD_ON,
 );
 const REQUEST_ISSUE = src(
   'https://github.com/request/request/issues/3142',
   'request issue 3142, consider deprecating',
   'context',
   'Shows the maintainers discussing maintenance mode and deprecation and an npm warning that request has been deprecated quoted in an October 2022 comment; no 2020 deprecation date appears on the page.',
+  REREAD_ON,
 );
 const REQUEST_NPM = src(
   'https://registry.npmjs.org/request/latest',
   'npm registry entry for the latest request release',
   'supports',
   'The registry marks the latest release deprecated with the message: request has been deprecated, see https://github.com/request/request/issues/3142.',
+  REREAD_ON,
 );
 const CRA_SUNSET = src(
   'https://react.dev/blog/2025/02/14/sunsetting-create-react-app',
   'React blog, sunsetting Create React App',
   'supports',
   'Announces on 2025-02-14 that Create React App is deprecated for new apps and in maintenance mode; the page never names the react-scripts package.',
+  REREAD_ON,
 );
 const ENZYME_README = src(
   'https://github.com/enzymejs/enzyme',
   'Enzyme repository README',
   'context',
   'Lists adapters only up to enzyme-adapter-react-16 and states no maintenance status or React 17 or 18 adapter, so it neither confirms nor refutes that Enzyme is unmaintained.',
+  REREAD_ON,
 );
 const VUE2_EOL = src(
   'https://v2.vuejs.org/',
@@ -401,14 +411,16 @@ const OWASP_UPLOAD = src(
 const CURSOR_IGNORE = src(
   'https://cursor.com/docs/reference/ignore-file',
   'Cursor ignore files',
-  'contradicts',
-  'Says Cursor ignores files in .gitignore and also a default ignore list (.env*, *.lock, node_modules/, .git/) and blocks Agent and Tab access to files in .cursorignore, so it skips more than gitignored paths; terminal and MCP tools are not blocked.',
+  'supports',
+  'Says Cursor ignores files in .gitignore and also a default ignore list (.env*, *.lock, node_modules/, .git/) and blocks Agent and Tab access to files in .cursorignore, and that the terminal and MCP tools Agent uses cannot block access; the detector accounts for .cursorignore and does not claim Cursor skips only gitignored paths.',
+  REREAD_ON,
 );
 const CLAUDE_SETTINGS_REFERENCE = src(
   'https://code.claude.com/docs/en/settings-reference',
   'Claude Code settings reference',
   'context',
   'Lists respectGitignore only as keeping gitignored files out of the @ file picker and shows no setting making gitignore govern file reads, which are controlled by permissions.deny rules.',
+  REREAD_ON,
 );
 const CLAUDE_MEMORY = src(
   'https://code.claude.com/docs/en/memory',
@@ -539,10 +551,10 @@ export const REPO_CHECKS_PROVENANCE: readonly CheckProvenance[] = [
     title: 'Workspace selectors and where workspace packages come from',
     kind: 'tool-fact',
     claim:
-      'pnpm --filter, npm -w and --workspace, and the workspaces globs of package.json or pnpm-workspace.yaml decide which workspace package a script command runs in, with conventional apps, packages and libs roots assumed when none are declared.',
+      'pnpm --filter selects among the packages pnpm-workspace.yaml declares (pnpm ignores the package.json workspaces field), npm -w and --workspace select among the packages the package.json workspaces field declares, and a repository with an unknown package manager is read from both, with conventional apps, packages and libs roots assumed when none are declared.',
     appliesTo: 'n/a',
     sources: [PNPM_FILTER, NPM_WORKSPACES, PNPM_WORKSPACE_YAML],
-    lastVerified: VERIFIED,
+    lastVerified: REVERIFIED(200),
   },
   {
     id: 'command-validity/make-targets',
@@ -619,10 +631,10 @@ export const REPO_CHECKS_PROVENANCE: readonly CheckProvenance[] = [
     title: 'Packages their maintainers have deprecated or stopped maintaining',
     kind: 'tool-fact',
     claim:
-      'moment is in maintenance mode, request, tslint and node-sass are deprecated, react-scripts belongs to the deprecated Create React App, and enzyme has no adapter for current React versions.',
+      'moment is in maintenance mode, request, tslint and node-sass (LibSass, maintained best-effort with no new features) are deprecated, react-scripts belongs to the deprecated Create React App, and enzyme has no adapter for current React versions.',
     appliesTo: 'n/a',
     sources: [MOMENT_STATUS, REQUEST_NPM, REQUEST_ISSUE, TSLINT_README, LIBSASS_DEPRECATED, CRA_SUNSET, ENZYME_README],
-    lastVerified: VERIFIED,
+    lastVerified: REVERIFIED(190),
   },
   {
     id: 'dependency-staleness/version-gated-apis',
@@ -642,17 +654,16 @@ export const REPO_CHECKS_PROVENANCE: readonly CheckProvenance[] = [
 
   {
     id: 'dependency-staleness/angular-standalone-default',
-    refuted: true,
     detector: 'dependency-staleness',
     title: 'Angular standalone components by default',
     kind: 'tool-fact',
-    claim: 'Angular 17 and later projects default to standalone components rather than NgModules.',
+    claim: 'Angular projects from 19.0.0 default to standalone components rather than NgModules.',
     appliesTo: 'n/a',
     sources: [ANGULAR_COMPONENTS, { ...ANGULAR_NGMODULES, stance: 'context' }],
     thresholds: [
-      { name: 'NgModule guidance stale from Angular major (the detector value; the standalone default arrives in 19.0.0)', value: 17, unit: 'major version', where: 'dependency-staleness.ts:checkNgModule', source: 'unverified' },
+      { name: 'NgModule guidance stale from Angular major (standalone is the default from 19.0.0)', value: 19, unit: 'major version', where: 'dependency-staleness.ts:checkNgModule', source: ANGULAR_COMPONENTS },
     ],
-    lastVerified: VERIFIED,
+    lastVerified: REVERIFIED(186),
   },
 
   // ── ci-alignment ────────────────────────────────────────────────────────────
@@ -773,18 +784,6 @@ export const REPO_CHECKS_PROVENANCE: readonly CheckProvenance[] = [
       { name: 'minimum instruction files', value: 2, unit: 'files', where: 'conflicts.ts:detectCompetingTechConflicts', source: 'unverified' },
       { name: 'finding confidence', value: 0.6, unit: 'confidence score', where: 'conflicts.ts:detectCompetingTechConflicts', source: 'unverified' },
     ],
-    lastVerified: VERIFIED,
-  },
-  {
-    id: 'competing-tech-conflicts/nextjs-routers',
-    refuted: true,
-    detector: 'competing-tech-conflicts',
-    title: 'Pages Router and App Router treated as exclusive',
-    kind: 'tool-fact',
-    claim:
-      'The Next.js Pages Router and App Router are mutually exclusive routing strategies, so instruction files recommending one and the other conflict.',
-    appliesTo: 'n/a',
-    sources: [NEXT_MIGRATION],
     lastVerified: VERIFIED,
   },
 
@@ -957,15 +956,14 @@ export const REPO_CHECKS_PROVENANCE: readonly CheckProvenance[] = [
   },
   {
     id: 'security-pack/generated-directories',
-    refuted: true,
     detector: 'security-pack',
     title: 'Unignored generated directories reach AI tools',
     kind: 'tool-fact',
     claim:
-      'Directories such as coverage, dist, build and .next that are not gitignored can be read into the context of AI coding tools, which inflates token cost, because tools such as Cursor skip only gitignored paths.',
+      'Cursor skips .gitignore paths, a default list (.env*, *.lock, node_modules/, .git/) and .cursorignore paths for Agent and Tab but not what its terminal and MCP tools read, so a generated directory such as coverage, dist, build or .next that none of those cover can be read into context, which inflates token cost.',
     appliesTo: ['cursor', 'claude-code'],
     sources: [CURSOR_IGNORE, CLAUDE_SETTINGS_REFERENCE],
-    lastVerified: VERIFIED,
+    lastVerified: REVERIFIED(188),
   },
 
   // ── framework-packs ─────────────────────────────────────────────────────────
