@@ -41,10 +41,10 @@
   "devDependencies": {
     "@promptci/core": "workspace:*",
     "@types/node": "^26.6.6",
-    "commander": "^15.0.0",
+    "commander": "^15.1.0",
     "esbuild": "^0.28.2",
     "typescript": "*",
-    "vitest": "^5.1.0"
+    "vitest": "^5.1.1"
   },
   "publishConfig": {
     "access": "public"
