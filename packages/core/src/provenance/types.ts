@@ -76,6 +76,8 @@ export type BehaviourEvalResult = {
   /** The check the eval measured: a `CHECKS` id or detector id, as the eval names it. */
   check: string;
   harness: ProvenanceTool;
+  /** The harness version the runs used, when the eval recorded it (e.g. `2.1.327`). */
+  harnessVersion?: string;
   /** The model id the harness ran. */
   model: string;
   /** "helps" or "hurts" only when the 95% interval excludes zero. */

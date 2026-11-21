@@ -53,7 +53,7 @@ describe('detectBuriedCriticalInstructions', () => {
     const issue = detectBuriedCriticalInstructions([makeFile(content)])[0]!;
     expect(issue.severity).toBe('info');
     expect(issue.summary).toContain('Claude Code followed a critical rule at the bottom of a long file as often as the same rule at the top');
-    expect(issue.summary).toContain('2026-11-19, Claude Code with Sonnet 5.5');
+    expect(issue.summary).toContain('2026-11-19, Claude Code 2.1.327 with Sonnet 5.5');
     expect(issue.recommendation).toMatch(/^No change needed on the evidence so far\./);
   });
 

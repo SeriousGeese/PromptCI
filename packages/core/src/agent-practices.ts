@@ -57,7 +57,7 @@ interface PracticeCheck {
 
 /** Where the behaviour-eval evidence comes from, and its limits (pcic-55dy). */
 const BEHAVIOUR_EVAL_BASIS =
-  "PromptCI behaviour evals, 2026-11-19, Claude Code with Sonnet 5.5, 5 runs with and 5 without the sentence on small synthetic tasks. Other agents and models may differ.";
+  "PromptCI behaviour evals, 2026-11-19, Claude Code 2.1.327 with Sonnet 5.5, 5 runs with and 5 without the sentence on small synthetic tasks. Other agents and models may differ.";
 
 const CHECKS: PracticeCheck[] = [
   {
@@ -168,7 +168,7 @@ const CHECKS: PracticeCheck[] = [
       'Add a rule such as: "Always read a file fully before editing it."',
     confidence: 0.75,
     noMeasuredEffect:
-      'Claude Code already read files before editing in our tests, with or without this sentence (5 of 5 runs each): it made no measurable difference',
+      'Claude Code already read files before editing in our tests, with or without this sentence (5 of 5 runs each; its Edit tool may itself require a read first): it made no measurable difference',
     fixRecipe: 'Read a file before editing it. Preserve unrelated user changes.',
   },
   {
@@ -833,7 +833,7 @@ export function detectAgentPractices(
       recommendation:
         `Consider making the rules reach ${target.agent}: either ${forwardingAdvice(file, target, fileWithGuidance)}, ` +
         `or add the rules to ${target.label} itself, a verification rule above all: in PromptCI's behaviour evals ` +
-        `(2026-11-19, Claude Code with Sonnet 5.5) naming the verification command changed what the agent did, while ` +
+        `(2026-11-19, Claude Code 2.1.327 with Sonnet 5.5) naming the verification command changed what the agent did, while ` +
         `scope-control, read-before-edit and honesty sentences made no measurable difference.`,
       confidence: 0.5,
       tags: [UNSCORED_TAG],

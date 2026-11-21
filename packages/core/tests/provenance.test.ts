@@ -270,7 +270,7 @@ describe('the registry', () => {
     for (const check of ['no-read-before-edit', 'no-honesty-policy', 'no-scope-control', 'no-ask-when-unsure', 'negative-overload', 'buried-critical']) {
       const entry = byCheck.get(check);
       expect(entry, check).toBeDefined();
-      expect(entry!.result).toMatchObject({ harness: 'claude-code', model: 'claude-sonnet-5-5', verdict: 'no measurable difference', effect: 0, runs: 10, lastRun: '2026-11-19' });
+      expect(entry!.result).toMatchObject({ harness: 'claude-code', harnessVersion: '2.1.327', model: 'claude-sonnet-5-5', verdict: 'no measurable difference', effect: 0, runs: 10, lastRun: '2026-11-19' });
       expect(provenanceStatus(entry!.record), check).toBe('unverified');
       expect(entry!.record.caveat, check).toContain('Demoted to information (pcic-55dy)');
     }
@@ -278,10 +278,12 @@ describe('the registry', () => {
     expect(byCheck.get('negative-overload')!.record.id).toBe('negative-instructions');
   });
 
-  it('answers every contradicting source on an opinion record in its caveat (pcic-kvv3.12)', () => {
-    const unanswered = CHECK_PROVENANCE.filter(
-      (r) => r.kind === 'opinion' && r.sources.some((s) => s.stance === 'contradicts') && !/contradict/i.test(r.caveat ?? ''),
-    ).map((r) => r.id);
+  it('answers every contradicting source on an opinion record in its caveat, naming that source (pcic-kvv3.12)', () => {
+    const unanswered = CHECK_PROVENANCE.filter((r) => r.kind === 'opinion').flatMap((r) =>
+      r.sources
+        .filter((s) => s.stance === 'contradicts' && !(r.caveat ?? '').includes(s.title))
+        .map((s) => `${r.id}: caveat does not name "${s.title}"`),
+    );
     expect(unanswered).toEqual([]);
     const ids = ['prompt-cache-friendliness/large-table', 'duplicates/cost-and-drift', 'canonical-owner/duplicated-behavior'];
     for (const id of ids) {

@@ -13,7 +13,7 @@
  * cautious and the recommendation offers a positive-rewrite hint.
  *
  * pcic-55dy: an unscored information hint. In PromptCI's behaviour evals
- * (2026-11-19, Claude Code with Sonnet 5.5) a rule phrased as a prohibition was
+ * (2026-11-19, Claude Code 2.1.327 with Sonnet 5.5) a rule phrased as a prohibition was
  * followed as often as the same rule phrased positively, so the finding states
  * that evidence and keeps the rewrite advice as information only.
  *
@@ -178,7 +178,7 @@ export function detectNegativeInstructionOverload(files: InstructionFile[]): Pro
         `(${negatives.length} of ${total}). Some prompt-writing advice holds that models follow positive ` +
         `directives more reliably than prohibitions, but in PromptCI's behaviour evals Claude Code followed a rule ` +
         `phrased as a prohibition as often as the same rule phrased positively (5 of 5 runs each; 2026-11-19, ` +
-        `Claude Code with Sonnet 5.5, small synthetic tasks; other agents may differ). This is information, not a ` +
+        `Claude Code 2.1.327 with Sonnet 5.5, small synthetic tasks; other agents may differ). This is information, not a ` +
         `defect, and it does not count toward the health score.`,
       filePaths: [file.path],
       locations: [],

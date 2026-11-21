@@ -13,8 +13,8 @@
  * of the file, emit an info finding suggesting the critical guidance be
  * promoted toward the top.
  *
- * pcic-55dy: in PromptCI's behaviour evals (2026-11-19, Claude Code with Sonnet
- * 5.5) a critical rule at the bottom of a long file was followed as often as the
+ * pcic-55dy: in PromptCI's behaviour evals (2026-11-19, Claude Code 2.1.327 with
+ * Sonnet 5.5) a critical rule at the bottom of a long file was followed as often as the
  * same rule at the top, so the finding states that evidence and keeps the
  * move-it-up advice as information only.
  *
@@ -111,7 +111,7 @@ export function detectBuriedCriticalInstructions(files: InstructionFile[]): Prom
         `prompt-writing advice favours putting critical rules near the top of a long file, ` +
         `though other guidance favours the end; this is a style hint, not a known defect. In PromptCI's ` +
         `behaviour evals Claude Code followed a critical rule at the bottom of a long file as often as the same ` +
-        `rule at the top (5 of 5 runs each; 2026-11-19, Claude Code with Sonnet 5.5, small synthetic tasks; other ` +
+        `rule at the top (5 of 5 runs each; 2026-11-19, Claude Code 2.1.327 with Sonnet 5.5, small synthetic tasks; other ` +
         `agents may differ).`,
       filePaths: [file.path],
       locations: bottomLineNumbers.slice(0, 5).map((ln) => ({ filePath: file.path, startLine: ln, endLine: ln })),

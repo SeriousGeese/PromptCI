@@ -22,12 +22,13 @@ const V15 = (issue: number) => ({ date: '2026-11-15', by: `agent run 2026-11-15 
 const V21 = { date: '2026-11-21', by: 'agent run 2026-11-21 (pcic-55dy, pcic-kvv3.12), pending human review' };
 /**
  * pcic-55dy: a check whose recommended sentence made no measurable difference in the first
- * behaviour-eval run (pcic-kvv3.3, 2026-11-19: Claude Code with Sonnet 5.5, 5 runs per arm on
+ * behaviour-eval run (pcic-kvv3.3, 2026-11-19: Claude Code 2.1.327 with Sonnet 5.5, 5 runs per arm on
  * small synthetic tasks), copied from the report's `--provenance-out` fragment.
  */
 const noEffect = (check: string, ci95: readonly [number, number] = [-0.4344824686593929, 0.4344824686593929]): BehaviourEvalResult => ({
   check,
   harness: 'claude-code',
+  harnessVersion: '2.1.327',
   model: 'claude-sonnet-5-5',
   verdict: 'no measurable difference',
   effect: 0,
@@ -37,7 +38,7 @@ const noEffect = (check: string, ci95: readonly [number, number] = [-0.434482468
 });
 /** What every demoted check's caveat says about the evidence and its limits (pcic-55dy). */
 const EVAL_DEMOTION =
-  'Demoted to information (pcic-55dy): in the 2026-11-19 behaviour evals (Claude Code with Sonnet 5.5, 5 runs per arm on small synthetic tasks) the recommended change made no measurable difference, so the finding states that evidence instead of recommending the change. One harness, one model and few runs: other agents may differ, and whether removing such a sentence hurts is not yet tested (pcic-7swz).';
+  'Demoted to information (pcic-55dy): in the 2026-11-19 behaviour evals (Claude Code 2.1.327 with Sonnet 5.5, 5 runs per arm on small synthetic tasks) the recommended change made no measurable difference, so the finding states that evidence instead of recommending the change. One harness, one model and few runs: other agents may differ, and whether removing such a sentence hurts is not yet tested (pcic-7swz).';
 /** Tools other than Claude Code: where the volatile-content and local-path hints still apply. */
 const GEMINI_NOTICE =
   ' geminicli.com carries a banner (read 2026-11-14): Gemini CLI was replaced by Antigravity CLI on June 18th, 2026 for unpaid-tier and Google One users; a claim about gemini-cli may not hold for the replacement.';
@@ -422,7 +423,7 @@ export const INSTRUCTION_ADVICE_PROVENANCE: readonly CheckProvenance[] = [
       ),
     ],
     behaviourEval: [noEffect('no-scope-control')],
-    caveat: `The contradicting page above is answered by the demotion (pcic-kvv3.12, decided 2026-11-17, and pcic-55dy), and the eval agrees with it: Claude Code kept its edit in scope in every run, with or without the sentence. ${EVAL_DEMOTION}`,
+    caveat: `The contradicting page above (Claude Code docs: Best practices) is answered by the demotion (pcic-kvv3.12, decided 2026-11-17, and pcic-55dy), and the eval agrees with it: Claude Code kept its edit in scope in every run, with or without the sentence. ${EVAL_DEMOTION}`,
     lastVerified: V21,
   },
   {

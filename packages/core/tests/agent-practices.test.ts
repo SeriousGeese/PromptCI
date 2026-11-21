@@ -5,6 +5,8 @@
 import { describe, it, expect } from 'vitest';
 import { detectAgentPractices, MISSING_PRACTICES_ISSUE_ID } from '../src/agent-practices.js';
 import { computeHealthScore, isScored, UNSCORED_TAG } from '../src/health-score.js';
+import { detectNegativeInstructionOverload } from '../src/negative-instructions.js';
+import { detectBuriedCriticalInstructions } from '../src/buried-critical.js';
 import type { InstructionFile, PromptCiIssue } from '../src/types.js';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -270,11 +272,47 @@ describe('detectAgentPractices', () => {
     expect(information).toContain('Claude Code already reported a failing test instead of claiming success');
     expect(information).toContain('Claude Code already kept its edit inside the code the task was about');
     expect(information).toContain('Claude Code did not ask about an ambiguous request in our tests, with or without this sentence (0 of 5 runs each)');
-    expect(information).toContain('PromptCI behaviour evals, 2026-11-19, Claude Code with Sonnet 5.5');
+    expect(information).toContain('PromptCI behaviour evals, 2026-11-19, Claude Code 2.1.327 with Sonnet 5.5');
+    expect(information).toContain('its Edit tool may itself require a read first');
     expect(information).toContain('Other agents and models may differ.');
     for (const sentence of ['Read a file before editing it.', 'report the failure honestly', 'Prefer focused, minimal diffs.', 'say so before proceeding']) {
       expect(issue!.fixRecipe).not.toContain(sentence);
     }
+  });
+
+  it('costs no health-score points when the six demoted checks are the only findings (pcic-55dy)', () => {
+    const lines = [
+      '# Rules',
+      'Before saying done, run pnpm test.',
+      'Preserve existing code.',
+      'For complex tasks, outline the approach before writing code.',
+    ];
+    while (lines.length < 100) lines.push(`Line ${lines.length + 1}: general project notes for the service.`);
+    lines.push(
+      '- Never commit secrets to the repository.',
+      '- Do not push directly to main.',
+      '- Never skip the migration review.',
+      "- Don't edit generated code by hand.",
+      '- You must not delete migration files.',
+      '- Never disable the security headers.',
+      '- Avoid global mutable state in handlers.',
+      '- Never log access tokens.',
+      '- Keep functions small and focused.',
+    );
+    const file = makeFile(lines.join('\n'));
+    const issues = [
+      ...detectAgentPractices([file]),
+      ...detectNegativeInstructionOverload([file]),
+      ...detectBuriedCriticalInstructions([file]),
+    ];
+    expect(issues.map((i) => i.id.replace(/-[0-9a-f]{12}$/, ''))).toEqual(['agent-practice', 'negative-overload', 'buried-critical']);
+    expect(issues[0]!.evidence.slice(1)).toEqual([
+      'Not found: report failures honestly',
+      'Not found: ask when unsure',
+      'Not found: read before edit',
+      'Not found: scope control',
+    ]);
+    expect(computeHealthScore(issues)).toBe(100);
   });
 
   it('offers no fix text and suggests no sentence when only practices with no measured effect are missing', () => {

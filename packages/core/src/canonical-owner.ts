@@ -108,9 +108,11 @@ export function detectCanonicalOwner(files: InstructionFile[]): PromptCiIssue[] 
       // Authority phrases are short fixed strings — well under the shared
       // snippet's default clip — so this only collapses whitespace + trims.
       evidence: filesWithAuthority.map((f) => `${path.basename(f.path)}: "${snippet(claims.get(f)!)}"`),
+      // pcic-kvv3.12: recommend what the tools load, not a prose pointer.
       recommendation:
-        'Designate ONE file (usually AGENTS.md) as the canonical source. ' +
-        'Other files should use forwarding pointers and only contain tool-specific reminders.',
+        'Designate ONE file (usually AGENTS.md) as the canonical source, and keep only tool-specific reminders in the ' +
+        'others. A CLAUDE.md can load it with an `@AGENTS.md` import line, and a file that would hold nothing else can ' +
+        'be a symlink to it; a sentence such as "Follow AGENTS.md" works only if the agent decides to open the file.',
       confidence: 0.9,
     });
   }

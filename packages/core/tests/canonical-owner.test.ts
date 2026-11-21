@@ -28,6 +28,16 @@ describe('detectCanonicalOwner', () => {
     expect(issue!.filePaths).toContain('CLAUDE.md');
   });
 
+  it('pcic-kvv3.12: ambiguous authority recommends an @AGENTS.md import or a symlink, not forwarding pointers', () => {
+    const agents = makeFile('AGENTS.md', 'This is the canonical source of truth for all agents.');
+    const claude = makeFile('CLAUDE.md', 'This file is the authoritative source of truth.');
+    const issue = detectCanonicalOwner([agents, claude]).find((i) => i.id.includes('ambiguous-authority'))!;
+    expect(issue.recommendation).toContain('`@AGENTS.md` import line');
+    expect(issue.recommendation).toContain('symlink');
+    expect(issue.recommendation).toContain('works only if the agent decides to open the file');
+    expect(issue.recommendation).not.toMatch(/forwarding pointer/i);
+  });
+
   it('does NOT flag when only one file claims to be canonical', () => {
     const agents = makeFile('AGENTS.md', 'This is the canonical source of truth.');
     const claude = makeFile('CLAUDE.md', 'Use AGENTS.md as canonical.');
@@ -298,6 +308,13 @@ describe('detectCanonicalOwner — AGENTS.md preference', () => {
     )!;
     expect(cursorDup.recommendation).not.toContain('@AGENTS.md');
     expect(cursorDup.recommendation).toContain('if .cursorrules would hold nothing else, make it a symlink to AGENTS.md');
+
+    // A nested .claude/CLAUDE.md imports AGENTS.md by a path relative to its own directory.
+    const nested = { ...file('/repo/.claude/CLAUDE.md', 'claude', 'Claude Rules'), relativePath: '.claude/CLAUDE.md' };
+    const nestedDup = detectCanonicalOwner([{ ...agents, relativePath: 'AGENTS.md' }, nested]).find((i) =>
+      i.id.includes('behavior-duplication'),
+    )!;
+    expect(nestedDup.recommendation).toContain('putting `@../AGENTS.md` on a line of its own in CLAUDE.md');
   });
 
   it('does NOT flag ambiguous authority when AGENTS.md is present and only it claims authority', () => {
