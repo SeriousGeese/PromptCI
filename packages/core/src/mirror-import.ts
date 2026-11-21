@@ -365,14 +365,16 @@ export function consolidateWithImport(
   // anywhere else (a kept section, raw HTML, a comment) it may not load, and
   // a second import line is harmless.
   const alreadyImports = importTargets(leadingLines.join('\n')).includes(normImport(paths.importPath));
-  // Drop leading and trailing blank lines of what is kept, and squeeze the
-  // seams the removals left to one blank line.
-  const squeezed: string[] = [];
-  for (const line of keptLines) {
-    if (line.trim() === '' && (squeezed.length === 0 || squeezed[squeezed.length - 1]!.trim() === '')) continue;
-    squeezed.push(line);
-  }
-  while (squeezed.length > 0 && squeezed[squeezed.length - 1]!.trim() === '') squeezed.pop();
+  // Drop only the seams the removals left: the blank lines at the start and
+  // end of what is kept. Every dropped section comes before every kept one
+  // (refused above otherwise), so the kept sections are one contiguous tail of
+  // the copy and every blank line inside it, in a fenced block or not, stays
+  // as it was (pcic-pyds).
+  let start = 0;
+  let end = keptLines.length;
+  while (start < end && keptLines[start]!.trim() === '') start++;
+  while (end > start && keptLines[end - 1]!.trim() === '') end--;
+  const squeezed = keptLines.slice(start, end);
 
   const head = [...leadingLines, ...(alreadyImports ? [] : [`@${paths.importPath}`])];
   const out = [...front, ...head];

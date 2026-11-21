@@ -71,6 +71,18 @@ export function provenanceStructureProblems(records: readonly CheckProvenance[])
         problems.push(`${record.id}: lastVerified ${record.lastVerified.date} is before source ${source.url} was read (${source.readOn})`);
       }
     }
+    for (const result of record.behaviourEval ?? []) {
+      const run = dayNumber(result.lastRun);
+      if (run === undefined) {
+        problems.push(`${record.id}: behaviour eval of ${result.check} has lastRun "${result.lastRun}", which is not a YYYY-MM-DD date`);
+      } else if (verified !== undefined && verified < run) {
+        problems.push(`${record.id}: lastVerified ${record.lastVerified.date} is before the behaviour eval of ${result.check} ran (${result.lastRun})`);
+      }
+      // A result that shows the advice changes what the agent does is an eval: list it in `evals`.
+      if (record.unverified && result.verdict === 'helps') {
+        problems.push(`${record.id}: marked unverified but its behaviour eval of ${result.check} says it helps; list the eval in evals and drop the flag`);
+      }
+    }
     if (record.unverified && record.refuted) {
       problems.push(`${record.id}: marked both unverified and refuted`);
     }

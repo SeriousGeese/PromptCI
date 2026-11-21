@@ -67,6 +67,31 @@ export type ProvenanceThreshold = {
   source: ProvenanceSource | 'unverified';
 };
 
+/**
+ * One check's result in PromptCI's behaviour evals (pcic-kvv3.3): the entry the
+ * eval report's `--provenance-out` fragment writes for it, as recorded. Each run
+ * gives an agent a task with and without the check's recommended sentence.
+ */
+export type BehaviourEvalResult = {
+  /** The check the eval measured: a `CHECKS` id or detector id, as the eval names it. */
+  check: string;
+  harness: ProvenanceTool;
+  /** The harness version the runs used, when the eval recorded it (e.g. `2.1.327`). */
+  harnessVersion?: string;
+  /** The model id the harness ran. */
+  model: string;
+  /** "helps" or "hurts" only when the 95% interval excludes zero. */
+  verdict: 'helps' | 'hurts' | 'no measurable difference';
+  /** Treatment pass rate minus baseline pass rate. */
+  effect: number;
+  /** 95% interval of `effect`. */
+  ci95: readonly [number, number];
+  /** Runs over both arms. */
+  runs: number;
+  /** `YYYY-MM-DD` of the latest run. */
+  lastRun: string;
+};
+
 export type CheckProvenance = {
   /** Stable id: the detector id, or `<detector-id>/<family>` when one detector rests on several claims. */
   id: string;
@@ -94,6 +119,12 @@ export type CheckProvenance = {
    * agent does. A documentation page is not an eval: an opinion with none is `unverified`.
    */
   evals?: readonly string[];
+  /**
+   * What PromptCI's behaviour evals measured for the check (pcic-55dy). A result of
+   * "no measurable difference" does not support the claim, so the record stays
+   * `unverified`; a "helps" result belongs in `evals` instead.
+   */
+  behaviourEval?: readonly BehaviourEvalResult[];
   /**
    * True when nothing supports the claim: no `supports` source for a tool-fact, no
    * eval for an opinion. A result, not a failure: the check rests on judgement and

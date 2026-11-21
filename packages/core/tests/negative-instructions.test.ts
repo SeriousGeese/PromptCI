@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { detectNegativeInstructionOverload } from '../src/negative-instructions.js';
+import { computeHealthScore } from '../src/health-score.js';
 import type { FileType, InstructionFile } from '../src/types.js';
 
 function makeFile(
@@ -59,6 +60,21 @@ describe('detectNegativeInstructionOverload', () => {
     // Evidence quotes offending instruction text, not regex source.
     expect(issue.evidence.join(' ')).toContain('Never commit secrets');
     expect(issue.recommendation.toLowerCase()).toContain('positive');
+  });
+
+  it('is an unscored information hint that states the behaviour-eval evidence (pcic-55dy)', () => {
+    const issue = detectNegativeInstructionOverload([makeFile(NEGATIVE_HEAVY)])[0]!;
+    expect(issue.tags).toEqual(['unscored']);
+    expect(issue.summary).toContain('Claude Code followed a rule phrased as a prohibition as often as the same rule phrased positively');
+    expect(issue.summary).toContain('other agents may differ');
+    expect(issue.summary).not.toMatch(/^.*Models tend to follow positive directives more reliably/);
+    expect(issue.recommendation).toMatch(/^No change needed on the evidence so far\./);
+    // It used to cost points as a scored info finding (0.5 each, so two files to see it after rounding); now none.
+    const both = detectNegativeInstructionOverload([makeFile(NEGATIVE_HEAVY), makeFile(NEGATIVE_HEAVY, 'agents', '/repo/AGENTS.md')]);
+    expect(both).toHaveLength(2);
+    const scoredAsBefore = both.map((i) => ({ ...i, tags: [] }));
+    expect(computeHealthScore(both)).toBe(100);
+    expect(computeHealthScore(both)).toBeGreaterThan(computeHealthScore(scoredAsBefore));
   });
 
   it('does not flag a mostly-positive file', () => {
