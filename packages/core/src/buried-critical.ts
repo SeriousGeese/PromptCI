@@ -13,6 +13,11 @@
  * of the file, emit an info finding suggesting the critical guidance be
  * promoted toward the top.
  *
+ * pcic-55dy: in PromptCI's behaviour evals (2026-11-19, Claude Code 2.1.327 with
+ * Sonnet 5.5) a critical rule at the bottom of a long file was followed as often as the
+ * same rule at the top, so the finding states that evidence and keeps the
+ * move-it-up advice as information only.
+ *
  * Deterministic and rule-based: no clock, network, or randomness.
  */
 
@@ -104,7 +109,10 @@ export function detectBuriedCriticalInstructions(files: InstructionFile[]): Prom
         `${pct}% of the high-severity lines in "${fileName}" (${bottomHalfCount} of ` +
         `${keywordLines.length}) sit in the bottom half of a ${lineCount}-line file. Some ` +
         `prompt-writing advice favours putting critical rules near the top of a long file, ` +
-        `though other guidance favours the end; this is a style hint, not a known defect.`,
+        `though other guidance favours the end; this is a style hint, not a known defect. In PromptCI's ` +
+        `behaviour evals Claude Code followed a critical rule at the bottom of a long file as often as the same ` +
+        `rule at the top (5 of 5 runs each; 2026-11-19, Claude Code 2.1.327 with Sonnet 5.5, small synthetic tasks; other ` +
+        `agents may differ).`,
       filePaths: [file.path],
       locations: bottomLineNumbers.slice(0, 5).map((ln) => ({ filePath: file.path, startLine: ln, endLine: ln })),
       evidence: [
@@ -113,9 +121,9 @@ export function detectBuriedCriticalInstructions(files: InstructionFile[]): Prom
         `e.g. line ${bottomLineNumbers[0] ?? keywordLines[0]}: "${snippet(sampleLine, 100)}"`,
       ],
       recommendation:
-        'If you want the highest-stakes instructions (security rules, "never"/"must not" ' +
-        'constraints) easy to find, consider a short summary of them near the top of the ' +
-        'file that points to the detail below. Skip this if your file already reads well.',
+        'No change needed on the evidence so far. If you want the highest-stakes instructions ' +
+        '(security rules, "never"/"must not" constraints) easy for people to find, a short summary of ' +
+        'them near the top of the file can point to the detail below.',
       confidence: 0.3,
       tags: [UNSCORED_TAG],
     });

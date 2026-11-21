@@ -1,4 +1,4 @@
-import type { CheckProvenance, ProvenanceSource, ProvenanceThreshold, SourceStance } from './types.js';
+import type { BehaviourEvalResult, CheckProvenance, ProvenanceSource, ProvenanceThreshold, SourceStance } from './types.js';
 
 /**
  * Provenance for the instruction-advice checks (pcic-kvv3.1, issue #162): context-bloat,
@@ -18,6 +18,27 @@ const V13 = { date: '2026-11-13', by: BY };
 const V14 = { date: '2026-11-14', by: BY };
 /** Records reworded and re-read on 2026-11-15. */
 const V15 = (issue: number) => ({ date: '2026-11-15', by: `agent run 2026-11-15 (issue #${issue})` });
+/** Records changed by the eval demotions and the contradiction review (pcic-55dy, pcic-kvv3.12). */
+const V21 = { date: '2026-11-21', by: 'agent run 2026-11-21 (pcic-55dy, pcic-kvv3.12), pending human review' };
+/**
+ * pcic-55dy: a check whose recommended sentence made no measurable difference in the first
+ * behaviour-eval run (pcic-kvv3.3, 2026-11-19: Claude Code 2.1.327 with Sonnet 5.5, 5 runs per arm on
+ * small synthetic tasks), copied from the report's `--provenance-out` fragment.
+ */
+const noEffect = (check: string, ci95: readonly [number, number] = [-0.4344824686593929, 0.4344824686593929]): BehaviourEvalResult => ({
+  check,
+  harness: 'claude-code',
+  harnessVersion: '2.1.327',
+  model: 'claude-sonnet-5-5',
+  verdict: 'no measurable difference',
+  effect: 0,
+  ci95,
+  runs: 10,
+  lastRun: '2026-11-19',
+});
+/** What every demoted check's caveat says about the evidence and its limits (pcic-55dy). */
+const EVAL_DEMOTION =
+  'Demoted to information (pcic-55dy): in the 2026-11-19 behaviour evals (Claude Code 2.1.327 with Sonnet 5.5, 5 runs per arm on small synthetic tasks) the recommended change made no measurable difference, so the finding states that evidence instead of recommending the change. One harness, one model and few runs: other agents may differ, and whether removing such a sentence hurts is not yet tested (pcic-7swz).';
 /** Tools other than Claude Code: where the volatile-content and local-path hints still apply. */
 const GEMINI_NOTICE =
   ' geminicli.com carries a banner (read 2026-11-14): Gemini CLI was replaced by Antigravity CLI on June 18th, 2026 for unpaid-tier and Google One users; a claim about gemini-cli may not hold for the replacement.';
@@ -226,18 +247,20 @@ export const INSTRUCTION_ADVICE_PROVENANCE: readonly CheckProvenance[] = [
     title: 'Large table in always-loaded instructions',
     kind: 'opinion',
     claim:
-      'A Markdown table of more than 15 rows in an always-loaded instruction file bloats context and makes the prompt less cache-friendly than the same facts kept in a separate document read on demand.',
+      'A Markdown table of more than 15 rows in an always-loaded instruction file costs context tokens on every request, which the same facts kept in a separate document read on demand would not.',
     appliesTo: 'all',
     sources: [
       src(
         'apiCache',
-        'contradicts',
-        'Says to place static content such as system instructions and context at the beginning of the prompt and cache it, and makes cache hits depend on identical prefix text and not on its size, so a large stable table does not reduce cache hits; it only costs tokens.',
+        'context',
+        'Says to place static content such as system instructions and context at the beginning of the prompt and cache it, and makes cache hits depend on identical prefix text and not on its size, so a large stable table does not reduce cache hits; it only costs tokens. (Stance re-judged on 2026-11-21 against the reworded claim, from this note; the page was not re-read.)',
       ),
       src('ccMemory', 'context', 'Advises moving entries that matter for only part of the codebase out of CLAUDE.md into skills or path-scoped rules because longer files consume more context.'),
     ],
+    caveat:
+      'The page above contradicted the earlier claim that a large table makes the prompt less cache-friendly. Decision (pcic-kvv3.12, 2026-11-17): demoted to an info hint that costs no health-score points, and the finding and claim now say only that the table costs tokens on every request.',
     thresholds: [heuristic('maxTableRows', 15, 'table rows', 'prompt-cache.ts:detectPromptCacheFriendliness (maxTableRows > 15)')],
-    lastVerified: V13,
+    lastVerified: V21,
   },
 
   // ───────────────────────────── negative-instructions ─────────────────────────────
@@ -261,7 +284,9 @@ export const INSTRUCTION_ADVICE_PROVENANCE: readonly CheckProvenance[] = [
       heuristic('MIN_DIRECTIVES', 8, 'directive sentences', 'negative-instructions.ts:MIN_DIRECTIVES'),
       heuristic('NEGATIVE_RATIO_THRESHOLD', 0.4, 'share of directives that are prohibitions', 'negative-instructions.ts:NEGATIVE_RATIO_THRESHOLD'),
     ],
-    lastVerified: V13,
+    behaviourEval: [noEffect('negative-overload')],
+    caveat: `${EVAL_DEMOTION} Reported as an info hint that costs no health-score points; the positive-rewrite advice is kept as information only.`,
+    lastVerified: V21,
   },
 
   // ───────────────────────────── buried-critical ─────────────────────────────
@@ -284,12 +309,13 @@ export const INSTRUCTION_ADVICE_PROVENANCE: readonly CheckProvenance[] = [
       src('ccContext', 'context', 'About truncation, not weighting: says truncation of an over-cap invoked skill keeps the start of the file, so the most important instructions belong near the top of SKILL.md.'),
       src('ccBest', 'context', 'Attributes a CLAUDE.md line that keeps being missed to the file having grown long and says to shorten the file, and says nothing about where in the file a line sits.'),
     ],
-    caveat: 'Opinion-grade: reported as an info hint with low confidence that costs no health-score points (#183).',
+    behaviourEval: [noEffect('buried-critical')],
+    caveat: `Opinion-grade: reported as an info hint with low confidence that costs no health-score points (#183). ${EVAL_DEMOTION} The move-it-up advice is kept as information only.`,
     thresholds: [
       heuristic('MIN_LINES', 100, 'lines in the file', 'buried-critical.ts:MIN_LINES'),
       heuristic('BOTTOM_HALF_RATIO_THRESHOLD', 0.6, 'share of high-severity lines in the bottom half', 'buried-critical.ts:BOTTOM_HALF_RATIO_THRESHOLD'),
     ],
-    lastVerified: V15(183),
+    lastVerified: V21,
   },
 
   // ───────────────────────────── vague-guidance ─────────────────────────────
@@ -359,7 +385,9 @@ export const INSTRUCTION_ADVICE_PROVENANCE: readonly CheckProvenance[] = [
       ),
       src('ccBest', 'context', 'Attributes a Claude that said it was done when it was not mainly to having no way to check its own work, and not to a missing instruction to report honestly.'),
     ],
-    lastVerified: V13,
+    behaviourEval: [noEffect('no-read-before-edit'), noEffect('no-honesty-policy')],
+    caveat: `${EVAL_DEMOTION} Claude Code read before editing and reported the failing test in every run, with or without the sentence; its Edit tool may itself require a read first.`,
+    lastVerified: V21,
   },
   {
     id: 'agent-practices/ask-when-unsure',
@@ -370,7 +398,9 @@ export const INSTRUCTION_ADVICE_PROVENANCE: readonly CheckProvenance[] = [
     appliesTo: 'all',
     sources: [],
     unverified: true,
-    lastVerified: V13,
+    behaviourEval: [noEffect('no-ask-when-unsure', [-0.43448246865939283, 0.43448246865939283])],
+    caveat: `${EVAL_DEMOTION} Claude Code asked about the ambiguous request in none of the runs, with or without the sentence.`,
+    lastVerified: V21,
   },
   {
     id: 'agent-practices/scope-control',
@@ -392,7 +422,9 @@ export const INSTRUCTION_ADVICE_PROVENANCE: readonly CheckProvenance[] = [
         'Says Claude tends to read a request conservatively and build the smallest thing that satisfies it and that lines telling it to keep going are more likely to cause over-work than fix a stall, which runs against the premise that current Claude Code needs guidance to avoid sweeping changes.',
       ),
     ],
-    lastVerified: V13,
+    behaviourEval: [noEffect('no-scope-control')],
+    caveat: `The contradicting page above (Claude Code docs: Best practices) is answered by the demotion (pcic-kvv3.12, decided 2026-11-17, and pcic-55dy), and the eval agrees with it: Claude Code kept its edit in scope in every run, with or without the sentence. ${EVAL_DEMOTION}`,
+    lastVerified: V21,
   },
   {
     id: 'agent-practices/code-preservation',
@@ -616,7 +648,8 @@ export const INSTRUCTION_ADVICE_PROVENANCE: readonly CheckProvenance[] = [
     detector: 'duplicates',
     title: 'Duplicate sections cost context and drift apart',
     kind: 'opinion',
-    claim: 'Near-identical sections kept in several instruction files are loaded more than once and can drift apart, so one canonical copy with a pointer is better.',
+    claim:
+      'Near-identical sections kept in several instruction files are loaded more than once and can drift apart, so one canonical copy that the other files load (an @AGENTS.md import in CLAUDE.md, or a symlink) is better.',
     appliesTo: 'all',
     sources: [
       src(
@@ -626,13 +659,13 @@ export const INSTRUCTION_ADVICE_PROVENANCE: readonly CheckProvenance[] = [
       ),
       src(
         'ccMemory',
-        'contradicts',
-        'Says a CLAUDE.md that tells Claude in words to read AGENTS.md works only if Claude decides to open the file, which undercuts the detector recommendation of a forwarding pointer to save tokens; an @AGENTS.md import or a symlink is the documented way.',
+        'context',
+        'Says a CLAUDE.md that tells Claude in words to read AGENTS.md works only if Claude decides to open the file, and documents an @AGENTS.md import or a symlink instead. This contradicted the earlier forwarding-pointer advice; the advice now recommends the import or a symlink and says a sentence works only if the agent opens the file (pcic-kvv3.12, the fix #184 made for agent-practices). Stance re-judged on 2026-11-21 against the reworded claim, from this note.',
       ),
       src('codex', 'context', 'Says Codex concatenates AGENTS.md files from the root downward into one prompt, with files nearer the working directory appearing later.'),
       src('ghRepo', 'context', 'Advises avoiding conflicting sets of instructions and says all relevant sets are provided to Copilot.'),
     ],
-    lastVerified: V13,
+    lastVerified: V21,
   },
 
   {
@@ -752,14 +785,14 @@ export const INSTRUCTION_ADVICE_PROVENANCE: readonly CheckProvenance[] = [
     title: 'Large duplicated behaviour in a tool-specific file',
     kind: 'opinion',
     claim:
-      'A section of more than 50 lines in a tool-specific instruction file that matches a section of AGENTS.md duplicates behaviour that a pointer could share, costing tokens every session and inviting drift.',
+      'A section of more than 50 lines in a tool-specific instruction file that matches a section of AGENTS.md duplicates behaviour that an @AGENTS.md import or a symlink could share, costing tokens every session and inviting drift.',
     appliesTo: 'all',
     sources: [
       src('ccMemory', 'context', 'Documents keeping AGENTS.md as the one shared file and importing it with @AGENTS.md or symlinking so the content is read once, not twice.'),
       src(
         'ccMemory',
-        'contradicts',
-        'Says a CLAUDE.md that tells Claude in words to read AGENTS.md works only if Claude decides to open the file, which undercuts the detector recommendation of a forwarding pointer such as Follow AGENTS.md.',
+        'context',
+        'Says a CLAUDE.md that tells Claude in words to read AGENTS.md works only if Claude decides to open the file. This contradicted the earlier advice of a forwarding pointer such as Follow AGENTS.md; the advice now recommends an @AGENTS.md import (for CLAUDE.md) or a symlink and says such a sentence works only if the agent opens the file (pcic-kvv3.12). Stance re-judged on 2026-11-21 against the reworded claim, from this note.',
       ),
     ],
     thresholds: [
@@ -767,7 +800,7 @@ export const INSTRUCTION_ADVICE_PROVENANCE: readonly CheckProvenance[] = [
       heuristic('duplicated section minimum length', 50, 'lines (endLine - startLine > 50)', 'canonical-owner.ts:detectCanonicalOwner'),
       heuristic('long-section comparison prefix', 500, 'characters (bodies over 500 characters match on their first 500)', 'canonical-owner.ts:detectCanonicalOwner'),
     ],
-    lastVerified: V13,
+    lastVerified: V21,
   },
 
   // ───────────────────────────── custom-rules ─────────────────────────────

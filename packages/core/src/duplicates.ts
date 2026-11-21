@@ -393,11 +393,13 @@ export function detectDuplicates(files: InstructionFile[]): PromptCiIssue[] {
       recommendation:
         (identical
           ? ''
-          : 'The copies differ: decide which text is right before consolidating, since a pointer would discard the other. Then ') +
+          : 'The copies differ: decide which text is right before consolidating, since dropping a copy would discard the other. Then ') +
         `${identical ? 'Consolidate' : 'consolidate'} these sections into one canonical location (e.g. AGENTS.md) to save ~${duplicateTokens} tokens per session. ` +
         'A repository-root CLAUDE.md can load AGENTS.md with an `@AGENTS.md` line, but only a session started at the ' +
         'repository root loads it without asking (from a subdirectory it is an external import that needs a one-time ' +
-        'approval); a markdown link is not loaded at all. If both copies are intentional, add a comment clarifying the distinction.',
+        'approval); when the whole file would be the same, a symlink to AGENTS.md also works. A sentence telling the ' +
+        'agent to read AGENTS.md works only if it decides to open the file, and a markdown link is not loaded at all. ' +
+        'If both copies are intentional, add a comment clarifying the distinction.',
       // pcic-1ik0.10: advisory. Replacing ONE section of a file with a pointer
       // drops it from the agent's context (no tool loads a markdown link), and
       // an import would load the whole canonical file, not just this section.

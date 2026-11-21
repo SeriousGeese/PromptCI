@@ -99,6 +99,31 @@ describe('consolidateWithImport: subset mode accepts a copy that skips canonical
   });
 });
 
+describe('consolidateWithImport keeps every blank line inside the kept sections (pcic-pyds)', () => {
+  const FENCE = '`'.repeat(3);
+  const SHARED = '## Testing\n\nRun the full test suite before every push to the main branch.\n';
+  const BLOCK = `${FENCE}yaml\nsteps:\n\n\n  - run: pnpm test\n${FENCE}`;
+  const AGENTS = `# Project rules\n\n${SHARED}\n## Deployment\n\nDeploy only from the main branch after the smoke test.\n`;
+
+  it('two blank lines inside a fenced block of a kept section survive byte for byte (subset mode)', () => {
+    const claude = `# Project rules\n\n${SHARED}\n## Claude only\n\nKeep this template exactly:\n\n${BLOCK}\n`;
+    const result = consolidateWithImport(claude, AGENTS, PATHS, { subset: true });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.newContent).toBe(`@AGENTS.md\n\n## Claude only\n\nKeep this template exactly:\n\n${BLOCK}\n`);
+    expect(result.newContent).toContain(BLOCK);
+  });
+
+  it('blank lines outside a fence inside the kept tail stay too; only the seam at its edges is trimmed', () => {
+    const tail = '## Claude only\n\nFirst paragraph.\n\n\n\nSecond paragraph after three blank lines.\n\n\n## Claude extra\n\nLast.\n';
+    const claude = join(A, B, '\n\n' + tail + '\n\n');
+    const result = consolidateWithImport(claude, join(A, B), PATHS);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.newContent).toBe(`@AGENTS.md\n\n${tail.trimEnd()}\n`);
+  });
+});
+
 describe('planMirrorImport and applyFixRecipe: subset mode on real files', () => {
   it('fixture-mirror-refuse-canonical-extra: refused by default; with subset, one import line and the gained sections', async () => {
     const root = fixture('fixture-mirror-refuse-canonical-extra');
