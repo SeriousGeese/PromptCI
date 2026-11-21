@@ -32,6 +32,17 @@ describe('detectPromptCacheFriendliness — Claude Code files and hint level', (
     expect(issues[0]!.id.startsWith('prompt-cache-large-table')).toBe(true);
   });
 
+  it('pcic-kvv3.12: reports a large table as an unscored info hint about tokens, not cache hits', () => {
+    let table = '# Data\n| A | B |\n|---|---|\n';
+    for (let i = 0; i < 20; i++) table += `| a${i} | b${i} |\n`;
+    const issue = detectPromptCacheFriendliness([claudeMd(table)])[0]!;
+    expect(issue.severity).toBe('info');
+    expect(issue.tags).toEqual(['unscored']);
+    expect(issue.summary).toContain('costs context tokens on every request');
+    expect(issue.summary).toContain('does not by itself reduce prompt-cache hits');
+    expect(issue.summary).not.toMatch(/reduce caching friendliness/);
+  });
+
   it('reports volatile content and local paths for other tools as unscored info hints', () => {
     const issues = detectPromptCacheFriendliness([makeFile(volatile)]);
     expect(issues).toHaveLength(4);

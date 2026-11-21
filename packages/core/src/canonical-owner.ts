@@ -3,6 +3,7 @@ import * as path from 'node:path';
 import type { InstructionFile, PromptCiIssue } from './types.js';
 import { snippet } from './evidence.js';
 import { fileIdPath } from './finding-id.js';
+import { importingToolFor } from './mirror-import.js';
 
 /**
  * Canonical Owner and Forwarding Detector.
@@ -44,6 +45,32 @@ function authorityClaim(file: InstructionFile): string | undefined {
     }
   }
   return undefined;
+}
+
+/**
+ * How a tool-specific file can get the canonical file's rules without a copy
+ * (pcic-kvv3.12). CLAUDE.md loads an `@path` import with the file; any tool
+ * reads a symlinked file as its own. A sentence such as "Follow AGENTS.md" is
+ * not recommended: Claude Code's memory docs say it works only if Claude
+ * decides to open the file.
+ */
+function sharedRulesAdvice(file: InstructionFile, canonical: InstructionFile): string {
+  const canonicalLabel = path.basename(canonical.path);
+  const importPath =
+    path.posix.relative(path.posix.dirname(fileIdPath(file)), fileIdPath(canonical)) || canonicalLabel;
+  const name = path.basename(file.path);
+  const symlink = `or, if ${name} would hold nothing else, make it a symlink to ${canonicalLabel}`;
+  if (importingToolFor(file.path) === 'claude-code') {
+    return (
+      `and putting \`@${importPath}\` on a line of its own in ${name} (Claude Code loads an imported ` +
+      `file along with the file that imports it); ${symlink}. A sentence such as "Follow ${canonicalLabel}" works only ` +
+      'if the agent decides to open the file.'
+    );
+  }
+  return (
+    `if the tool that reads ${name} also reads ${canonicalLabel} (several do); ${symlink}. ` +
+    `A sentence such as "Follow ${canonicalLabel}" works only if the agent decides to open the file.`
+  );
 }
 
 export function detectCanonicalOwner(files: InstructionFile[]): PromptCiIssue[] {
@@ -164,9 +191,13 @@ export function detectCanonicalOwner(files: InstructionFile[]): PromptCiIssue[] 
                   `Section "${section.heading ?? 'Untitled'}" is near-identical to one in ${canonicalLabel}`,
                   `Duplicate size: ~${duplicateTokens} tokens`,
                 ],
+                // pcic-kvv3.12: recommend what the tools load, not a prose
+                // pointer. Claude Code's memory docs say a sentence telling
+                // Claude to read AGENTS.md works only if Claude decides to open
+                // the file; an @ import or a symlink is the documented way (#184).
                 recommendation:
-                  `Consider moving shared rules to ${canonicalLabel} and using ` +
-                  `a forwarding pointer (e.g., "Follow ${canonicalLabel}") to save ~${duplicateTokens} tokens per session.`,
+                  `Consider keeping the shared rules only in ${canonicalLabel} to save ~${duplicateTokens} tokens per session, ` +
+                  sharedRulesAdvice(file, primaryCanonical),
                 confidence: 0.8,
               });
               break;

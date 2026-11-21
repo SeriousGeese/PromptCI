@@ -27,6 +27,7 @@ clock for it, so it cannot change a scan's output.
 | `appliesTo` | The AI tools the claim is about (`claude-code`, `codex`, `cursor`, `copilot`, `gemini-cli`, `windsurf`), `all` for every tool or the repository, or `n/a` when it is not about an AI tool (a package manager, a language, a framework, git) |
 | `sources` | Pages that were actually read, each with the date (`readOn`), a `stance` and a one-sentence note |
 | `evals` | For an opinion, a path or URL of an eval that shows the advice changes what an agent does (none exists yet) |
+| `behaviourEval` | What PromptCI's behaviour evals measured for the check, per harness and model: verdict, effect, 95% interval, runs and the date of the last run, as the eval report's `--provenance-out` fragment writes it. A "no measurable difference" result does not support the claim, so the record stays `unverified`; a "helps" result belongs in `evals` |
 | `unverified` / `refuted` | See the status below |
 | `caveat` | Something a reader should know that is not a source, such as a vendor banner announcing a replacement product |
 | `thresholds` | Every numeric cut-off the check uses, each with its own source, or `unverified` for the author's own heuristic |

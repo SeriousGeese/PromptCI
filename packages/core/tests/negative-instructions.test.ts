@@ -61,6 +61,15 @@ describe('detectNegativeInstructionOverload', () => {
     expect(issue.recommendation.toLowerCase()).toContain('positive');
   });
 
+  it('is an unscored information hint that states the behaviour-eval evidence (pcic-55dy)', () => {
+    const issue = detectNegativeInstructionOverload([makeFile(NEGATIVE_HEAVY)])[0]!;
+    expect(issue.tags).toEqual(['unscored']);
+    expect(issue.summary).toContain('Claude Code followed a rule phrased as a prohibition as often as the same rule phrased positively');
+    expect(issue.summary).toContain('other agents may differ');
+    expect(issue.summary).not.toMatch(/^.*Models tend to follow positive directives more reliably/);
+    expect(issue.recommendation).toMatch(/^No change needed on the evidence so far\./);
+  });
+
   it('does not flag a mostly-positive file', () => {
     expect(detectNegativeInstructionOverload([makeFile(POSITIVE_HEAVY)])).toEqual([]);
   });

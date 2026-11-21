@@ -114,6 +114,16 @@ describe('provenanceStructureProblems: what counts as sourced', () => {
     expect(provenanceStructureProblems([record({ refuted: true, unverified: true, sources: [contradicting] })]).length).toBeGreaterThan(0);
   });
 
+  it('checks a behaviour-eval result: a real run date, not after lastVerified, and "helps" is an eval, not unverified (pcic-55dy)', () => {
+    const result = { check: 'demo', harness: 'claude-code', model: 'm', verdict: 'no measurable difference', effect: 0, ci95: [-0.4, 0.4], runs: 10, lastRun: '2026-10-30' } as const;
+    const opinion = (over: Partial<CheckProvenance>) => record({ kind: 'opinion', unverified: true, sources: [], ...over });
+    expect(provenanceStructureProblems([opinion({ behaviourEval: [result] })])).toEqual([]);
+    expect(provenanceStatus(opinion({ behaviourEval: [result] }))).toBe('unverified');
+    expect(provenanceStructureProblems([opinion({ behaviourEval: [{ ...result, lastRun: 'x' }] })])).toHaveLength(1);
+    expect(provenanceStructureProblems([opinion({ behaviourEval: [{ ...result, lastRun: '2026-11-05' }] })])).toHaveLength(1);
+    expect(provenanceStructureProblems([opinion({ behaviourEval: [{ ...result, verdict: 'helps' }] })])).toHaveLength(1);
+  });
+
   it('exempts repo-fact records from needing a source', () => {
     expect(provenanceStructureProblems([record({ kind: 'repo-fact', appliesTo: 'all', sources: [] })])).toEqual([]);
   });
@@ -251,6 +261,32 @@ describe('the registry', () => {
       }
     }
     expect(dangling).toEqual([]);
+  });
+
+  it('records the 2026-11-19 behaviour-eval result on every check it demoted (pcic-55dy)', () => {
+    const byCheck = new Map(
+      CHECK_PROVENANCE.flatMap((r) => (r.behaviourEval ?? []).map((e) => [e.check, { record: r, result: e }] as const)),
+    );
+    for (const check of ['no-read-before-edit', 'no-honesty-policy', 'no-scope-control', 'no-ask-when-unsure', 'negative-overload', 'buried-critical']) {
+      const entry = byCheck.get(check);
+      expect(entry, check).toBeDefined();
+      expect(entry!.result).toMatchObject({ harness: 'claude-code', model: 'claude-sonnet-5-5', verdict: 'no measurable difference', effect: 0, runs: 10, lastRun: '2026-11-19' });
+      expect(provenanceStatus(entry!.record), check).toBe('unverified');
+      expect(entry!.record.caveat, check).toContain('Demoted to information (pcic-55dy)');
+    }
+    expect(byCheck.get('no-read-before-edit')!.record.id).toBe('agent-practices/grounding');
+    expect(byCheck.get('negative-overload')!.record.id).toBe('negative-instructions');
+  });
+
+  it('answers every contradicting source on an opinion record in its caveat (pcic-kvv3.12)', () => {
+    const unanswered = CHECK_PROVENANCE.filter(
+      (r) => r.kind === 'opinion' && r.sources.some((s) => s.stance === 'contradicts') && !/contradict/i.test(r.caveat ?? ''),
+    ).map((r) => r.id);
+    expect(unanswered).toEqual([]);
+    const ids = ['prompt-cache-friendliness/large-table', 'duplicates/cost-and-drift', 'canonical-owner/duplicated-behavior'];
+    for (const id of ids) {
+      expect(CHECK_PROVENANCE.find((r) => r.id === id)!.sources.some((s) => s.stance === 'contradicts'), id).toBe(false);
+    }
   });
 
   it('carries the Gemini CLI replacement notice on every record about gemini-cli', () => {

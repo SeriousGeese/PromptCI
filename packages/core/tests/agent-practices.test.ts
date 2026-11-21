@@ -246,8 +246,52 @@ describe('detectAgentPractices', () => {
     ]);
     expect(issue.summary).toContain('7 of the 7');
     expect(issue.summary).toContain('does not count toward the health score');
-    expect(issue.fixRecipe!.split('\n')).toHaveLength(7);
+    // pcic-55dy: the fix text carries only the three practices whose sentence changed what the agent did.
+    expect(issue.fixRecipe!.split('\n')).toHaveLength(3);
     expect(computeHealthScore(issues)).toBe(100);
+  });
+
+  // ── Practices the behaviour evals found make no difference (pcic-55dy) ────
+
+  it('states the eval evidence for the four practices with no measured effect, and recommends only the other three', () => {
+    const [issue] = detectAgentPractices([MINIMAL_FILE]).filter((i) => i.id === MISSING_PRACTICES_ISSUE_ID);
+    expect(issue!.severity).toBe('info');
+    expect(issue!.summary).toContain(
+      "For 4 of them (report failures honestly, ask when unsure, read before edit, scope control), PromptCI's behaviour evals found the sentence made no measurable difference",
+    );
+    const [suggestion, information] = issue!.recommendation.split(' No sentence is suggested for ');
+    // The kept practices are still recommended, unchanged.
+    expect(suggestion).toContain('Before saying done, run pnpm lint');
+    expect(suggestion).toContain('Preserve existing code and only change what the task requires.');
+    expect(suggestion).toContain('outline the approach and get confirmation before writing code');
+    // The four with no measured effect are not recommended: the evidence and its limits are stated.
+    expect(suggestion).not.toMatch(/read a file fully before editing|report the failure|focused, minimal diffs|say so and ask/i);
+    expect(information).toContain('Claude Code already read files before editing in our tests');
+    expect(information).toContain('Claude Code already reported a failing test instead of claiming success');
+    expect(information).toContain('Claude Code already kept its edit inside the code the task was about');
+    expect(information).toContain('Claude Code did not ask about an ambiguous request in our tests, with or without this sentence (0 of 5 runs each)');
+    expect(information).toContain('PromptCI behaviour evals, 2026-11-19, Claude Code with Sonnet 5.5');
+    expect(information).toContain('Other agents and models may differ.');
+    for (const sentence of ['Read a file before editing it.', 'report the failure honestly', 'Prefer focused, minimal diffs.', 'say so before proceeding']) {
+      expect(issue!.fixRecipe).not.toContain(sentence);
+    }
+  });
+
+  it('offers no fix text and suggests no sentence when only practices with no measured effect are missing', () => {
+    const file = makeFile(
+      '# Rules\nBefore saying done, run pnpm test. Preserve existing code. For complex tasks, outline the approach before writing code.',
+    );
+    const [issue] = detectAgentPractices([file]).filter((i) => i.id === MISSING_PRACTICES_ISSUE_ID);
+    expect(issue!.evidence).toEqual([
+      'Searched 1 instruction file(s).',
+      'Not found: report failures honestly',
+      'Not found: ask when unsure',
+      'Not found: read before edit',
+      'Not found: scope control',
+    ]);
+    expect(issue!.fixRecipe).toBeUndefined();
+    expect(issue!.recommendation).toMatch(/^No sentence is suggested for report failures honestly, ask when unsure, read before edit, scope control: /);
+    expect(issue!.tags).toContain(UNSCORED_TAG);
   });
 
   it('keeps the same id when only some practices are missing, and lists only those', () => {
@@ -834,7 +878,21 @@ describe('detectAgentPractices — placement detector extensions', () => {
     );
     expect(missingReadIssue).toBeDefined();
     expect(missingReadIssue!.severity).toBe('info');
-    expect(missingReadIssue!.fixRecipe).toBe('Read a file before editing it. Preserve unrelated user changes.');
+    // pcic-55dy: read-before-edit made no measurable difference, so the gap is information only.
+    expect(missingReadIssue!.fixRecipe).toBeUndefined();
+    expect(missingReadIssue!.recommendation).toMatch(/^No change suggested: read before edit: Claude Code already read files before editing/);
+    expect(missingReadIssue!.summary).toContain('Listed for information only');
+  });
+
+  it('still recommends a kept practice (verification loop) in a tool file that lacks it, with its fix text', () => {
+    const agents = makeTypedFile('Before saying done, run pnpm test. Always read a file before editing it.', '/repo/AGENTS.md', 'agents');
+    const claude = makeTypedFile('Always read a file before editing it.', '/repo/CLAUDE.md', 'claude');
+    const issue = detectAgentPractices([agents, claude]).find(
+      (i) => i.title.includes('Missing critical guidance') && i.title.includes('verification loop'),
+    );
+    expect(issue).toBeDefined();
+    expect(issue!.fixRecipe).toContain('Before saying work is complete, run pnpm lint');
+    expect(issue!.recommendation).toMatch(/^Consider adding the missing guidance to CLAUDE\.md/);
   });
 });
 

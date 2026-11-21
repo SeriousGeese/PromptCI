@@ -12,6 +12,11 @@
  * directives are negative. Info severity only; the wording is deliberately
  * cautious and the recommendation offers a positive-rewrite hint.
  *
+ * pcic-55dy: an unscored information hint. In PromptCI's behaviour evals
+ * (2026-11-19, Claude Code with Sonnet 5.5) a rule phrased as a prohibition was
+ * followed as often as the same rule phrased positively, so the finding states
+ * that evidence and keeps the rewrite advice as information only.
+ *
  * Deterministic and rule-based: no clock, network, or randomness.
  */
 
@@ -21,6 +26,7 @@ import type { InstructionFile, PromptCiIssue } from './types.js';
 import { INSTRUCTION_FILE_TYPES } from './types.js';
 import { snippet } from './evidence.js';
 import { fileIdPath } from './finding-id.js';
+import { UNSCORED_TAG } from './health-score.js';
 
 /** Persistent, always-loaded instruction files this detector applies to. */
 const TARGET_FILE_TYPES = INSTRUCTION_FILE_TYPES;
@@ -169,16 +175,20 @@ export function detectNegativeInstructionOverload(files: InstructionFile[]): Pro
       title: 'High proportion of negative instructions',
       summary:
         `About ${pct}% of the directive sentences in "${fileName}" are phrased as prohibitions ` +
-        `(${negatives.length} of ${total}). Models tend to follow positive directives more ` +
-        `reliably than prohibitions, so heavily negative guidance can be harder to apply.`,
+        `(${negatives.length} of ${total}). Some prompt-writing advice holds that models follow positive ` +
+        `directives more reliably than prohibitions, but in PromptCI's behaviour evals Claude Code followed a rule ` +
+        `phrased as a prohibition as often as the same rule phrased positively (5 of 5 runs each; 2026-11-19, ` +
+        `Claude Code with Sonnet 5.5, small synthetic tasks; other agents may differ). This is information, not a ` +
+        `defect, and it does not count toward the health score.`,
       filePaths: [file.path],
       locations: [],
       evidence: examples.map((e) => `Negative directive: "${e}"`),
       recommendation:
-        'Where practical, rephrase prohibitions as positive directives — e.g. instead of ' +
-        '"don\'t use var", write "always use const or let". Keep prohibitions for the cases ' +
-        'where no positive form is possible.',
+        'No change needed on the evidence so far. If you prefer positive phrasing for readability, a ' +
+        'prohibition can often be rewritten as a positive directive, e.g. instead of "don\'t use var", write ' +
+        '"always use const or let"; keep prohibitions where no positive form is possible.',
       confidence: 0.5,
+      tags: [UNSCORED_TAG],
     });
   }
 

@@ -265,6 +265,41 @@ describe('detectCanonicalOwner — AGENTS.md preference', () => {
     expect(dup!.filePaths).toContain('/repo/AGENTS.md');
   });
 
+  it('pcic-kvv3.12: recommends an @AGENTS.md import or a symlink, not a prose pointer', () => {
+    const commonSection = 'Always use TypeScript. Write tests for every feature. Follow the style guide. '.repeat(10);
+    const file = (p: string, fileType: InstructionFile['fileType'], heading: string): InstructionFile => ({
+      path: p,
+      fileType,
+      content: `# ${heading}\n` + commonSection,
+      sections: [{
+        id: heading.toLowerCase(),
+        filePath: p,
+        heading,
+        startLine: 1,
+        endLine: 60,
+        text: `# ${heading}\n` + commonSection,
+        normalizedText: (`# ${heading}\n` + commonSection).toLowerCase(),
+      }],
+      lineCount: 61,
+      charCount: commonSection.length + 20,
+      estimatedTokens: 250,
+    });
+    const agents = file('/repo/AGENTS.md', 'agents', 'Common Rules');
+    const claudeDup = detectCanonicalOwner([agents, file('/repo/CLAUDE.md', 'claude', 'Claude Rules')]).find((i) =>
+      i.id.includes('behavior-duplication'),
+    )!;
+    expect(claudeDup.recommendation).toContain('putting `@AGENTS.md` on a line of its own in CLAUDE.md');
+    expect(claudeDup.recommendation).toContain('if CLAUDE.md would hold nothing else, make it a symlink to AGENTS.md');
+    expect(claudeDup.recommendation).toContain('A sentence such as "Follow AGENTS.md" works only if the agent decides to open the file.');
+    expect(claudeDup.recommendation).not.toMatch(/using a forwarding pointer/);
+
+    const cursorDup = detectCanonicalOwner([agents, file('/repo/.cursorrules', 'cursor', 'Cursor Rules')]).find((i) =>
+      i.id.includes('behavior-duplication'),
+    )!;
+    expect(cursorDup.recommendation).not.toContain('@AGENTS.md');
+    expect(cursorDup.recommendation).toContain('if .cursorrules would hold nothing else, make it a symlink to AGENTS.md');
+  });
+
   it('does NOT flag ambiguous authority when AGENTS.md is present and only it claims authority', () => {
     const agents = makeFile('AGENTS.md', 'This is the authoritative source for all agents.');
     const cursor = makeFile('.cursorrules', 'Follow AGENTS.md.');

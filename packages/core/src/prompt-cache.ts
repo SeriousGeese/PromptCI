@@ -196,16 +196,20 @@ export function detectPromptCacheFriendliness(files: InstructionFile[]): PromptC
     if (maxTableRows > 15) {
       issues.push({
         id: promptCacheIssueId('large-table', fileIdPath(file)),
-        severity: 'warning',
+        // pcic-kvv3.12: an unscored info hint. A stable table does not reduce
+        // prompt-cache hits (they depend on an identical prefix, not its size);
+        // it only costs tokens on every request.
+        severity: 'info',
         category: 'context_bloat',
         title: 'Large table in instruction file',
-        summary: `The instruction file "${fileName}" contains a large Markdown table (${maxTableRows} rows). Large tables bloat prompt context and reduce caching friendliness.`,
+        summary: `The instruction file "${fileName}" contains a large Markdown table (${maxTableRows} rows). An always-loaded table costs context tokens on every request; it does not by itself reduce prompt-cache hits, which depend on the prompt prefix being identical, not on its size. This is a hint, and it does not count toward the health score.`,
         filePaths: [file.path],
         locations: [{ filePath: file.path, startLine: maxStart, endLine: maxEnd }],
         evidence: [`Markdown table with ${maxTableRows} rows found in ${fileName}.`],
-        recommendation: 'Move large tables to separate documentation files (e.g. under docs/) or load them on-demand via tools instead of keeping them in always-loaded instructions.',
+        recommendation: 'If the agent needs the table only for some tasks, consider moving it to a separate document (e.g. under docs/) that the agent reads on demand, so it does not cost tokens on every request.',
         fixRecipe: 'Extract the table to a separate document and link to it.',
         confidence: 0.9,
+        tags: HINT_TAGS,
       });
     }
   }

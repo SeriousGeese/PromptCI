@@ -45,7 +45,19 @@ interface PracticeCheck {
   recommendation: string;
   confidence: number;
   fixRecipe?: string;
+  /**
+   * pcic-55dy: set on a practice whose recommended sentence made no measurable
+   * difference in PromptCI's behaviour evals. The finding then lists it for
+   * information only, states this evidence instead of the recommendation, and
+   * offers no fix text. Not a "remove this sentence" finding: the evidence is one
+   * harness, one model and a few runs on small tasks (pcic-7swz tests removal).
+   */
+  noMeasuredEffect?: string;
 }
+
+/** Where the behaviour-eval evidence comes from, and its limits (pcic-55dy). */
+const BEHAVIOUR_EVAL_BASIS =
+  "PromptCI behaviour evals, 2026-11-19, Claude Code with Sonnet 5.5, 5 runs with and 5 without the sentence on small synthetic tasks. Other agents and models may differ.";
 
 const CHECKS: PracticeCheck[] = [
   {
@@ -96,6 +108,8 @@ const CHECKS: PracticeCheck[] = [
     recommendation:
       'Add a rule such as: "If tests fail, report the failure. Never claim success when commands error or tests are skipped."',
     confidence: 0.75,
+    noMeasuredEffect:
+      'Claude Code already reported a failing test instead of claiming success in our tests, with or without this sentence (5 of 5 runs each): it made no measurable difference',
     fixRecipe: 'If tests or commands fail, report the failure honestly. Never claim success when checks are skipped or error.',
   },
   {
@@ -126,6 +140,8 @@ const CHECKS: PracticeCheck[] = [
     recommendation:
       'Add a rule such as: "If you are uncertain about the correct approach, say so and ask before proceeding rather than guessing."',
     confidence: 0.75,
+    noMeasuredEffect:
+      'Claude Code did not ask about an ambiguous request in our tests, with or without this sentence (0 of 5 runs each): the sentence did not change what it did',
     fixRecipe:
       'If you are uncertain about the correct approach, say so before proceeding rather than guessing.',
   },
@@ -151,6 +167,8 @@ const CHECKS: PracticeCheck[] = [
     recommendation:
       'Add a rule such as: "Always read a file fully before editing it."',
     confidence: 0.75,
+    noMeasuredEffect:
+      'Claude Code already read files before editing in our tests, with or without this sentence (5 of 5 runs each): it made no measurable difference',
     fixRecipe: 'Read a file before editing it. Preserve unrelated user changes.',
   },
   {
@@ -173,6 +191,8 @@ const CHECKS: PracticeCheck[] = [
     recommendation:
       'Add a rule such as: "Prefer focused, minimal diffs. Do not rewrite or refactor code unrelated to the current task."',
     confidence: 0.7,
+    noMeasuredEffect:
+      'Claude Code already kept its edit inside the code the task was about in our tests, with or without this sentence (5 of 5 runs each): it made no measurable difference',
     fixRecipe: 'Prefer focused, minimal diffs. Do not rewrite or refactor code unrelated to the current task.',
   },
   {
@@ -285,14 +305,44 @@ export const MISSING_PRACTICES_ISSUE_ID = `agent-practice-${crypto
   .digest('hex')
   .slice(0, 12)}`;
 
+/** The evidence line for a practice with no measured effect, ending in the eval basis (pcic-55dy). */
+function noMeasuredEffectNote(check: PracticeCheck): string {
+  return `${check.label}: ${check.noMeasuredEffect} (${BEHAVIOUR_EVAL_BASIS})`;
+}
+
 /**
  * One info-level finding for the whole repository listing the practices no
  * instruction file mentions. Tagged unscored: these are suggestions, and
  * nothing yet shows that the sentences change agent behaviour, so they do not
  * cost health-score points (see UNSCORED_TAG in health-score.ts).
+ *
+ * pcic-55dy: a practice whose sentence made no measurable difference in the
+ * behaviour evals is still listed, for information, but the finding states the
+ * evidence for it instead of recommending the sentence, and its fix text leaves
+ * it out.
  */
 function missingPracticesIssue(missing: PracticeCheck[], fileCount: number, filePaths: string[]): PromptCiIssue {
   const labels = missing.map((check) => check.label);
+  const suggested = missing.filter((check) => check.noMeasuredEffect === undefined);
+  const informational = missing.filter((check) => check.noMeasuredEffect !== undefined);
+  const fixRecipe = suggested.map((check) => check.fixRecipe).filter(Boolean).join('\n');
+  const evidenceNote =
+    informational.length > 0
+      ? ` For ${informational.length === 1 ? 'one of them' : `${informational.length} of them`} (${informational.map((c) => c.label).join(', ')}), ` +
+        "PromptCI's behaviour evals found the sentence made no measurable difference to what Claude Code did, so " +
+        `${informational.length === 1 ? 'it is' : 'they are'} listed for information only.`
+      : '';
+  const suggestion =
+    suggested.length > 0
+      ? 'Consider adding the rules that fit how you want agents to work, for example: ' +
+        suggested.map((check) => check.recommendation.replace(/^Add (?:an explicit |a )?rule such as: /, '')).join(' ')
+      : '';
+  const information =
+    informational.length > 0
+      ? `${suggested.length > 0 ? ' ' : ''}No sentence is suggested for ${informational.map((c) => c.label).join(', ')}: ` +
+        informational.map(noMeasuredEffectNote).join('; ') +
+        '.'
+      : '';
   return {
     id: MISSING_PRACTICES_ISSUE_ID,
     severity: 'info',
@@ -301,7 +351,8 @@ function missingPracticesIssue(missing: PracticeCheck[], fileCount: number, file
     summary:
       `No instruction found for ${missing.length} of the ${CHECKS.length} agent practices PromptCI looks for ` +
       `(${labels.join(', ')}). These are suggestions that often help agents, not defects, so this finding ` +
-      'does not count toward the health score.',
+      'does not count toward the health score.' +
+      evidenceNote,
     filePaths,
     locations: [],
     // One line per missing practice, in a fixed order.
@@ -309,10 +360,8 @@ function missingPracticesIssue(missing: PracticeCheck[], fileCount: number, file
       `Searched ${fileCount} instruction file(s).`,
       ...labels.map((label) => `Not found: ${label}`),
     ],
-    recommendation:
-      'Consider adding the rules that fit how you want agents to work, for example: ' +
-      missing.map((check) => check.recommendation.replace(/^Add (?:an explicit |a )?rule such as: /, '')).join(' '),
-    fixRecipe: missing.map((check) => check.fixRecipe).filter(Boolean).join('\n'),
+    recommendation: suggestion + information,
+    ...(fixRecipe ? { fixRecipe } : {}),
     confidence: Math.min(...missing.map((check) => check.confidence)),
     // One identity per repository: adding a rule, or another instruction
     // file, changes the evidence and file list but is the same finding
@@ -783,8 +832,9 @@ export function detectAgentPractices(
       ],
       recommendation:
         `Consider making the rules reach ${target.agent}: either ${forwardingAdvice(file, target, fileWithGuidance)}, ` +
-        `or add the rules to ${target.label} itself (a verification rule, a scope-control rule, a read-before-edit ` +
-        `rule and an honesty policy).`,
+        `or add the rules to ${target.label} itself, a verification rule above all: in PromptCI's behaviour evals ` +
+        `(2026-11-19, Claude Code with Sonnet 5.5) naming the verification command changed what the agent did, while ` +
+        `scope-control, read-before-edit and honesty sentences made no measurable difference.`,
       confidence: 0.5,
       tags: [UNSCORED_TAG],
     });
@@ -816,8 +866,11 @@ export function detectAgentPractices(
           severity: 'info',
           category: 'agent_practices',
           title: `Missing critical guidance "${check.title.replace('No ', '').replace(' instruction', '')}" in ${target.label}`,
-          summary:
-            `The ${target.label} lacks the critical behavioral guidance regarding "${checkName}" ` +
+          summary: check.noMeasuredEffect !== undefined
+            ? `The ${target.label} lacks the "${checkName}" guidance which is defined in ${path.basename(sourceFile.path)}. ` +
+              `Listed for information only: PromptCI's behaviour evals found this sentence made no measurable difference ` +
+              `to what Claude Code did, and the finding does not count toward the health score.`
+            : `The ${target.label} lacks the critical behavioral guidance regarding "${checkName}" ` +
             `which is defined in ${path.basename(sourceFile.path)}. If ${target.agent} reads only ${target.label}, ` +
             `it may miss this rule. Several tools also read AGENTS.md themselves, so this is a suggestion to ` +
             `check, not a defect, and it does not count toward the health score.`,
@@ -827,10 +880,14 @@ export function detectAgentPractices(
             `Guidance pattern not found in ${path.basename(file.path)}.`,
             `Guidance defined in ${path.basename(sourceFile.path)}.`,
           ],
+          // pcic-55dy: a practice whose sentence made no measurable difference is
+          // reported for information, with the evidence and no fix text.
           recommendation:
-            `Consider adding the missing guidance to ${target.label} (e.g., "${check.recommendation.replace('Add a rule such as: ', '').replace(/"/g, '')}") ` +
-            `or ${forwardingAdvice(file, target, sourceFile)}.`,
-          fixRecipe: check.fixRecipe,
+            check.noMeasuredEffect !== undefined
+              ? `No change suggested: ${noMeasuredEffectNote(check)}.`
+              : `Consider adding the missing guidance to ${target.label} (e.g., "${check.recommendation.replace('Add a rule such as: ', '').replace(/"/g, '')}") ` +
+                `or ${forwardingAdvice(file, target, sourceFile)}.`,
+          ...(check.noMeasuredEffect === undefined && check.fixRecipe ? { fixRecipe: check.fixRecipe } : {}),
           confidence: 0.5,
           tags: [UNSCORED_TAG],
         });

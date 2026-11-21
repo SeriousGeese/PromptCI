@@ -48,6 +48,15 @@ describe('detectBuriedCriticalInstructions', () => {
     expect(issue.summary).toMatch(/hint, not a known defect/);
   });
 
+  it('pcic-55dy: states the behaviour-eval evidence and keeps the advice as information only', () => {
+    const content = makeLongContent(120, { 115: 'NEVER push to production.' });
+    const issue = detectBuriedCriticalInstructions([makeFile(content)])[0]!;
+    expect(issue.severity).toBe('info');
+    expect(issue.summary).toContain('Claude Code followed a critical rule at the bottom of a long file as often as the same rule at the top');
+    expect(issue.summary).toContain('2026-11-19, Claude Code with Sonnet 5.5');
+    expect(issue.recommendation).toMatch(/^No change needed on the evidence so far\./);
+  });
+
   it('does not flag the same instruction placed near the top', () => {
     const content = makeLongContent(120, { 5: 'NEVER push to production.' });
     expect(detectBuriedCriticalInstructions([makeFile(content)])).toEqual([]);
