@@ -15,12 +15,12 @@
     "e2e": "playwright test"
   },
   "dependencies": {
-    "next": "15.5.28",
+    "next": "15.5.29",
     "pg": "8.13.1",
     "react": "19.0.0",
     "react-dom": "19.0.0",
     "stripe": "17.4.0",
-    "zod": "4.6.6"
+    "zod": "4.6.7"
   },
   "devDependencies": {
     "@playwright/test": "1.49.1",
