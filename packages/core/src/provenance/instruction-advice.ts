@@ -36,6 +36,20 @@ const noEffect = (check: string, ci95: readonly [number, number] = [-0.434482468
   runs: 10,
   lastRun: '2026-11-19',
 });
+/** Records changed by promoting the verify-names-lint research hypothesis (pcic-7swz), approved 2026-11-22. */
+const V22 = { date: '2026-11-22', by: 'agent run 2026-11-22 (pcic-7swz), promotion approved by Zach' };
+/** The verify-names-lint research hypothesis: a rule naming lint as well as the tests, against one naming the tests alone (2026-11-22, 10 runs per arm). */
+const verifyNamesLint = (model: string, effect: number, ci95: readonly [number, number]): BehaviourEvalResult => ({
+  check: 'no-verification-loop',
+  harness: 'claude-code',
+  harnessVersion: '2.1.330',
+  model,
+  verdict: 'helps',
+  effect,
+  ci95,
+  runs: 20,
+  lastRun: '2026-11-22',
+});
 /** What every demoted check's caveat says about the evidence and its limits (pcic-55dy). */
 const EVAL_DEMOTION =
   'Demoted to information (pcic-55dy): in the 2026-11-19 behaviour evals (Claude Code 2.1.327 with Sonnet 5.5, 5 runs per arm on small synthetic tasks) the recommended change made no measurable difference, so the finding states that evidence instead of recommending the change. One harness, one model and few runs: other agents may differ, and whether removing such a sentence hurts is not yet tested (pcic-7swz).';
@@ -353,11 +367,11 @@ export const INSTRUCTION_ADVICE_PROVENANCE: readonly CheckProvenance[] = [
   // ───────────────────────────── agent-practices ─────────────────────────────
   {
     id: 'agent-practices/verification-loop',
-    unverified: true,
     detector: 'agent-practices',
     title: 'Verification loop before reporting done',
     kind: 'opinion',
-    claim: 'An instruction to run lint, typecheck and tests before reporting work done, or a documented command to run, makes an agent more likely to check its own work before it says it is finished.',
+    claim:
+      'An instruction to run lint, typecheck and tests before reporting work done, or a documented command to run, makes an agent more likely to check its own work before it says it is finished; naming every gate the repository has (lint, typecheck) in that step, not the tests alone, makes it run those gates too.',
     appliesTo: 'all',
     sources: [
       src(
@@ -367,7 +381,16 @@ export const INSTRUCTION_ADVICE_PROVENANCE: readonly CheckProvenance[] = [
       ),
       src('ghRepo', 'context', 'The onboarding prompt asks for build, test and lint steps with verified commands and the checks run before check-in.'),
     ],
-    lastVerified: V13,
+    evals: [
+      "promptci-cloud scripts/behaviour-evals/research-results.json: research hypothesis verify-names-lint (pcic-7swz), 2026-11-22, Claude Code 2.1.330, 10 runs per arm per model; promoted to this check's fix text on Zach's go-ahead",
+    ],
+    behaviourEval: [
+      verifyNamesLint('claude-sonnet-5-5', 0.7, [0.2889428873072139, 0.892208733443606]),
+      verifyNamesLint('claude-opus-5-5', 0.5, [0.11736746412254095, 0.7634069109885206]),
+    ],
+    caveat:
+      'The fix text names every gate the repository has (lint, typecheck, tests), not the tests alone (research hypothesis verify-names-lint, 2026-11-22): a rule naming only the tests, in a file that lists the linter, led Claude Code to run the linter after its last edit in 3 of 10 runs on Sonnet 5.5 and 0 of 10 on Opus 5.5; naming both led to 10 of 10 and 5 of 10. One harness, two models and one small synthetic task: other agents and larger repositories may differ.',
+    lastVerified: V22,
   },
   {
     id: 'agent-practices/grounding',

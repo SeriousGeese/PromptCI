@@ -83,9 +83,11 @@ const CHECKS: PracticeCheck[] = [
     ],
     recommendation:
       'Add an explicit rule such as: "Before saying done, run pnpm lint && pnpm typecheck && pnpm test && pnpm build. ' +
-      'Work is not complete until all checks pass."',
+      'Work is not complete until all checks pass." Name every gate the repository has (lint, typecheck, tests) in that step, not the tests alone.',
     confidence: 0.75,
-    fixRecipe: 'Before saying work is complete, run pnpm lint, pnpm typecheck, pnpm test, and pnpm build. If any command fails, report the failure and stop.',
+    fixRecipe:
+      'Before saying work is complete, run pnpm lint, pnpm typecheck, pnpm test, and pnpm build. If any command fails, report the failure and stop. ' +
+      'Name every gate the repository has (lint, typecheck, tests) in this step, not the tests alone.',
   },
   {
     id: 'no-honesty-policy',

@@ -932,6 +932,15 @@ describe('detectAgentPractices — placement detector extensions', () => {
     expect(issue!.fixRecipe).toContain('Before saying work is complete, run pnpm lint');
     expect(issue!.recommendation).toMatch(/^Consider adding the missing guidance to CLAUDE\.md/);
   });
+
+  it('tells the user to name every gate in the verification step, not the tests alone (research hypothesis verify-names-lint, 2026-11-22)', () => {
+    const [issue] = detectAgentPractices([MINIMAL_FILE]).filter((i) => i.id === MISSING_PRACTICES_ISSUE_ID);
+    const NAME_EVERY_GATE = 'Name every gate the repository has (lint, typecheck, tests) in';
+    expect(issue!.recommendation).toContain(NAME_EVERY_GATE);
+    expect(issue!.recommendation).toContain('not the tests alone.');
+    expect(issue!.fixRecipe).toContain(NAME_EVERY_GATE);
+    expect(issue!.fixRecipe).toContain('not the tests alone.');
+  });
 });
 
 // ── AP1: vacuous-pass FNs (incidental prose satisfying a directive check) ────
