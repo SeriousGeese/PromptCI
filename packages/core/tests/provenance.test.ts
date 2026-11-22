@@ -278,6 +278,19 @@ describe('the registry', () => {
     expect(byCheck.get('negative-overload')!.record.id).toBe('negative-instructions');
   });
 
+  it('records the verify-names-lint eval as the evidence for naming every gate in the verification loop (pcic-7swz)', () => {
+    const record = CHECK_PROVENANCE.find((r) => r.id === 'agent-practices/verification-loop')!;
+    expect(provenanceStatus(record)).toBe('sourced');
+    expect(record.evals?.join(' ')).toContain('verify-names-lint');
+    expect(record.lastVerified.date).toBe('2026-11-22');
+    const results = record.behaviourEval ?? [];
+    expect(results.map((r) => [r.model, r.verdict, r.effect, r.lastRun])).toEqual([
+      ['claude-sonnet-5-5', 'helps', 0.7, '2026-11-22'],
+      ['claude-opus-5-5', 'helps', 0.5, '2026-11-22'],
+    ]);
+    expect(results.every((r) => r.check === 'no-verification-loop' && r.ci95[0] > 0)).toBe(true);
+  });
+
   it('answers every contradicting source on an opinion record in its caveat, naming that source (pcic-kvv3.12)', () => {
     const unanswered = CHECK_PROVENANCE.filter((r) => r.kind === 'opinion').flatMap((r) =>
       r.sources
