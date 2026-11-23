@@ -19,7 +19,7 @@
  */
 
 import * as crypto from 'node:crypto';
-import type { InstructionFile, PromptCiIssue } from './types.js';
+import type { FixEdit, InstructionFile, PromptCiIssue } from './types.js';
 import type { RepoContext } from './repo-context.js';
 import { buildCodeMask } from './markdown-fences.js';
 import { fileIdPath } from './finding-id.js';
@@ -28,6 +28,8 @@ import { anyWorkspaceHasScript, isKnownBinary } from './workspace-manifests.js';
 import { treeFor } from './repo-tree.js';
 import { collectCiPackageManagers } from './ci-alignment.js';
 import type { RepoTree } from './repo-tree.js';
+import { packageManagerSwapEdits, versionMentionEdits } from './manifest-fix-edits.js';
+import type { PackageManagerHit } from './manifest-fix-edits.js';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -157,6 +159,25 @@ function checkPythonVersionMismatch(
       if (reported.has(dedupeKey)) continue;
       reported.add(dedupeKey);
 
+      // pcic-k1t3.12: every mention of this version in the file, as this loop flags them.
+      const mentionsOf = (content: string) =>
+        [...content.matchAll(PYTHON_VERSION_RE)].filter(
+          (mm) =>
+            !isNegationContext(content, mm.index) &&
+            `${parseInt(mm[1]!, 10)}.${parseInt(mm[2]!, 10)}` === instrVersion,
+        );
+      const fixEdits = versionMentionEdits(
+        file,
+        mentionsOf(file.content).map((mm) => ({
+          index: mm.index,
+          text: mm[0],
+          replacement: mm[0].slice(0, mm[0].length - `${mm[1]}.${mm[2]}`.length) + manifestVersion,
+        })),
+        PYTHON_VERSION_RE,
+        true,
+        (next) => mentionsOf(next).length > 0,
+      );
+
       issues.push({
         id: issueId(`python-version:${fileIdPath(file)}:${instrVersion}`),
         severity: 'high',
@@ -175,6 +196,7 @@ function checkPythonVersionMismatch(
         recommendation:
           `Update the instruction file to reference Python ${manifestVersion} (or remove the ` +
           `version claim and rely on pyproject.toml as the authoritative source).`,
+        ...versionFix(fixEdits),
         confidence: 0.85,
       });
     }
@@ -205,6 +227,57 @@ function displayLibraryName(library: TrackedPythonLibrary): string {
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * pcic-k1t3.12: the recipe fields of a version-mismatch finding whose every
+ * mention can be rewritten to the manifest's version (`versionMentionEdits`);
+ * none when one cannot, so the finding stays advisory.
+ */
+function versionFix(fixEdits: FixEdit[] | undefined): Partial<PromptCiIssue> {
+  if (!fixEdits) return {};
+  const shown = fixEdits.map((e) => `\`${e.find}\` -> \`${e.replace}\``);
+  return {
+    fixRecipe: `Rewrite the version to the one the manifest declares: ${[...new Set(shown)].join(', ')}.`,
+    autoApplySafe: true,
+    fixEdits,
+  };
+}
+
+/**
+ * pcic-k1t3.12: edits for one library-major finding: every mention of
+ * `instructionVersion` in `file` that `libraryMentionRe` (global) matches and
+ * `hasIntent` accepts, rewritten to `manifestMajor`. A mention with a numeric
+ * minor (`Pandas 1.5`) has no plain rewrite (the manifest gives a major only).
+ */
+function libraryMajorEdits(
+  file: InstructionFile,
+  libraryMentionRe: RegExp,
+  instructionVersion: string,
+  manifestMajor: number,
+  hasIntent: (content: string, index: number) => boolean,
+): FixEdit[] | undefined {
+  const versionOf = (m: RegExpMatchArray) => `${parseInt(m[1]!, 10)}.${m[2] ?? 'x'}`;
+  const mentionsOf = (content: string) =>
+    [...content.matchAll(libraryMentionRe)].filter(
+      (m) => hasIntent(content, m.index) && parseInt(m[1]!, 10) < manifestMajor && versionOf(m) === instructionVersion,
+    );
+  return versionMentionEdits(
+    file,
+    mentionsOf(file.content).map((m) => {
+      if (m[2] !== undefined && m[2].toLowerCase() !== 'x') return { index: m.index, text: m[0], replacement: undefined };
+      const majorEnd = m[0].length - (m[2] === undefined ? 0 : m[2].length + 1);
+      const majorStart = majorEnd - m[1]!.length;
+      return {
+        index: m.index,
+        text: m[0],
+        replacement: m[0].slice(0, majorStart) + String(manifestMajor) + m[0].slice(majorEnd),
+      };
+    }),
+    libraryMentionRe,
+    false,
+    (next) => mentionsOf(next).length > 0,
+  );
 }
 
 function parseAuthoritativeMajorVersion(versionSpec: string): number | null {
@@ -303,6 +376,8 @@ function checkLibraryVersionMismatch(
         if (reported.has(dedupeKey)) continue;
         reported.add(dedupeKey);
 
+        const fixEdits = libraryMajorEdits(file, libraryMentionRe, instructionVersion, manifestMajor, hasCompatibilityIntent);
+
         issues.push({
           id: issueId(`library-version:${fileIdPath(file)}:${library}:${instructionVersion}`),
           severity: 'high',
@@ -323,6 +398,7 @@ function checkLibraryVersionMismatch(
           recommendation:
             `Update the instruction file to match ${displayName} ${manifestMajor}.x, or remove ` +
             `the version-specific guidance and rely on pyproject.toml as the authoritative source.`,
+          ...versionFix(fixEdits),
           confidence: 0.85,
         });
       }
@@ -419,6 +495,8 @@ function checkJsLibraryVersionMismatch(
         if (reported.has(dedupeKey)) continue;
         reported.add(dedupeKey);
 
+        const fixEdits = libraryMajorEdits(file, libraryMentionRe, instructionVersion, manifestMajor, hasJsVersionIntent);
+
         issues.push({
           id: issueId(`js-library-version:${fileIdPath(file)}:${library}:${instructionVersion}`),
           severity: 'high',
@@ -439,6 +517,7 @@ function checkJsLibraryVersionMismatch(
           recommendation:
             `Update the instruction file to match ${displayName} ${manifestMajor}.x, or remove ` +
             `the version-specific guidance and rely on package.json as the authoritative source.`,
+          ...versionFix(fixEdits),
           confidence: 0.85,
         });
       }
@@ -487,31 +566,37 @@ function checkPackageManagerMismatch(context: RepoContext): PromptCiIssue | null
     { name: 'bun', label: 'Bun' },
   ].filter((a) => a.name !== preferred);
 
-  const offendingFiles: InstructionFile[] = [];
-  for (const file of files) {
+  /** Every command-like mention of another manager in `content` that counts against it. */
+  const hitsIn = (file: InstructionFile, content: string): PackageManagerHit[] => {
+    const hits: PackageManagerHit[] = [];
     for (const alt of alternatives) {
       // Match commands like "npm install", "yarn add", "bun run"
       const re = new RegExp(`\\b${alt.name}\\s+(?:install|add|run|exec|dlx|i)\\b`, 'gi');
       let match: RegExpExecArray | null;
-      let positiveHit = false;
-      while ((match = re.exec(file.content)) !== null) {
-        const lineStart = file.content.lastIndexOf('\n', match.index - 1) + 1;
-        const lineEnd = file.content.indexOf('\n', match.index);
-        const line = file.content.slice(lineStart, lineEnd === -1 ? undefined : lineEnd);
+      while ((match = re.exec(content)) !== null) {
+        const lineStart = content.lastIndexOf('\n', match.index - 1) + 1;
+        const lineEnd = content.indexOf('\n', match.index);
+        const line = content.slice(lineStart, lineEnd === -1 ? undefined : lineEnd);
         if (preferred === 'pnpm' && /\bnpm\s+(?:install|i)\s+-g\s+pnpm\b/i.test(line)) continue;
-        if (!isNegationContext(file.content, match.index)) {
-          positiveHit = true;
-          break;
-        }
-      }
-      if (positiveHit) {
-        offendingFiles.push(file);
-        break;
+        if (!isNegationContext(content, match.index)) hits.push({ file, index: match.index, text: match[0] });
       }
     }
-  }
+    return hits;
+  };
 
+  const hits = files.flatMap((file) => hitsIn(file, file.content));
+  const offendingFiles = files.filter((file) => hits.some((h) => h.file === file));
   if (offendingFiles.length === 0) return null;
+
+  // pcic-k1t3.12: when every counted mention is a plain swap (a defined script
+  // run without flags, or a bare install), the finding carries the edits.
+  const fixEdits = packageManagerSwapEdits(
+    files,
+    hits,
+    preferred,
+    (name) => anyWorkspaceHasScript(context, name),
+    (file, next) => hitsIn(file, next).length > 0,
+  );
 
   // pcic-1ik0.5: the CI-alignment check defers to this one when the manifest
   // names the package manager, so say here when CI agrees. Summary only: the
@@ -537,6 +622,7 @@ function checkPackageManagerMismatch(context: RepoContext): PromptCiIssue | null
     ],
     recommendation: `Update instruction files to consistently use ${preferred} commands.`,
     fixRecipe: `This repo uses ${preferred}. Use \`${preferred} install\`, \`${preferred} test\`, and \`${preferred} build\`; do not substitute npm/yarn commands.`,
+    ...(fixEdits ? { autoApplySafe: true, fixEdits } : {}),
     confidence: 0.8,
   };
 }
@@ -709,6 +795,23 @@ function checkNodeVersionMismatch(context: RepoContext): PromptCiIssue[] {
         if (reported.has(dedupeKey)) continue;
         reported.add(dedupeKey);
 
+        // pcic-k1t3.12: every mention of this version in the file, as this loop flags them.
+        const mentionsOf = (content: string) =>
+          [...content.matchAll(NODE_VERSION_RE)].filter(
+            (mm) => !isNegationContext(content, mm.index) && parseInt(mm[1]!, 10) === instrVersion,
+          );
+        const fixEdits = versionMentionEdits(
+          file,
+          mentionsOf(file.content).map((mm) => ({
+            index: mm.index,
+            text: mm[0],
+            replacement: mm[0].slice(0, mm[0].length - mm[1]!.length) + String(minNodeVersion),
+          })),
+          NODE_VERSION_RE,
+          true,
+          (next) => mentionsOf(next).length > 0,
+        );
+
         issues.push({
           id: `manifest-node-version-mismatch:${fileIdPath(file)}:${instrVersion}`,
           severity: 'warning',
@@ -720,6 +823,7 @@ function checkNodeVersionMismatch(context: RepoContext): PromptCiIssue[] {
           locations: [{ filePath: file.path }],
           evidence: [`Instruction says Node ${instrVersion}; engines.node says ${packageJson.enginesNode}`],
           recommendation: `Update instructions to reflect the minimum supported Node.js version (${minNodeVersion}).`,
+          ...versionFix(fixEdits),
           confidence: 0.8,
         });
       }

@@ -160,10 +160,13 @@ export type PromptCiIssue = {
   /**
    * pcic-oonz: the exact substitutions `applyFixRecipe` performs for this
    * finding, computed by the detector. Present only on the recipes that work
-   * this way (a mistyped package script, a moved link target); the older
+   * this way (a mistyped package script, a moved link target, and since
+   * pcic-k1t3.12 a package-manager swap and a stale version the manifest
+   * settles); the older
    * recipes (.gitignore stanzas, duplicate consolidation) are recomputed from
    * the issue inside the fix engine and carry none. Always set together with
-   * `autoApplySafe`: `true` for a moved link, `false` for a script rename,
+   * `autoApplySafe`: `true` for a moved link, a package-manager swap and a
+   * version rewrite, `false` for a script rename,
    * which is applied only on an explicit opt-in (pcic-1ik0.18, see
    * `isScriptRenameRecipe`).
    */

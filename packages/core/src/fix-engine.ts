@@ -7,6 +7,7 @@ import { isWithinRoot, realPathWithinRoot } from './path-containment.js';
 import { gitignoreLineMatchesTarget } from './security-pack.js';
 import { MIRRORED_FILES_TAG } from './duplicates.js';
 import { MIRROR_CANONICAL_BASENAME, consolidateWithImport, importRecipeTarget } from './mirror-import.js';
+import { applyLineEditsToText } from './line-edits.js';
 
 export interface FileChange {
   filePath: string; // Absolute path
@@ -42,15 +43,6 @@ export function resolveSafePath(repoRoot: string, relativeOrAbsolutePath: string
     throw new Error(`Path traversal detected: "${relativeOrAbsolutePath}" is outside repo root "${resolvedRoot}"`);
   }
   return resolvedPath;
-}
-
-/** Occurrences of `needle` (a plain string, never a pattern) in `haystack`. */
-function countOccurrences(haystack: string, needle: string): number {
-  let count = 0;
-  for (let at = haystack.indexOf(needle); at !== -1; at = haystack.indexOf(needle, at + needle.length)) {
-    count++;
-  }
-  return count;
 }
 
 /**
@@ -90,21 +82,9 @@ async function applyLineEdits(edits: readonly FixEdit[], repoRoot: string): Prom
       return []; // a file the recipe needs is gone: apply nothing
     }
 
-    // Terminators stay attached to their line, so join('') restores the file.
-    const lines = content.split(/(?<=\n)/);
-    for (const { line, find, replace } of fileEdits) {
-      const idx = line - 1;
-      const text = lines[idx];
-      if (text === undefined || !find || find.includes('\n')) return [];
-      if (countOccurrences(text, find) !== 1) return [];
-      // Spliced by index, not via String.replace: a `$&`, `$1` or `$$` in the
-      // replacement is replacement-pattern syntax there, and a path or script
-      // name containing `$` would be silently corrupted.
-      const at = text.indexOf(find);
-      lines[idx] = text.slice(0, at) + replace + text.slice(at + find.length);
-    }
-
-    const newContent = lines.join('');
+    // The same function the emitting detectors check their edits with.
+    const newContent = applyLineEditsToText(content, fileEdits);
+    if (newContent === undefined) return [];
     if (newContent === content) continue;
     changes.push({ filePath, originalContent: content, newContent });
   }
