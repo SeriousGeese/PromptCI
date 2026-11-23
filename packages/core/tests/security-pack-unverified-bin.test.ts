@@ -49,7 +49,7 @@ describe('bin/ and obj/ without a complete inventory (pcic-1ik0.22)', () => {
   it.each(CASES)('%s: never autoApplySafe with an incomplete inventory', async (_l, files) => {
     const { root, paths } = repo(files);
     const issue = find(await scan({ repoPath: root, knownPaths: paths, knownPathsComplete: false }));
-    expect(issue?.autoApplySafe ?? false).toBe(false);
+    expect(issue).toBeUndefined();
   });
 
   it('obj/ with an incomplete inventory is reported and not autoApplySafe', async () => {
@@ -71,6 +71,14 @@ describe('bin/ and obj/ without a complete inventory (pcic-1ik0.22)', () => {
     const issue = find(await scan({ repoPath: root }));
     expect(issue?.evidence?.[0]).toContain('Directory "obj" exists');
     expect(issue?.autoApplySafe).toBe(false);
+  });
+
+  it('a dist/ beside an unverified bin/ makes the whole finding unsafe, and the summary says why', async () => {
+    const { root } = repo({ 'build.gradle': 'apply plugin: "java"\n', 'bin/tool.jar': 'PK', 'dist/index.js': '1;' });
+    const issue = find(await scan({ repoPath: root }));
+    expect(issue?.evidence).toHaveLength(2);
+    expect(issue?.autoApplySafe).toBe(false);
+    expect(issue?.summary).toContain('bin could not be verified as build output without a file inventory');
   });
 
   it('control: dist/ and coverage/ keep the local one-click fix', async () => {

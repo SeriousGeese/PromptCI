@@ -691,7 +691,7 @@ export function detectSecurityPack(context: RepoContext): PromptCiIssue[] {
     // tracked (a complete inventory lists files under it). A local scan cannot tell a committed dist/ from one
     // the developer just built and forgot to ignore, so it keeps reporting.
     const tracked = tree.inventory?.complete === true && (contents.files > 0 || contents.partial);
-    if (!tracked && tree.inventory?.complete !== true && ECOSYSTEM_OUTPUT_DIRS[d] && (contents.files > 0 || contents.partial)) {
+    if (tree.inventory?.complete !== true && ECOSYSTEM_OUTPUT_DIRS[d] && (contents.files > 0 || contents.partial)) {
       unverifiedEcosystemDirs.add(d);
     }
     if (tracked) {
@@ -716,6 +716,9 @@ export function detectSecurityPack(context: RepoContext): PromptCiIssue[] {
         `.gitignore, .cursorignore and a default list, but not what its terminal and MCP tools read).` +
         (trackedCounts.size > 0
           ? ` ${[...trackedCounts.keys()].join(', ')} already holds tracked files, which a .gitignore entry does not untrack.`
+          : '') +
+        (unverifiedEcosystemDirs.size > 0
+          ? ` ${[...unverifiedEcosystemDirs].join(', ')} could not be verified as build output without a file inventory, so this is not offered as a one-click fix.`
           : ''),
       filePaths: ['.gitignore'],
       locations: [],
