@@ -118,6 +118,9 @@ describe('package-manager mismatch recipe', () => {
     ['a cd into another directory', 'Run `cd site && npm run build`.'],
     ['a link', 'See [`npm run build`](docs/build.md).'],
     ['consumer instructions', 'To use this library in your own project, run `npm install`.'],
+    ['instructions for end users', 'End users run `npm install` once.'],
+    ['a directory named on the line', 'Inside `website/`, run `npm install`.'],
+    ['a (cd dir) on the line', 'In the docs folder (cd docs), run npm install.'],
     ['a fallback two paragraphs up', 'On machines where pnpm cannot be installed, build with npm.\n\nThen:\n\n```bash\nnpm run build\n```'],
     ['a find that is not unique on its line', 'Run `npm run dev` or `npm run dev:docs`.'],
   ])('stays advisory for %s', async (_label, line) => {
@@ -157,6 +160,8 @@ describe('Node.js version recipe', () => {
     ["a dependency's own requirement", 'Next.js 14 requires Node 18+'],
     ['an SDK that needs it', 'Expo SDK 50 needs Node 18'],
     ['a named package that requires it', 'Package `foo` requires Node 18+'],
+    ['a product label before a requirement verb', '- Storybook: requires Node 18'],
+    ['a product label with a plus', 'Supabase CLI: requires Node 18+'],
     ['a history heading', '## History\n\nRequires Node.js 18+.'],
   ])('stays advisory for %s', async (_label, body) => {
     expectAdvisory(await finding(nodeRepo(`# Repo\n\n${body}\n`), isNode));
@@ -205,7 +210,7 @@ describe('library and Python version recipes', () => {
     const issue = await finding(repo, (i) => i.title.startsWith('Python version mismatch'));
     expect(await applied(repo, issue)).toBe('# Repo\n\n- Runtime: Python 3.11\n');
 
-    for (const body of ['Target Python 3.9.7 for all code.', 'Python 3.9 introduced the union operator for dicts.', 'Keep Python 3.9 shims.', 'Django 4.2 requires Python 3.9+']) {
+    for (const body of ['Target Python 3.9.7 for all code.', 'Python 3.9 introduced the union operator for dicts.', 'Keep Python 3.9 shims.', 'Django 4.2 requires Python 3.9+', '- Django: requires Python 3.9+']) {
       const advisory = repoWith({ 'pyproject.toml': pyproject, 'CLAUDE.md': `# Repo\n\n${body}\n` });
       expectAdvisory(await finding(advisory, (i) => i.title.startsWith('Python version mismatch')));
     }
@@ -215,10 +220,10 @@ describe('library and Python version recipes', () => {
   it('rewrites a declared Python library major (Pandas 1.x to Pandas 2.x)', async () => {
     const repo = repoWith({
       'pyproject.toml': '[tool.poetry.dependencies]\npython = "^3.11"\npandas = "^2.1"\n',
-      'CLAUDE.md': '# Repo\n\nTarget dataframe library: Pandas 1.x\n',
+      'CLAUDE.md': '# Repo\n\nTarget library: Pandas 1.x\n',
     });
     const issue = await finding(repo, (i) => i.title.startsWith('Pandas version mismatch'));
-    expect(await applied(repo, issue)).toBe('# Repo\n\nTarget dataframe library: Pandas 2.x\n');
+    expect(await applied(repo, issue)).toBe('# Repo\n\nTarget library: Pandas 2.x\n');
   });
 });
 

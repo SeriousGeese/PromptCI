@@ -133,10 +133,14 @@ const LEGACY_WORDING = /\b(?:legacy|old(?:er)?|deprecated|migrat\w*|previous(?:l
  * manager there is the reader's, not this repository's.
  */
 const CONSUMER_WORDING =
-  /\b(?:your\s+(?:own\s+)?(?:project|app(?:lication)?|repo(?:sitory)?|codebase|package)|in\s+your\b|consumers?|to\s+use\s+this\s+(?:library|package|plugin|module|sdk)|install\s+(?:this|the)\s+(?:package|library|plugin|module|sdk))/i;
+  /\b(?:your\s+(?:own\s+)?(?:project|app(?:lication)?|repo(?:sitory)?|codebase|package)|in\s+your\b|consumers?|end\s+users?|to\s+use\s+this\s+(?:library|package|plugin|module|sdk)|install\s+(?:this|the)\s+(?:package|library|plugin|module|sdk))/i;
 
-/** A command run from another directory: `cd site && npm run build`, `npm --prefix site run build`. */
-const OTHER_DIRECTORY = /\bcd\s+\S+\s*(?:&&|;)|(?:^|\s)(?:--prefix|--cwd|-C|--dir|--filter|--workspace|-w)(?=[\s=]|$)/;
+/**
+ * A command run from another directory: `cd site && npm run build`, `(cd docs)`,
+ * "Inside `website/`, run ...", `npm --prefix site run build`.
+ */
+const OTHER_DIRECTORY =
+  /\bcd\s+\S+\s*(?:&&|;)|\(cd\s+[^)]+\)|\b(?:inside|in)\s+`?[\w./-]+\/`?|(?:^|\s)(?:--prefix|--cwd|-C|--dir|--filter|--workspace|-w)(?=[\s=]|$)/i;
 
 const ALTERNATIVE_WORDING =
   /\b(?:fall(?:\s*|-)back|alternative(?:ly)?|otherwise|instead|unavailable|not\s+installed|if\s+you\s+(?:use|prefer|have|don'?t)|windows|users?\s+(?:can|may|of|on|who))\b/i;
@@ -203,6 +207,7 @@ export function packageManagerSwapEdits(
     const { heading, lead } = framingLines(file.content, lineNo, fence);
     for (const frame of [heading, lead]) {
       if (ALTERNATIVE_WORDING.test(frame) || LEGACY_WORDING.test(frame) || CONSUMER_WORDING.test(frame)) return undefined;
+      if (OTHER_DIRECTORY.test(frame)) return undefined;
       // A frame that names the old manager itself ("## Using npm", "Install with npm:") means it on
       // purpose. Commands on it (a previous step, `npm install`) are not that: they are hits too.
       const words = frame.replace(/\b(?:npm|pnpm|yarn|bun)\s+(?:install|add|run|exec|dlx|i)\b/gi, '');
@@ -276,15 +281,23 @@ const RUNTIME_CUE_RE =
 
 /**
  * What may stand before a version mention on its line, once list markers,
- * emphasis and code ticks are dropped: nothing, a label ("Build tool:"), and a
+ * emphasis and code ticks are dropped: nothing, a generic label made of
+ * {@link LABEL_WORD}s ("Build tool:", "Runtime:", "Prerequisites:"; never a
+ * product's name, as in "Storybook: requires Node 18"), and a
  * requirement verb whose subject, if any, is this project ("Requires", "We
  * use", "This package requires"). Anything else is someone else's statement
  * ("Django 4.2 requires Python 3.8+", "Package `foo` requires Node 18", "Use
  * React Native 0.72 with React 17", "Use the following. Vite 3"), and the
  * number in it is theirs to state, not the manifest's.
  */
-const DECLARATION_LEAD =
-  /^(?:[A-Za-z][A-Za-z /&()-]{0,40}:\s*)?(?:(?:(?:this|the|our)\s+(?:project|repo(?:sitory)?|app(?:lication)?|package|codebase|library|server|cli|site|extension|plugin|build|tooling)|we|it)\s+)?(?:(?:use|uses|using|target|targets|require|requires|required|need|needs|runs?\s+on|built\s+(?:on|with)|install|installs)\s*)?$/i;
+const LABEL_WORD =
+  '(?:runtimes?|requirements?|prerequisites?|node(?:\\.js|js)?|python|versions?|build|tools?|tooling|engines?|toolchain|stack|tech|language|framework|bundler|platform|environment|ci|dev|development|target|minimum|min|library|libraries|local|production|package\\s+manager)';
+
+const DECLARATION_LEAD = new RegExp(
+  `^(?:${LABEL_WORD}(?:\\s+${LABEL_WORD})*\\s*:\\s*)?` +
+    String.raw`(?:(?:(?:this|the|our)\s+(?:project|repo(?:sitory)?|app(?:lication)?|package|codebase|library|server|cli|site|extension|plugin|build|tooling)|we|it)\s+)?(?:(?:use|uses|using|target|targets|require|requires|required|need|needs|runs?\s+on|built\s+(?:on|with)|install|installs)\s*)?$`,
+  'i',
+);
 
 /** A line holding a link or URL: the mention may be a label whose target still names the old version. */
 const LINK_OR_URL = /\]\(|:\/\/|<https?:/i;
