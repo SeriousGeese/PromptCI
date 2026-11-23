@@ -1087,7 +1087,8 @@ function scriptNameOf(token: string): { name: string; punctuated: boolean } {
   return { name, punctuated: name !== token };
 }
 
-const BUILTINS_BY_TOOL: Record<'pnpm' | 'npm' | 'yarn' | 'bun', Set<string>> = {
+/** Each package manager's own commands: a bare `<pm> <word>` with one of these runs the command, not a script. */
+export const BUILTINS_BY_TOOL: Record<'pnpm' | 'npm' | 'yarn' | 'bun', Set<string>> = {
   pnpm: PNPM_BUILTINS,
   npm: NPM_BUILTINS,
   yarn: YARN_BUILTINS,

@@ -23,7 +23,7 @@ import type { FixEdit, InstructionFile, PromptCiIssue } from './types.js';
 import type { RepoContext } from './repo-context.js';
 import { buildCodeMask } from './markdown-fences.js';
 import { fileIdPath } from './finding-id.js';
-import { BUN_BUILTINS, analyzeCommands } from './command-validity.js';
+import { BUILTINS_BY_TOOL, BUN_BUILTINS, analyzeCommands } from './command-validity.js';
 import { anyWorkspaceHasScript, isKnownBinary } from './workspace-manifests.js';
 import { treeFor } from './repo-tree.js';
 import { collectCiPackageManagers } from './ci-alignment.js';
@@ -642,7 +642,10 @@ function checkMissingScripts(context: RepoContext): PromptCiIssue[] {
   // MF4: `run` is captured rather than skipped, so an explicit `npm run <name>`
   // can be told apart from a bare `pnpm <token>` — the latter needs code
   // context before it counts as an invocation.
-  const SCRIPT_RUN_RE = /\b(npm|yarn|pnpm|bun)\s+(run(?:-script)?\s+)?([a-z0-9][a-z0-9:_-]*)\b/gi;
+  // pcic-1ik0.23: the gaps are spaces or tabs, never a newline. `\s+` read the end of one line and the
+  // start of the next as one command ("... publish to npm\ncd packages/x" named a script "cd",
+  // "npm install -g pnpm\npnpm install" one named "pnpm").
+  const SCRIPT_RUN_RE = /\b(npm|yarn|pnpm|bun)[ \t\u00a0]+(run(?:-script)?(?:[ \t\u00a0]+|[ \t\u00a0]*\r?\n[ \t\u00a0]*))?([a-z0-9][a-z0-9:_-]*)\b/gi;
   // Only the scope that governs THIS command counts: a `cd <dir> &&` chained
   // directly before it, or a workspace/directory flag later in the same command
   // (`npm run build -w web`). A `-r` or `cd` belonging to an earlier command on
@@ -668,6 +671,14 @@ function checkMissingScripts(context: RepoContext): PromptCiIssue[] {
     'outdated', 'publish', 'create', 'link', 'why', 'workspace', 'workspaces',
     'store', 'ls', 'list', 'pack', 'unlink', 'uninstall', 'up', 'prune',
     'package', 'packages', 'project', 'repo', 'repository', 'version',
+  ]);
+  // pcic-1ik0.23: words after a package manager that are never a user script whichever manager it is:
+  // another tool's name ("npx pnpm ...", "corepack enable pnpm"), the shell's `cd` and the `latest`
+  // dist-tag. The manager's own commands (`npm config set prefix`, `npm trust`, `pnpm root -g`) come
+  // from command-validity's per-manager sets. Only the bare form (<pm> <word>) is skipped: an
+  // explicit `npm run config` still names a script.
+  const NON_SCRIPT_WORDS = new Set([
+    'npm', 'npx', 'pnpm', 'pnpx', 'yarn', 'bun', 'bunx', 'corepack', 'node', 'cd', 'latest',
   ]);
   const ENGLISH_FILLER_WORDS = new Set([
     'instead', 'of', 'packages', 'package', 'scripts', 'script', 'ecosystem',
@@ -710,7 +721,23 @@ function checkMissingScripts(context: RepoContext): PromptCiIssue[] {
         continue;
       }
       // Skip common standard subcommands that aren't necessarily scripts
-      if (SKIP_SUBCOMMANDS.has(scriptName)) {
+      if (SKIP_SUBCOMMANDS.has(scriptName.toLowerCase())) {
+        continue;
+      }
+      // A bare `npm <word>` is an npm command, never a script (command-validity reads it the same way).
+      if (!explicitRun && packageManager === 'npm') {
+        continue;
+      }
+      if (
+        !explicitRun &&
+        (NON_SCRIPT_WORDS.has(scriptName.toLowerCase()) ||
+          BUILTINS_BY_TOOL[packageManager as keyof typeof BUILTINS_BY_TOOL].has(scriptName.toLowerCase()))
+      ) {
+        continue;
+      }
+      // `<pm> <word>@1.2` / `<pm> <word>/x`: a package spec or a path, not a script. (`npm run lint/fix`
+      // is the slash shorthand for two scripts, so an explicit run keeps being judged.)
+      if (!explicitRun && /^[@/]/.test(file.content.charAt(match.index + match[0].length))) {
         continue;
       }
       if (ENGLISH_FILLER_WORDS.has(scriptName.toLowerCase())) {
