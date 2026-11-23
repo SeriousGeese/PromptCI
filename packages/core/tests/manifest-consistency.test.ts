@@ -812,7 +812,13 @@ describe('detectManifestConsistency — non-script tokens after a package manage
   const fenced = (...lines: string[]): string => ['Setup:', '', '```bash', ...lines, '```'].join('\n');
 
   it('does not read the next line as the token: "...to npm" then "cd packages/x"', () => {
-    expect(missing('# 5. Publish to npm\ncd packages/bridge && npm publish && cd ../..\n')).toEqual([]);
+    expect(missing(fenced('# 5. Publish to npm', 'cd packages/bridge && npm publish && cd ../..'))).toEqual([]);
+  });
+
+  it('does not join a package manager at the end of a comment line with a command on the next', () => {
+    expect(missing(fenced('# Publish to npm', 'deploy-all --prod'))).toEqual([]);
+    expect(missing(fenced('# Publish with pnpm', 'deploy-all --prod'))).toEqual([]);
+    expect(missing(fenced('# Install with yarn', 'deploy-all --prod'))).toEqual([]);
   });
 
   it('does not read "pnpm" on the next line as a script after "npm"', () => {
@@ -850,6 +856,19 @@ describe('detectManifestConsistency — non-script tokens after a package manage
 
   it('still reports an explicit "npm run" of a word that is also a builtin, since run names a script', () => {
     expect(missing('Then npm run config to regenerate it.')).toEqual(['Reference to missing script: "config"']);
+  });
+
+  it('still reports an explicit run whose script name is on the next line (hard-wrapped prose)', () => {
+    expect(missing('Before pushing, run npm run\nlint:all to verify.')).toEqual(['Reference to missing script: "lint:all"']);
+    expect(missing('Before pushing, pnpm run-script\n  release:dry to verify.')).toEqual(['Reference to missing script: "release:dry"']);
+  });
+
+  it('still reports an explicit run whose name is followed by a slash (npm run lint/fix shorthand)', () => {
+    expect(missing('Before pushing, npm run lint/fix to verify.')).toEqual(['Reference to missing script: "lint"']);
+  });
+
+  it('does not read a non-breaking space gap or a mixed-case builtin as a script', () => {
+    expect(missing(fenced('pnpm\u00a0pnpm install', 'pnpm Root -g'))).toEqual([]);
   });
 
   it('still reports a missing script on the line after a non-script mention', () => {
