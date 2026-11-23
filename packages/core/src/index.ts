@@ -17,6 +17,15 @@ export { generateSarifReport } from './sarif.js';
 export { detectManifestConsistency } from './manifest-consistency.js';
 export { detectDependencyStaleness } from './dependency-staleness.js';
 export type { ManifestData } from './manifest-consistency.js';
+export {
+  readNodeEngineVersion,
+  readJsLibraryVersion,
+  readPythonVersion,
+  readPythonLibraryVersion,
+  parseVersionSpec,
+  isBelowFloor,
+} from './manifest-versions.js';
+export type { ManifestVersionReading, VersionFloor } from './manifest-versions.js';
 export { buildRepoContext, parsePackageJsonFacts } from './repo-context.js';
 export type { RepoContext, PackageJsonFacts, WorkflowFacts, WorkflowCommand, WorkflowSource } from './repo-context.js';
 export type { MakefileFacts } from './makefile.js';
