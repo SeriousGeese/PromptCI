@@ -132,7 +132,8 @@ describe('fixture-source-bin (#161)', () => {
       fs.writeFileSync(path.join(root, 'bin', 'Debug', 'App.dll'), 'MZ');
       const issue = await unignored(root);
       expect(issue?.evidence).toEqual(['Directory "bin" exists but is not ignored in .gitignore.']);
-      expect(issue?.autoApplySafe).toBe(true);
+      // pcic-1ik0.22: reported, but a local scan cannot tell this from a committed tool, so no one-click fix.
+      expect(issue?.autoApplySafe).toBe(false);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
