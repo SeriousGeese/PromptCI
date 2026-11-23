@@ -642,7 +642,10 @@ function checkMissingScripts(context: RepoContext): PromptCiIssue[] {
   // MF4: `run` is captured rather than skipped, so an explicit `npm run <name>`
   // can be told apart from a bare `pnpm <token>` — the latter needs code
   // context before it counts as an invocation.
-  const SCRIPT_RUN_RE = /\b(npm|yarn|pnpm|bun)\s+(run(?:-script)?\s+)?([a-z0-9][a-z0-9:_-]*)\b/gi;
+  // pcic-1ik0.23: the gaps are spaces or tabs, never a newline. `\s+` read the end of one line and the
+  // start of the next as one command ("... publish to npm\ncd packages/x" named a script "cd",
+  // "npm install -g pnpm\npnpm install" one named "pnpm").
+  const SCRIPT_RUN_RE = /\b(npm|yarn|pnpm|bun)[ \t]+(run(?:-script)?[ \t]+)?([a-z0-9][a-z0-9:_-]*)\b/gi;
   // Only the scope that governs THIS command counts: a `cd <dir> &&` chained
   // directly before it, or a workspace/directory flag later in the same command
   // (`npm run build -w web`). A `-r` or `cd` belonging to an earlier command on
@@ -668,6 +671,17 @@ function checkMissingScripts(context: RepoContext): PromptCiIssue[] {
     'outdated', 'publish', 'create', 'link', 'why', 'workspace', 'workspaces',
     'store', 'ls', 'list', 'pack', 'unlink', 'uninstall', 'up', 'prune',
     'package', 'packages', 'project', 'repo', 'repository', 'version',
+  ]);
+  // pcic-1ik0.23: words after a package manager that are never a user script: another tool's name
+  // ("npx pnpm ...", "corepack enable pnpm"), the shell's `cd`, a dist-tag ("npm i foo@latest" prose,
+  // "the npm latest tag") and the package manager's own subcommands that SKIP_SUBCOMMANDS lacks
+  // (`npm config set prefix`, `npm prefix -g`, `npm trust`, `pnpm root -g`). Only the bare form
+  // (<pm> <word>) is skipped: an explicit `npm run config` still names a script.
+  const NON_SCRIPT_WORDS = new Set([
+    'npm', 'npx', 'pnpm', 'pnpx', 'yarn', 'bun', 'bunx', 'corepack', 'node', 'cd', 'latest',
+    'config', 'prefix', 'trust', 'root', 'bin', 'cache', 'doctor', 'whoami', 'login', 'logout',
+    'adduser', 'dist-tag', 'deprecate', 'unpublish', 'fund', 'rebuild', 'dedupe', 'shrinkwrap',
+    'explain', 'view', 'pkg', 'approve-builds', 'licenses', 'self-update',
   ]);
   const ENGLISH_FILLER_WORDS = new Set([
     'instead', 'of', 'packages', 'package', 'scripts', 'script', 'ecosystem',
@@ -711,6 +725,13 @@ function checkMissingScripts(context: RepoContext): PromptCiIssue[] {
       }
       // Skip common standard subcommands that aren't necessarily scripts
       if (SKIP_SUBCOMMANDS.has(scriptName)) {
+        continue;
+      }
+      if (!explicitRun && NON_SCRIPT_WORDS.has(scriptName.toLowerCase())) {
+        continue;
+      }
+      // `<pm> <word>@1.2` / `<pm> <word>/x`: a package spec or a path, not a script.
+      if (/^[@/]/.test(file.content.slice(match.index + match[0].length, match.index + match[0].length + 1))) {
         continue;
       }
       if (ENGLISH_FILLER_WORDS.has(scriptName.toLowerCase())) {

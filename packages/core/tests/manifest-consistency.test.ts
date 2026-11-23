@@ -800,3 +800,59 @@ describe('detectManifestConsistency — false-positive avoidance', () => {
     expect(pmIssue).toBeUndefined();
   });
 });
+
+// ── pcic-1ik0.23: words that are not scripts are never read as `<pm> run <script>` ──────────────
+
+describe('detectManifestConsistency — non-script tokens after a package manager (pcic-1ik0.23)', () => {
+  const packageJson = JSON.stringify({ scripts: { build: 'tsc', test: 'vitest' } });
+  const missing = (content: string): string[] =>
+    detectManifestConsistency(makeContext([makeFile(content)], { packageJson }))
+      .filter((i) => i.id.startsWith('manifest-missing-script'))
+      .map((i) => i.title);
+  const fenced = (...lines: string[]): string => ['Setup:', '', '```bash', ...lines, '```'].join('\n');
+
+  it('does not read the next line as the token: "...to npm" then "cd packages/x"', () => {
+    expect(missing('# 5. Publish to npm\ncd packages/bridge && npm publish && cd ../..\n')).toEqual([]);
+  });
+
+  it('does not read "pnpm" on the next line as a script after "npm"', () => {
+    expect(missing(fenced('npm install -g pnpm', 'pnpm install'))).toEqual([]);
+  });
+
+  it('does not read a package manager name as a script ("npx pnpm install", "corepack enable pnpm")', () => {
+    expect(missing(fenced('npx pnpm install', 'npm pnpm', 'yarn npm'))).toEqual([]);
+  });
+
+  it('does not read "cd" as a script', () => {
+    expect(missing(fenced('npm cd', 'cd web && npm run build'))).toEqual([]);
+  });
+
+  it('does not read the "latest" dist-tag as a script', () => {
+    expect(missing(fenced('# Stable channel: npm latest', 'npm i -g foo@latest', 'npm install foo@latest'))).toEqual([]);
+  });
+
+  it('does not read npm and pnpm builtins as scripts (config set prefix, prefix -g, trust, root -g)', () => {
+    expect(
+      missing(
+        fenced('npm config set prefix ~/.npm-global', 'pnpm config set store-dir ~/.pnpm', 'npm prefix -g', 'npm trust github', 'pnpm root -g'),
+      ),
+    ).toEqual([]);
+  });
+
+  it('does not read a package spec or path after a package manager as a script', () => {
+    expect(missing(fenced('npm foo@1.2.3', 'pnpm foo/bar'))).toEqual([]);
+  });
+
+  it('still reports a genuinely missing script (explicit run, a colon name)', () => {
+    expect(missing('Before pushing, npm run typecheck to verify.')).toEqual(['Reference to missing script: "typecheck"']);
+    expect(missing('Before pushing, npm run release:dry to verify.')).toEqual(['Reference to missing script: "release:dry"']);
+  });
+
+  it('still reports an explicit "npm run" of a word that is also a builtin, since run names a script', () => {
+    expect(missing('Then npm run config to regenerate it.')).toEqual(['Reference to missing script: "config"']);
+  });
+
+  it('still reports a missing script on the line after a non-script mention', () => {
+    expect(missing('Install with npm install -g pnpm\nthen npm run lint:all')).toEqual(['Reference to missing script: "lint:all"']);
+  });
+});
