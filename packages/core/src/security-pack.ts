@@ -662,6 +662,11 @@ export function detectSecurityPack(context: RepoContext): PromptCiIssue[] {
     return texts;
   };
   const trackedCounts = new Map<string, { files: number; partial: boolean }>();
+  // pcic-1ik0.22: bin/ and obj/ are only guessed to be build output (a committed tool such as bin/nuget.exe or
+  // a bin/*.jar looks the same), so without a complete inventory to show them untracked, one holding files is
+  // reported but never auto-applicable, as it already is with an inventory. dist/ and coverage/ keep the local
+  // one-click fix.
+  const unverifiedEcosystemDirs = new Set<string>();
   const cursorExcluded = new Set<string>();
   const unignoredDirs = gitignoreUnknown ? [] : commonDirs.filter((d) => {
     if (!tree.isDir(d)) return false;
@@ -686,6 +691,9 @@ export function detectSecurityPack(context: RepoContext): PromptCiIssue[] {
     // tracked (a complete inventory lists files under it). A local scan cannot tell a committed dist/ from one
     // the developer just built and forgot to ignore, so it keeps reporting.
     const tracked = tree.inventory?.complete === true && (contents.files > 0 || contents.partial);
+    if (tree.inventory?.complete !== true && ECOSYSTEM_OUTPUT_DIRS[d] && (contents.files > 0 || contents.partial)) {
+      unverifiedEcosystemDirs.add(d);
+    }
     if (tracked) {
       packageDirs ??= manifestTargetDirs(tree, true);
       if (packageDirs.has(d)) return false;
@@ -708,6 +716,9 @@ export function detectSecurityPack(context: RepoContext): PromptCiIssue[] {
         `.gitignore, .cursorignore and a default list, but not what its terminal and MCP tools read).` +
         (trackedCounts.size > 0
           ? ` ${[...trackedCounts.keys()].join(', ')} already holds tracked files, which a .gitignore entry does not untrack.`
+          : '') +
+        (unverifiedEcosystemDirs.size > 0
+          ? ` ${[...unverifiedEcosystemDirs].join(', ')} could not be verified as build output without a file inventory, so this is not offered as a one-click fix.`
           : ''),
       filePaths: ['.gitignore'],
       locations: [],
@@ -737,7 +748,7 @@ export function detectSecurityPack(context: RepoContext): PromptCiIssue[] {
       // and the human decides. There is no `fixEdits` to drop: the edit is
       // derived from the id and evidence, which only `autoApplySafe` gates.
       // #212: and not when a reported directory holds tracked files: the recipe is then not the complete fix.
-      autoApplySafe: tree.inventory?.complete !== false && trackedCounts.size === 0,
+      autoApplySafe: tree.inventory?.complete !== false && trackedCounts.size === 0 && unverifiedEcosystemDirs.size === 0,
       confidence: 0.8,
     });
   }
