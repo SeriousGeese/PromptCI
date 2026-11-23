@@ -29,11 +29,12 @@ import { htmlCommentRanges, inRanges, indentedCodeLines } from './sample-text.js
 export const MAX_RECIPE_EDITS = 50;
 
 /**
- * The lines that frame line `lineNo` (1-based): the nearest heading above it
- * (outside fenced blocks), and up to three non-blank lines before it (or before
- * the opening fence when it is inside a fenced block), back to that heading. "If pnpm is not available,
- * use npm:" above a fence, or a "## Legacy npm workflow" heading, changes what
- * the line below says.
+ * The lines that frame line `lineNo` (1-based): every ancestor heading above
+ * it (outside fenced blocks: the nearest one, then each shallower one up to the
+ * top), and up to three non-blank lines before it (or before the opening fence
+ * when it is inside a fenced block), back to the nearest heading. "If pnpm is
+ * not available, use npm:" above a fence, or a "## Legacy npm workflow" heading
+ * over a "### Build" section, changes what the line below says.
  */
 function framingLines(
   content: string,
@@ -51,14 +52,16 @@ function framingLines(
     if (lines[i]!.trim() !== '') leads.push(lines[i]!);
   }
   const lead = leads.join('\n');
-  let heading = '';
-  for (let i = anchor - 1; i >= 0; i--) {
-    if (!fence[i]?.inFence && /^\s{0,3}#{1,6}\s/.test(lines[i]!)) {
-      heading = lines[i]!;
-      break;
+  const headings: string[] = [];
+  let level = 7;
+  for (let i = anchor - 1; i >= 0 && level > 1; i--) {
+    const h = fence[i]?.inFence ? null : /^\s{0,3}(#{1,6})\s/.exec(lines[i]!);
+    if (h && h[1]!.length < level) {
+      level = h[1]!.length;
+      headings.push(lines[i]!);
     }
   }
-  return { heading, lead };
+  return { heading: headings.join('\n'), lead };
 }
 
 /** The text of the line holding `offset`, without its terminator, and where it starts. */
@@ -124,6 +127,17 @@ const SHELL_FENCE_LANGS: ReadonlySet<string> = new Set([
  */
 const LEGACY_WORDING = /\b(?:legacy|old(?:er)?|deprecated|migrat\w*|previous(?:ly)?|without)\b/i;
 
+/**
+ * Wording that addresses someone installing or using the package in THEIR
+ * project ("To use this library in your own project, run `npm install`"): the
+ * manager there is the reader's, not this repository's.
+ */
+const CONSUMER_WORDING =
+  /\b(?:your\s+(?:own\s+)?(?:project|app(?:lication)?|repo(?:sitory)?|codebase|package)|in\s+your\b|consumers?|to\s+use\s+this\s+(?:library|package|plugin|module|sdk)|install\s+(?:this|the)\s+(?:package|library|plugin|module|sdk))/i;
+
+/** A command run from another directory: `cd site && npm run build`, `npm --prefix site run build`. */
+const OTHER_DIRECTORY = /\bcd\s+\S+\s*(?:&&|;)|(?:^|\s)(?:--prefix|--cwd|-C|--dir|--filter|--workspace|-w)(?=[\s=]|$)/;
+
 const ALTERNATIVE_WORDING =
   /\b(?:fall(?:\s*|-)back|alternative(?:ly)?|otherwise|instead|unavailable|not\s+installed|if\s+you\s+(?:use|prefer|have|don'?t)|windows|users?\s+(?:can|may|of|on|who))\b/i;
 
@@ -142,8 +156,11 @@ const ALTERNATIVE_WORDING =
  *   semantics differ between managers.
  *
  * A mention inside an HTML comment (text no reader sees), in a fenced block
- * that is not a shell session ({@link SHELL_FENCE_LANGS}), or on a line that
- * names another manager or reads as an alternative ({@link ALTERNATIVE_WORDING})
+ * that is not a shell session ({@link SHELL_FENCE_LANGS}), on a line holding a
+ * link, run from another directory ({@link OTHER_DIRECTORY}), or that would
+ * still name the old manager after the swap, or where the line, its lead lines
+ * or an ancestor heading names another manager or reads as an alternative or
+ * consumer instruction ({@link ALTERNATIVE_WORDING}, {@link CONSUMER_WORDING})
  * refuses too. `stillOffends` re-runs the check on the rewritten text: the
  * edits must leave nothing behind for the finding to report.
  */
@@ -174,13 +191,18 @@ export function packageManagerSwapEdits(
     if (fenceLine?.inFence && !SHELL_FENCE_LANGS.has(fenceLine.lang)) return undefined;
 
     const { start, text: lineText } = lineAround(file.content, index);
-    if (ALTERNATIVE_WORDING.test(lineText)) return undefined;
+    if (ALTERNATIVE_WORDING.test(lineText) || CONSUMER_WORDING.test(lineText)) return undefined;
+    if (OTHER_DIRECTORY.test(lineText) || LINK_OR_URL.test(lineText)) return undefined;
+    // After the swap the line must not still name the old manager (`npm install && npm test`
+    // would read `pnpm install && npm test`): every mention of it on the line must be a hit.
+    const onLine = ordered.filter((h) => h.file === file && lineNumberAt(file.content, h.index) === lineNo).length;
+    if ((lineText.match(new RegExp(`\\b${m[1]}\\b`, 'gi')) ?? []).length !== onLine) return undefined;
     // Every manager named on the line must be this one: `pnpm` beside `npm run` is a contrast.
     if ((lineText.match(managers) ?? []).some((name) => name.toLowerCase() !== m[1])) return undefined;
     // The same holds for the line that introduces it and the section it sits in.
     const { heading, lead } = framingLines(file.content, lineNo, fence);
     for (const frame of [heading, lead]) {
-      if (ALTERNATIVE_WORDING.test(frame) || LEGACY_WORDING.test(frame)) return undefined;
+      if (ALTERNATIVE_WORDING.test(frame) || LEGACY_WORDING.test(frame) || CONSUMER_WORDING.test(frame)) return undefined;
       // A frame that names the old manager itself ("## Using npm", "Install with npm:") means it on
       // purpose. Commands on it (a previous step, `npm install`) are not that: they are hits too.
       const words = frame.replace(/\b(?:npm|pnpm|yarn|bun)\s+(?:install|add|run|exec|dlx|i)\b/gi, '');
@@ -252,6 +274,18 @@ const VERSION_HEADING_RE = /\b(?:history|changelog|release\s+notes|compatib\w*|s
 const RUNTIME_CUE_RE =
   /\b(?:requires?|required|requirements?|needs?|runtime|engines?|version|minimum|min|target|use|using|install(?:ed)?|lts)\b/i;
 
+/**
+ * What may stand before a version mention on its line, once list markers,
+ * emphasis and code ticks are dropped: nothing, a label ("Build tool:"), and a
+ * requirement verb whose subject, if any, is this project ("Requires", "We
+ * use", "This package requires"). Anything else is someone else's statement
+ * ("Django 4.2 requires Python 3.8+", "Package `foo` requires Node 18", "Use
+ * React Native 0.72 with React 17", "Use the following. Vite 3"), and the
+ * number in it is theirs to state, not the manifest's.
+ */
+const DECLARATION_LEAD =
+  /^(?:[A-Za-z][A-Za-z /&()-]{0,40}:\s*)?(?:(?:(?:this|the|our)\s+(?:project|repo(?:sitory)?|app(?:lication)?|package|codebase|library|server|cli|site|extension|plugin|build|tooling)|we|it)\s+)?(?:(?:use|uses|using|target|targets|require|requires|required|need|needs|runs?\s+on|built\s+(?:on|with)|install|installs)\s*)?$/i;
+
 /** A line holding a link or URL: the mention may be a label whose target still names the old version. */
 const LINK_OR_URL = /\]\(|:\/\/|<https?:/i;
 
@@ -272,8 +306,9 @@ const DECLARATION_TAIL = /^(?:\+|\s+or\s+(?:later|newer|above|higher))?\s*[.,;:)
  * line naming the tool more than once (`toolRe` must be global) or holding a
  * link or URL, in a range or list of versions, more precise than the
  * manifest's version, the tail of another name, in history or support-range
- * wording, not a declaration ({@link DECLARATION_TAIL}), under a heading about
- * history or support ranges ({@link VERSION_HEADING_RE}), or, for a runtime,
+ * wording, not a declaration ({@link DECLARATION_TAIL}, {@link DECLARATION_LEAD}),
+ * under an ancestor heading about history or support ranges
+ * ({@link VERSION_HEADING_RE}), or, for a runtime,
  * with no cue that the line states a requirement. `stillOffends` re-runs the
  * check on the rewritten text.
  */
@@ -300,6 +335,10 @@ export function versionMentionEdits(
     const after = text.slice(mention.index - start + mention.text.length);
     if (VERSION_FOLLOWED_BY_ANOTHER.test(after) || VERSION_PRECEDED_BY_ANOTHER.test(before)) return undefined;
     if (!DECLARATION_TAIL.test(after)) return undefined;
+    const lead = before.replace(/^\s*(?:(?:[-*+>]|\d+[.)])\s+)*/, '').replace(/[*_`]/g, '').trim();
+    if (!DECLARATION_LEAD.test(lead)) return undefined;
+    // A library mention needs its declaring label or verb on its own line, not a cue a line above.
+    if (!runtime && lead === '') return undefined;
     if (runtime && !RUNTIME_CUE_RE.test(text) && !/^(?:\+|\s+or\s+(?:later|newer|above|higher))/i.test(after)) return undefined;
     const { heading } = framingLines(file.content, line, fence);
     if (VERSION_HEADING_RE.test(heading) || VERSION_HISTORY_RE.test(heading)) return undefined;
