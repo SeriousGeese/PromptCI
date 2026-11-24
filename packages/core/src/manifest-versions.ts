@@ -2,18 +2,21 @@
  * pcic-1ik0.24: the version a manifest declares, as the version-mismatch checks in
  * manifest-consistency.ts and their rewrite recipes (pcic-k1t3.12) read it.
  *
- * A finding needs only a FLOOR: the lowest version any declaration allows, so a mention below it is
- * stale whichever declaration is right. A rewrite needs more: one version every declaration agrees
- * on, from a source that states what the project runs. When the sources disagree, or the only
- * source is a compatibility claim, the finding stays and the rewrite is refused (advisory):
+ * A finding needs a FLOOR: a mention below it is stale. A rewrite needs more: one version every
+ * declaration agrees on, from a source that states what the project runs. When the sources
+ * disagree, or the only source is a compatibility claim or an extra, the finding stays and the
+ * rewrite is refused (advisory):
  *
  * - package.json: `dependencies` and `devDependencies` are what the project installs;
- *   `peerDependencies` is a range the package claims to work with, read only for the floor
- *   (it used to win because it was read last).
+ *   `peerDependencies` is a range the package claims to work with: it may lower the floor (a
+ *   mention it supports is not stale), never set the version (it used to win, read last).
  * - pyproject.toml: `[project].dependencies` and `[tool.poetry.dependencies]` are the main
  *   dependencies; optional-dependencies, Poetry groups and optional entries, dependency groups
- *   and the like are extras, read only for the floor (the first line naming the library anywhere
- *   in the file used to win).
+ *   and uv or PDM dev lists are extras, read only when no main dependency names the library (the
+ *   first line naming it anywhere in the file used to win, comments and [build-system] included).
+ * - requires-python and Poetry's `python` must both hold: the floor is the higher of them, and
+ *   their disagreement refuses the rewrite. Two main entries for one library may be alternatives
+ *   (environment markers), so they floor at the lower.
  * - An exclusive bound (`>3.8`, `>18`) excludes the version it names: a mention of exactly that
  *   version is below it, and no rewrite is offered (`>3.8` used to read as 3.8).
  * - Alternatives (`^18.18 || >=20`) floor at the lowest; a rewrite needs them all to agree (the
@@ -83,10 +86,13 @@ const COMPARATOR_RE =
 
 /**
  * The floor of one version spec, npm (semver ranges) or PEP 440 / Poetry, at `precision` components.
+ * Poetry's `^`, `~` and `||` read as npm's.
  * Null when a part of it is not a version comparator, or when it has no lower bound at all
  * (`*`, `<2`): an upper bound alone does not say the project moved to anything.
  */
-export function parseVersionSpec(spec: string, precision: 1 | 2): Declaration | null {
+export type Dialect = 'npm' | 'pep440';
+
+export function parseVersionSpec(spec: string, precision: 1 | 2, dialect: Dialect): Declaration | null {
   const trimmed = spec.trim();
   if (trimmed === '') return null;
   let lowest: Declaration | null = null;
@@ -114,9 +120,11 @@ export function parseVersionSpec(spec: string, precision: 1 | 2): Declaration | 
       const version = Array.from({ length: precision }, (_, i) => parts[i] ?? 0);
       let candidate: Declaration;
       if (op === '>') {
-        // ">18" (npm: >=19.0.0) and ">3.8" (PEP 440 lets 3.8.1 through, but the author excluded 3.8)
-        // both exclude the named version at this precision; ">18.2" only says "18 or later".
-        candidate = { floor: { version, exclusive: parts.length <= precision }, rewritable: false };
+        // npm ">18" is ">=19.0.0", so it excludes 18; ">18.2" only says "18 or later". PEP 440 ">3.8"
+        // lets 3.8.1 through, but on an interpreter line the author means "not 3.8", so it excludes
+        // 3.8 too; a library's ">2" admits 2.1, so at major precision it excludes nothing.
+        const exclusive = parts.length <= precision && (dialect === 'npm' || precision === 2);
+        candidate = { floor: { version, exclusive }, rewritable: false };
       } else {
         candidate = { floor: { version, exclusive: false }, rewritable: parts.length >= precision };
       }
@@ -135,30 +143,48 @@ export function parseVersionSpec(spec: string, precision: 1 | 2): Declaration | 
 }
 
 /**
- * One reading from declarations in tiers of trust: `tiers[0]` states what the project runs, later
- * tiers only what it claims to support. Null when nothing readable declares it.
+ * One reading from what a manifest declares. `main` states what the project runs. When several
+ * main declarations must all hold (`allHold`: requires-python and Poetry's `python`) the floor is
+ * the highest of them; otherwise they may be alternatives (a library listed twice under different
+ * environment markers, or in both dependencies and devDependencies) and the floor is the lowest.
+ * `support` is a range the project claims to work
+ * with (a peer range): it may lower the floor, never set the version. `fallback` (a pyproject.toml
+ * extra) is read only when no main source declares it. Null when nothing readable declares it.
  */
-function readTiers(tiers: Read[][]): ManifestVersionReading | null {
-  const readable = tiers.flat().filter((d): d is Declaration => d !== UNREADABLE);
-  if (readable.length === 0) return null;
+function readDeclarations(
+  main: Read[],
+  { support = [], fallback = [], allHold = false }: { support?: Read[]; fallback?: Read[]; allHold?: boolean } = {},
+): ManifestVersionReading | null {
+  const readable = (ds: Read[]) => ds.filter((d): d is Declaration => d !== UNREADABLE);
   const least = (ds: Declaration[]) => ds.reduce((a, b) => (compareFloors(b.floor, a.floor) < 0 ? b : a)).floor;
-  const floor = least(readable);
-  const main = tiers[0]!.filter((d): d is Declaration => d !== UNREADABLE);
+  const most = (ds: Declaration[]) => ds.reduce((a, b) => (compareFloors(b.floor, a.floor) > 0 ? b : a)).floor;
+  const mains = readable(main);
+  const claims = readable(support);
+  const extras = readable(fallback);
+  let floor: VersionFloor;
+  if (mains.length > 0) {
+    floor = allHold ? most(mains) : least(mains);
+    if (claims.length > 0) floor = least([{ floor, rewritable: false }, ...claims]);
+  } else if (claims.length > 0 || extras.length > 0) {
+    floor = least([...claims, ...extras]);
+  } else {
+    return null;
+  }
   const agreed =
-    main.length > 0 &&
-    tiers.every((tier) => tier.every((d) => d !== UNREADABLE && d.rewritable && compareFloors(d.floor, floor) === 0));
+    mains.length > 0 &&
+    [...main, ...support, ...fallback].every((d) => d !== UNREADABLE && d.rewritable && compareFloors(d.floor, floor) === 0);
   return {
     floor,
     label: (floor.exclusive ? '>' : '≥') + formatVersion(floor.version),
-    declared: (main.length > 0 ? least(main) : floor).version,
+    declared: (mains.length > 0 ? (allHold ? most(mains) : least(mains)) : floor).version,
     ...(agreed ? { rewriteTo: floor.version } : {}),
   };
 }
 
 /** A declared spec: its floor, or UNREADABLE when present but not a readable range. */
-function declaration(spec: unknown, precision: 1 | 2): Read {
+function declaration(spec: unknown, dialect: Dialect): Read {
   if (typeof spec !== 'string') return UNREADABLE;
-  return parseVersionSpec(spec, precision);
+  return parseVersionSpec(spec, 1, dialect);
 }
 
 // ── package.json ──────────────────────────────────────────────────────────────
@@ -180,16 +206,16 @@ function block(obj: Record<string, unknown>, key: string): Record<string, unknow
 /** `engines.node` as a major-version reading. */
 export function readNodeEngineVersion(enginesNode: string | undefined): ManifestVersionReading | null {
   if (enginesNode === undefined) return null;
-  return readTiers([[parseVersionSpec(enginesNode, 1)]]);
+  return readDeclarations([parseVersionSpec(enginesNode, 1, 'npm')]);
 }
 
 /** A package's major in package.json: dependencies and devDependencies over peerDependencies. */
 export function readJsLibraryVersion(packageJsonContent: string, packageName: string): ManifestVersionReading | null {
   const obj = jsonObject(packageJsonContent);
   if (!obj) return null;
-  const tier = (keys: string[]): Read[] =>
-    keys.flatMap((key) => (Object.hasOwn(block(obj, key), packageName) ? [declaration(block(obj, key)[packageName], 1)] : []));
-  return readTiers([tier(['dependencies', 'devDependencies']), tier(['peerDependencies'])]);
+  const declared = (keys: string[]): Read[] =>
+    keys.flatMap((key) => (Object.hasOwn(block(obj, key), packageName) ? [declaration(block(obj, key)[packageName], 'npm')] : []));
+  return readDeclarations(declared(['dependencies', 'devDependencies']), { support: declared(['peerDependencies']) });
 }
 
 // ── pyproject.toml ────────────────────────────────────────────────────────────
@@ -200,10 +226,43 @@ interface Table {
   end: number;
 }
 
+/**
+ * The file with every comment blanked to spaces, so offsets still line up and a commented-out
+ * dependency is never read. Strings are skipped (a "#" inside one is not a comment).
+ */
+function blankComments(content: string): string {
+  let out = '';
+  let quote: string | null = null;
+  for (let i = 0; i < content.length; i++) {
+    const ch = content[i]!;
+    if (quote) {
+      if (ch === '\\' && quote === '"') {
+        out += ch + (content[i + 1] ?? '');
+        i++;
+        continue;
+      }
+      if (ch === quote || ch === '\n') quote = null;
+      out += ch;
+    } else if (ch === '"' || ch === "'") {
+      quote = ch;
+      out += ch;
+    } else if (ch === '#') {
+      while (i < content.length && content[i] !== '\n' && content[i] !== '\r') {
+        out += ' ';
+        i++;
+      }
+      i--;
+    } else {
+      out += ch;
+    }
+  }
+  return out;
+}
+
 /** Top-level tables of a TOML file by name, with body offsets. Content before any header is table "". */
 function tomlTables(content: string): Table[] {
   const tables: Table[] = [];
-  const header = /^[ \t]*\[\[?[ \t]*([A-Za-z0-9_.\-"' \t]+?)[ \t]*\]\]?[ \t]*(?:#.*)?$/gm;
+  const header = /^[ \t]*\[\[?[ \t]*((?:[A-Za-z0-9_.\- \t]|"[^"\n]*"|'[^'\n]*')+?)[ \t]*\]\]?[ \t]*$/gm;
   let current: Table = { name: '', start: 0, end: content.length };
   let m: RegExpExecArray | null;
   while ((m = header.exec(content)) !== null) {
@@ -215,7 +274,7 @@ function tomlTables(content: string): Table[] {
   return tables;
 }
 
-/** The span of the array value of `key = [ ... ]` inside `table`, string-aware. */
+/** The span of the array value of `key = [ ... ]` inside `table` (comments already blanked). */
 function arraySpan(content: string, table: Table, key: string): [number, number] | null {
   const body = content.slice(table.start, table.end);
   const m = new RegExp(`^[ \\t]*["']?${key}["']?[ \\t]*=[ \\t]*\\[`, 'm').exec(body);
@@ -226,13 +285,10 @@ function arraySpan(content: string, table: Table, key: string): [number, number]
   for (let i = open; i < table.end; i++) {
     const ch = content[i]!;
     if (quote) {
-      if (ch === '\\') i++;
+      if (ch === '\\' && quote === '"') i++;
       else if (ch === quote) quote = null;
     } else if (ch === '"' || ch === "'") {
       quote = ch;
-    } else if (ch === '#') {
-      const nl = content.indexOf('\n', i);
-      i = nl === -1 ? table.end : nl;
     } else if (ch === '[') {
       depth++;
     } else if (ch === ']') {
@@ -259,53 +315,73 @@ function inlineVersion(inline: string): string | undefined {
   return /\bversion[ \t]*=[ \t]*["']([^"']*)["']/.exec(inline)?.[1];
 }
 
-/** Requires-python and Poetry's `python` constraint, as a major.minor reading. */
+/** Poetry's main dependency table, under either of its names. */
+function isPoetryMainTable(name: string): boolean {
+  return name === 'tool.poetry.dependencies' || name === 'tool.poetry.group.main.dependencies';
+}
+
+/** Tables whose entries are a pyproject.toml extra: optional, a dependency group, a dev list. */
+const EXTRA_TABLE_RE =
+  /^(?:project\.optional-dependencies|dependency-groups|tool\.poetry\.group\.[^.]+\.dependencies|tool\.poetry\.dev-dependencies|tool\.uv|tool\.pdm\.dev-dependencies)$/;
+
+/** Requires-python and Poetry's `python` constraint, as a major.minor reading. Both must hold. */
 export function readPythonVersion(pyprojectContent: string): ManifestVersionReading | null {
-  const tables = tomlTables(pyprojectContent);
+  const content = blankComments(pyprojectContent);
   const decls: Read[] = [];
-  for (const table of tables) {
-    const body = pyprojectContent.slice(table.start, table.end);
+  for (const table of tomlTables(content)) {
+    const body = content.slice(table.start, table.end);
     if (table.name === 'project' || table.name === '') {
       const m = /^[ \t]*requires-python[ \t]*=[ \t]*["']([^"']*)["']/m.exec(body);
-      if (m) decls.push(parseVersionSpec(m[1]!, 2));
+      if (m) decls.push(parseVersionSpec(m[1]!, 2, 'pep440'));
     }
-    if (table.name === 'tool.poetry.dependencies' || table.name === '') {
+    if (isPoetryMainTable(table.name) || table.name === '') {
       const m = poetryKeyRe('python').exec(body);
-      if (m) decls.push(parseVersionSpec(m[1] ?? inlineVersion(m[2] ?? '') ?? '', 2));
+      if (m) decls.push(parseVersionSpec(m[1] ?? inlineVersion(m[2] ?? '') ?? '', 2, 'pep440'));
     }
   }
-  return readTiers([decls]);
+  return readDeclarations(decls, { allHold: true });
 }
 
 /**
  * A library's major in pyproject.toml: the main dependencies (`[project].dependencies`, and
- * `[tool.poetry.dependencies]` entries not marked optional) over any other mention of it in the
- * file (optional-dependencies, Poetry groups, dependency groups, a tool's dev list).
+ * Poetry's main table, entries marked optional aside) over the extras (optional-dependencies,
+ * Poetry groups and optional entries, dependency groups, a uv or PDM dev list), which are read only
+ * when no main dependency names it. A mention anywhere else ([build-system], a tool's own table) is
+ * not the project's version and is not read.
  */
 export function readPythonLibraryVersion(pyprojectContent: string, library: string): ManifestVersionReading | null {
-  const tables = tomlTables(pyprojectContent);
+  const content = blankComments(pyprojectContent);
+  const tables = tomlTables(content);
   const mainSpans: Array<[number, number]> = [];
   for (const table of tables) {
     if (table.name === 'project' || table.name === '') {
-      const span = arraySpan(pyprojectContent, table, 'dependencies');
+      const span = arraySpan(content, table, 'dependencies');
       if (span) mainSpans.push(span);
     }
-    if (table.name === 'tool.poetry.dependencies') mainSpans.push([table.start, table.end]);
+    if (isPoetryMainTable(table.name)) mainSpans.push([table.start, table.end]);
   }
   const inMain = (index: number) => mainSpans.some(([s, e]) => index >= s && index < e);
+  const inExtra = (index: number) => {
+    const table = tables.find((t) => index >= t.start && index < t.end);
+    return table !== undefined && EXTRA_TABLE_RE.test(table.name);
+  };
   const main: Read[] = [];
   const extras: Read[] = [];
+  const sort = (index: number, read: Read, optional = false) => {
+    if (inMain(index) && !optional) main.push(read);
+    else if (inMain(index) || inExtra(index)) extras.push(read);
+  };
 
   const poetry = poetryKeyRe(library);
-  for (let m = poetry.exec(pyprojectContent); m !== null; m = poetry.exec(pyprojectContent)) {
+  for (let m = poetry.exec(content); m !== null; m = poetry.exec(content)) {
     const optional = m[2] !== undefined && /\boptional[ \t]*=[ \t]*true\b/.test(m[2]);
     const spec = m[1] ?? (m[2] !== undefined ? inlineVersion(m[2]) : undefined);
-    (inMain(m.index) && !optional ? main : extras).push(declaration(spec, 1));
+    sort(m.index, declaration(spec, 'pep440'), optional);
   }
   // PEP 508 strings: "pandas>=2.1", "pandas[performance] (>=2.1,<3) ; python_version >= '3.9'".
   const pep508 = new RegExp(`["']${escapeRegExp(library)}(?:\\[[^\\]"']*\\])?[ \\t]*\\(?[ \\t]*([~^=<>!][^"';)]*)`, 'gi');
-  for (let m = pep508.exec(pyprojectContent); m !== null; m = pep508.exec(pyprojectContent)) {
-    (inMain(m.index) ? main : extras).push(declaration(m[1], 1));
+  for (let m = pep508.exec(content); m !== null; m = pep508.exec(content)) {
+    sort(m.index, declaration(m[1], 'pep440'));
   }
-  return readTiers([main, extras]);
+  return readDeclarations(main, { fallback: extras });
 }

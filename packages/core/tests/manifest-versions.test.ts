@@ -37,13 +37,19 @@ describe('parseVersionSpec', () => {
     ['>=1.5,<3', 1, [1], false, true],
     ['>=2.0rc1', 1, [2], false, true],
   ] as const)('%s at precision %d floors at %j', (spec, precision, version, exclusive, rewritable) => {
-    expect(parseVersionSpec(spec, precision)).toEqual({ floor: { version, exclusive }, rewritable });
+    expect(parseVersionSpec(spec, precision, 'npm')).toEqual({ floor: { version, exclusive }, rewritable });
+  });
+
+  it('reads a PEP 508 ">2" as admitting 2.1, and an npm ">18" as excluding 18', () => {
+    expect(parseVersionSpec('>2', 1, 'pep440')).toEqual({ floor: { version: [2], exclusive: false }, rewritable: false });
+    expect(parseVersionSpec('>18', 1, 'npm')).toEqual({ floor: { version: [18], exclusive: true }, rewritable: false });
+    expect(parseVersionSpec('>3.8', 2, 'pep440')).toEqual({ floor: { version: [3, 8], exclusive: true }, rewritable: false });
   });
 
   it.each(['*', '<2', '<=3.0', 'latest', 'catalog:', 'workspace:*', 'npm:react@19', 'github:facebook/react', '', '>=18 || <16'])(
     'has no floor for %j',
     (spec) => {
-      expect(parseVersionSpec(spec, 1)).toBeNull();
+      expect(parseVersionSpec(spec, 1, 'npm')).toBeNull();
     },
   );
 });
@@ -129,7 +135,8 @@ describe('readPythonVersion', () => {
       'python = "^3.10"',
       '',
     ].join('\n');
-    expect(readPythonVersion(pyproject)).toEqual({ floor: { version: [3, 9], exclusive: false }, label: '≥3.9', declared: [3, 9] });
+    // Both must hold, so a mention below either is stale; the rewrite is refused.
+    expect(readPythonVersion(pyproject)).toEqual({ floor: { version: [3, 10], exclusive: false }, label: '≥3.10', declared: [3, 10] });
   });
 
   it('ignores a python key outside the Poetry dependency table', () => {
@@ -153,8 +160,8 @@ describe('readPythonLibraryVersion', () => {
       '',
     ].join('\n');
     expect(readPythonLibraryVersion(pyproject, 'django')).toEqual({
-      floor: { version: [4], exclusive: false },
-      label: '≥4',
+      floor: { version: [5], exclusive: false },
+      label: '≥5',
       declared: [5],
     });
   });
@@ -175,6 +182,53 @@ describe('readPythonLibraryVersion', () => {
   it('rewrites when the main dependency and the extras agree on one major', () => {
     const pyproject = ['[project]', 'name = "x"', 'dependencies = [', '  "pandas>=2.1,<3",', ']', '', '[dependency-groups]', 'test = ["pandas>=2.2"]', ''].join('\n');
     expect(readPythonLibraryVersion(pyproject, 'pandas')?.rewriteTo).toEqual([2]);
+  });
+
+  it('reads the tables of a CRLF file', () => {
+    const pyproject = ['[project]', 'name = "x"', 'dependencies = ["httpx>=0.27"]', '', '[tool.poetry.dependencies]', 'django = "^5.0"', ''].join('\r\n');
+    expect(readPythonLibraryVersion(pyproject, 'django')?.rewriteTo).toEqual([5]);
+  });
+
+  it('reads extras only when no main dependency names the library', () => {
+    const pyproject = ['[project]', 'name = "x"', 'dependencies = ["pandas>=2"]', '', '[dependency-groups]', 'oldest = ["pandas==1.5.3"]', ''].join('\n');
+    expect(readPythonLibraryVersion(pyproject, 'pandas')).toEqual({ floor: { version: [2], exclusive: false }, label: '≥2', declared: [2] });
+  });
+
+  it('floors main entries split by environment markers at the lower, with no rewrite', () => {
+    const pyproject = [
+      '[project]',
+      'name = "x"',
+      'dependencies = [',
+      '  "numpy>=1.26; python_version < \'3.13\'",',
+      '  "numpy>=2.1; python_version >= \'3.13\'",',
+      ']',
+      '',
+    ].join('\n');
+    expect(readPythonLibraryVersion(pyproject, 'numpy')).toEqual({ floor: { version: [1], exclusive: false }, label: '≥1', declared: [1] });
+  });
+
+  it('never reads a comment, a commented-out line or [build-system]', () => {
+    const pyproject = [
+      '[build-system]',
+      'requires = ["setuptools>=61", "numpy>=2.0"]',
+      '',
+      '[project]',
+      'name = "x"',
+      '# dependencies = ["numpy>=1"]',
+      'dependencies = [',
+      '  # "numpy>=1.20" was the old floor; ] and "quotes" in a comment are fine',
+      '  "numpy>=2.1",',
+      ']',
+      '',
+    ].join('\n');
+    expect(readPythonLibraryVersion(pyproject, 'numpy')?.rewriteTo).toEqual([2]);
+    expect(readPythonLibraryVersion('[build-system]\nrequires = ["numpy>=2.0"]\n', 'numpy')).toBeNull();
+  });
+
+  it('reads Poetry\'s main group as main, a quoted table name, and an || constraint', () => {
+    expect(readPythonLibraryVersion('[tool.poetry.group.main.dependencies]\ndjango = "^5.0"\n', 'django')?.rewriteTo).toEqual([5]);
+    const quoted = ['[tool.poetry.dependencies]', 'django = "^4.2 || ^5.0"', '', '[tool."acme/settings"]', 'django = "^3.0"', ''].join('\n');
+    expect(readPythonLibraryVersion(quoted, 'django')).toEqual({ floor: { version: [4], exclusive: false }, label: '≥4', declared: [4] });
   });
 
   it('does not read a similarly named package', () => {

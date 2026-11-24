@@ -274,6 +274,10 @@ describe('the manifest version a rewrite writes (pcic-1ik0.24)', () => {
     const issue = await finding(repo, isTitled('Django version mismatch'));
     expect(issue.title).toBe('Django version mismatch: instruction says 3.x, pyproject.toml uses 5.x');
     expectAdvisory(issue);
+
+    // Between the two: the group pin is not the project's version, so 4.x is stale too.
+    const between = repoWith({ 'pyproject.toml': pyproject, 'CLAUDE.md': '# Shop\n\nTarget library: Django 4.x\n' });
+    expectAdvisory(await finding(between, isTitled('Django version mismatch')));
   });
 
   it('reads an optional-dependencies entry as a claim, not as the version to write', async () => {
@@ -321,8 +325,13 @@ describe('the manifest version a rewrite writes (pcic-1ik0.24)', () => {
       'python = "^3.10"',
       '',
     ].join('\n');
-    const repo = repoWith({ 'pyproject.toml': pyproject, 'CLAUDE.md': '# Repo\n\n- Runtime: Python 3.8\n' });
-    expectAdvisory(await finding(repo, isTitled('Python version mismatch')));
+    for (const mention of ['3.8', '3.9']) {
+      // 3.9 is allowed by requires-python but not by Poetry, which also enforces its constraint.
+      const repo = repoWith({ 'pyproject.toml': pyproject, 'CLAUDE.md': `# Repo\n\n- Runtime: Python ${mention}\n` });
+      const issue = await finding(repo, isTitled('Python version mismatch'));
+      expect(issue.title).toBe(`Python version mismatch: instruction says ${mention}, pyproject.toml requires ≥3.10`);
+      expectAdvisory(issue);
+    }
   });
 
   it('reads a requires-python whose upper bound comes first', async () => {
