@@ -29,6 +29,21 @@ import { htmlCommentRanges, inRanges, indentedCodeLines } from './sample-text.js
 export const MAX_RECIPE_EDITS = 50;
 
 /**
+ * Longest line a recipe edits. A longer one (a minified blob, a hostile file) keeps its finding
+ * advisory, and every regex below only ever sees a line this long, or a frame of a few of them
+ * ({@link MAX_FRAME_LENGTH}).
+ */
+export const MAX_EDIT_LINE_LENGTH = 2000;
+
+/** Longest heading chain or lead (see {@link framingLines}) a recipe reads before it refuses. */
+const MAX_FRAME_LENGTH = 4 * MAX_EDIT_LINE_LENGTH;
+
+/** The lines of `content`, without their terminators, as {@link framingLines} reads them. */
+function splitLines(content: string): string[] {
+  return content.split('\n').map((l) => l.replace(/\r$/, ''));
+}
+
+/**
  * The lines that frame line `lineNo` (1-based): every ancestor heading above
  * it (outside fenced blocks: the nearest one, then each shallower one up to the
  * top), and up to three non-blank lines before it (or before the opening fence
@@ -37,11 +52,10 @@ export const MAX_RECIPE_EDITS = 50;
  * over a "### Build" section, changes what the line below says.
  */
 function framingLines(
-  content: string,
+  lines: readonly string[],
   lineNo: number,
   fence: ReturnType<typeof scanFencedLines>,
 ): { heading: string; lead: string } {
-  const lines = content.split('\n').map((l) => l.replace(/\r$/, ''));
   let anchor = lineNo - 1;
   if (fence[anchor]?.inFence) while (anchor > 0 && fence[anchor]?.kind !== 'open') anchor--;
   // Up to three non-blank lines back, stopping at a heading or a fenced block: a lead such as
@@ -140,7 +154,21 @@ const CONSUMER_WORDING =
  * "Inside `website/`, run ...", `npm --prefix site run build`.
  */
 const OTHER_DIRECTORY =
-  /\bcd\s+\S+\s*(?:&&|;)|\(cd\s+[^)]+\)|\b(?:inside|in)\s+`?[\w./-]+\/`?|(?:^|\s)(?:--prefix|--cwd|-C|--dir|--filter|--workspace|-w)(?=[\s=]|$)/i;
+  /\bcd\s+\S+\s*(?:&&|;)|\b(?:inside|in)\s+`?[\w./-]+\/`?|(?:^|\s)(?:--prefix|--cwd|-C|--dir|--filter|--workspace|-w)(?=[\s=]|$)/i;
+
+/** Where a subshell `(cd <dir> ...)` can start: the rest is checked by {@link runsInOtherDirectory}. */
+const SUBSHELL_CD_START = /\(cd\s[^)]/i;
+
+/**
+ * {@link OTHER_DIRECTORY}, or a subshell `(cd docs && npm run build)`. The subshell is found by hand
+ * (an opener, then any `)` after it), not with `\(cd\s+[^)]+\)`: that regex rescans to the end of
+ * the text from every `(cd` and backtracks between its two runs, quadratic on a hostile line.
+ */
+function runsInOtherDirectory(text: string): boolean {
+  if (OTHER_DIRECTORY.test(text)) return true;
+  const open = SUBSHELL_CD_START.exec(text);
+  return open !== null && text.lastIndexOf(')') > open.index + 4;
+}
 
 const ALTERNATIVE_WORDING =
   /\b(?:fall(?:\s*|-)back|alternative(?:ly)?|otherwise|instead|unavailable|not\s+installed|if\s+you\s+(?:use|prefer|have|don'?t)|windows|users?\s+(?:can|may|of|on|who))\b/i;
@@ -175,14 +203,20 @@ export function packageManagerSwapEdits(
   scriptDefined: (name: string) => boolean,
   stillOffends: (file: InstructionFile, newContent: string) => boolean,
 ): FixEdit[] | undefined {
+  // Every hit becomes exactly one edit or refuses them all, so more hits than an edit list may hold
+  // refuse up front, before the per-hit work below (quadratic in the hit count) runs.
+  if (hits.length > MAX_RECIPE_EDITS) return undefined;
   const edits: FixEdit[] = [];
   const comments = new Map<InstructionFile, Array<[number, number]>>();
   const fences = new Map<InstructionFile, ReturnType<typeof scanFencedLines>>();
+  const fileLines = new Map<InstructionFile, string[]>();
   const managers = /\b(?:npm|pnpm|yarn|bun)\b/gi;
   const ordered = [...hits].sort((a, b) =>
     a.file.path === b.file.path ? a.index - b.index : a.file.path < b.file.path ? -1 : 1,
   );
-  for (const { file, index, text } of ordered) {
+  const lineOf = new Map(ordered.map((h) => [h, lineNumberAt(h.file.content, h.index)] as const));
+  for (const hit of ordered) {
+    const { file, index, text } = hit;
     const m = /^(npm|yarn|pnpm|bun) (install|i|run)$/.exec(text);
     if (!m || m[1] === preferred) return undefined;
     let ranges = comments.get(file);
@@ -190,24 +224,28 @@ export function packageManagerSwapEdits(
     if (inRanges(ranges, index)) return undefined;
     let fence = fences.get(file);
     if (!fence) fences.set(file, (fence = scanFencedLines(file.content)));
-    const lineNo = lineNumberAt(file.content, index);
+    const lineNo = lineOf.get(hit)!;
     const fenceLine = fence[lineNo - 1];
     if (fenceLine?.inFence && !SHELL_FENCE_LANGS.has(fenceLine.lang)) return undefined;
 
     const { start, text: lineText } = lineAround(file.content, index);
+    if (lineText.length > MAX_EDIT_LINE_LENGTH) return undefined;
     if (ALTERNATIVE_WORDING.test(lineText) || CONSUMER_WORDING.test(lineText)) return undefined;
-    if (OTHER_DIRECTORY.test(lineText) || LINK_OR_URL.test(lineText)) return undefined;
+    if (runsInOtherDirectory(lineText) || LINK_OR_URL.test(lineText)) return undefined;
     // After the swap the line must not still name the old manager (`npm install && npm test`
     // would read `pnpm install && npm test`): every mention of it on the line must be a hit.
-    const onLine = ordered.filter((h) => h.file === file && lineNumberAt(file.content, h.index) === lineNo).length;
+    const onLine = ordered.filter((h) => h.file === file && lineOf.get(h) === lineNo).length;
     if ((lineText.match(new RegExp(`\\b${m[1]}\\b`, 'gi')) ?? []).length !== onLine) return undefined;
     // Every manager named on the line must be this one: `pnpm` beside `npm run` is a contrast.
     if ((lineText.match(managers) ?? []).some((name) => name.toLowerCase() !== m[1])) return undefined;
     // The same holds for the line that introduces it and the section it sits in.
-    const { heading, lead } = framingLines(file.content, lineNo, fence);
+    let lines = fileLines.get(file);
+    if (!lines) fileLines.set(file, (lines = splitLines(file.content)));
+    const { heading, lead } = framingLines(lines, lineNo, fence);
     for (const frame of [heading, lead]) {
+      if (frame.length > MAX_FRAME_LENGTH) return undefined;
       if (ALTERNATIVE_WORDING.test(frame) || LEGACY_WORDING.test(frame) || CONSUMER_WORDING.test(frame)) return undefined;
-      if (OTHER_DIRECTORY.test(frame)) return undefined;
+      if (runsInOtherDirectory(frame)) return undefined;
       // A frame that names the old manager itself ("## Using npm", "Install with npm:") means it on
       // purpose. Commands on it (a previous step, `npm install`) are not that: they are hits too.
       const words = frame.replace(/\b(?:npm|pnpm|yarn|bun)\s+(?:install|add|run|exec|dlx|i)\b/gi, '');
@@ -310,7 +348,7 @@ const LINK_OR_URL = /\]\(|:\/\/|<https?:/i;
  * the leader") is left to a human: bumping the number there would leave the
  * sentence describing the old release, or another thing entirely.
  */
-const DECLARATION_TAIL = /^(?:\+|\s+or\s+(?:later|newer|above|higher))?\s*[.,;:)*_`]*\s*(?:\||$)/i;
+const DECLARATION_TAIL = /^(?:\+|\s+or\s+(?:later|newer|above|higher))?\s*(?:[.,;:)*_`]+\s*)?(?:\||$)/i;
 
 /**
  * Edits rewriting every mention in `mentions` (one file, one finding), or
@@ -333,7 +371,10 @@ export function versionMentionEdits(
   runtime: boolean,
   stillOffends: (newContent: string) => boolean,
 ): FixEdit[] | undefined {
+  // One edit per mention or none at all, as in packageManagerSwapEdits.
+  if (mentions.length > MAX_RECIPE_EDITS) return undefined;
   const fence = scanFencedLines(file.content);
+  const lines = splitLines(file.content);
   const indented = indentedCodeLines(file.content);
   const comments = htmlCommentRanges(file.content);
   const edits: FixEdit[] = [];
@@ -342,6 +383,7 @@ export function versionMentionEdits(
     const line = lineNumberAt(file.content, mention.index);
     if (fence[line - 1]?.inFence || indented[line - 1] || inRanges(comments, mention.index)) return undefined;
     const { start, text } = lineAround(file.content, mention.index);
+    if (text.length > MAX_EDIT_LINE_LENGTH) return undefined;
     if ((text.match(new RegExp(toolRe.source, toolRe.flags)) ?? []).length !== 1) return undefined;
     if (VERSION_HISTORY_RE.test(text) || LINK_OR_URL.test(text)) return undefined;
     const before = text.slice(0, mention.index - start);
@@ -353,7 +395,8 @@ export function versionMentionEdits(
     // A library mention needs its declaring label or verb on its own line, not a cue a line above.
     if (!runtime && lead === '') return undefined;
     if (runtime && !RUNTIME_CUE_RE.test(text) && !/^(?:\+|\s+or\s+(?:later|newer|above|higher))/i.test(after)) return undefined;
-    const { heading } = framingLines(file.content, line, fence);
+    const { heading } = framingLines(lines, line, fence);
+    if (heading.length > MAX_FRAME_LENGTH) return undefined;
     if (VERSION_HEADING_RE.test(heading) || VERSION_HISTORY_RE.test(heading)) return undefined;
     edits.push({ filePath: file.path, line, find: mention.text, replace: mention.replacement });
   }
