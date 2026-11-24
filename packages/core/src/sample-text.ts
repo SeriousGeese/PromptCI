@@ -28,10 +28,15 @@ export function htmlCommentRanges(content: string): Array<[number, number]> {
   let resumeAt = 0;
   content.split('\n').forEach((line, i) => {
     if (fence[i]?.inFence !== true) {
+      // Backticks before the opener, counted as the openers advance: counting the whole prefix
+      // again at every opener was quadratic on a long line of them.
+      let ticks = 0;
+      let counted = 0;
       for (let at = line.indexOf('<!--'); at !== -1; at = line.indexOf('<!--', at + 4)) {
         const opener = lineStart + at;
         if (opener < resumeAt) continue; // inside the comment already open
-        if ((line.slice(0, at).match(/`/g)?.length ?? 0) % 2 === 1) continue; // inside a code span
+        for (; counted < at; counted++) if (line.charCodeAt(counted) === 96) ticks++;
+        if (ticks % 2 === 1) continue; // inside a code span
         const close = content.indexOf('-->', opener + 4);
         resumeAt = close === -1 ? content.length : close + 3;
         ranges.push([opener, resumeAt]);

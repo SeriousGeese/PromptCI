@@ -92,9 +92,17 @@ const COMPARATOR_RE =
  */
 export type Dialect = 'npm' | 'pep440';
 
+/**
+ * A spec longer than this is not read (null, so it refuses a rewrite like any spec this cannot
+ * read). Real ranges are a few dozen characters; the cap keeps {@link COMPARATOR_RE}, whose
+ * optional groups backtrack quadratically on a long run of digits or dots, off a hostile manifest's
+ * unbounded string.
+ */
+export const MAX_VERSION_SPEC_LENGTH = 256;
+
 export function parseVersionSpec(spec: string, precision: 1 | 2, dialect: Dialect): Declaration | null {
   const trimmed = spec.trim();
-  if (trimmed === '') return null;
+  if (trimmed === '' || trimmed.length > MAX_VERSION_SPEC_LENGTH) return null;
   let lowest: Declaration | null = null;
   for (const alternative of trimmed.split(/\|\|?/)) {
     const normalized = alternative
@@ -259,16 +267,82 @@ function blankComments(content: string): string {
   return out;
 }
 
-/** Top-level tables of a TOML file by name, with body offsets. Content before any header is table "". */
-function tomlTables(content: string): Table[] {
+/** The span of `spans` (in order, disjoint) holding `index`, found by binary search. */
+function spanAt<T>(spans: readonly T[], index: number, start: (s: T) => number, end: (s: T) => number): T | undefined {
+  let lo = 0;
+  let hi = spans.length - 1;
+  let found: T | undefined;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (start(spans[mid]!) <= index) {
+      found = spans[mid];
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  return found !== undefined && index < end(found) ? found : undefined;
+}
+
+/** A character that ends a line for a multiline `^`/`$`: \n, \r, U+2028, U+2029. */
+function isLineTerminator(code: number): boolean {
+  return code === 10 || code === 13 || code === 0x2028 || code === 0x2029;
+}
+
+/** A bare-key character of a table header, or the whitespace around a dotted key's parts. */
+function isHeaderKeyChar(ch: string): boolean {
+  return /^[A-Za-z0-9_.\- \t]$/.test(ch);
+}
+
+/**
+ * The name of the table a TOML header line opens (`[tool.poetry]`, `[[tool.x]]`, `[ "a.b" . c ]`),
+ * whitespace and quotes removed, or null when the line is not a header. A hand-written scan, linear
+ * in the line: the regex it replaces backtracked cubically on a `[` followed by thousands of spaces
+ * and no `]`, so a hostile pyproject.toml hung a scan. It accepts what that regex did: optional
+ * indentation, `[` or `[[`, a non-empty run of bare-key characters, spaces, tabs and quoted keys
+ * (a quoted key may hold `]`), then `]` or `]]` and only trailing spaces or tabs.
+ */
+function tomlHeaderName(line: string): string | null {
+  let i = 0;
+  while (line[i] === ' ' || line[i] === '\t') i++;
+  if (line[i] !== '[') return null;
+  i++;
+  if (line[i] === '[') i++;
+  const nameStart = i;
+  while (i < line.length && line[i] !== ']') {
+    const ch = line[i]!;
+    if (ch === '"' || ch === "'") {
+      const close = line.indexOf(ch, i + 1);
+      if (close === -1) return null;
+      i = close + 1;
+    } else if (isHeaderKeyChar(ch)) {
+      i++;
+    } else {
+      return null;
+    }
+  }
+  if (i >= line.length || i === nameStart) return null;
+  const name = line.slice(nameStart, i).replace(/["'\s]/g, '');
+  i++;
+  if (line[i] === ']') i++;
+  while (line[i] === ' ' || line[i] === '\t') i++;
+  return i === line.length ? name : null;
+}
+
+/** Top-level tables of a TOML file by name, with body offsets. Content before any header is table "". Exported for tests. */
+export function tomlTables(content: string): Table[] {
   const tables: Table[] = [];
-  const header = /^[ \t]*\[\[?[ \t]*((?:[A-Za-z0-9_.\- \t]|"[^"\n]*"|'[^'\n]*')+?)[ \t]*\]\]?[ \t]*$/gm;
   let current: Table = { name: '', start: 0, end: content.length };
-  let m: RegExpExecArray | null;
-  while ((m = header.exec(content)) !== null) {
-    current.end = m.index;
-    tables.push(current);
-    current = { name: m[1]!.replace(/["'\s]/g, ''), start: m.index + m[0].length, end: content.length };
+  for (let lineStart = 0; lineStart <= content.length; ) {
+    let lineEnd = lineStart;
+    while (lineEnd < content.length && !isLineTerminator(content.charCodeAt(lineEnd))) lineEnd++;
+    const name = tomlHeaderName(content.slice(lineStart, lineEnd));
+    if (name !== null) {
+      current.end = lineStart;
+      tables.push(current);
+      current = { name, start: lineEnd, end: content.length };
+    }
+    lineStart = lineEnd + 1;
   }
   tables.push(current);
   return tables;
@@ -303,10 +377,14 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-/** The `python` or library key of a Poetry table line: a string, or an inline table's `version`. */
+/**
+ * The `python` or library key of a Poetry table line: a string, or an inline table's `version`.
+ * The inline table stops at every character the `m` flag reads as a line end, not only "\n": a
+ * `^` after each of thousands of "\r" would otherwise rescan to the end of the file.
+ */
 function poetryKeyRe(name: string): RegExp {
   return new RegExp(
-    `^[ \\t]*["']?${escapeRegExp(name)}["']?[ \\t]*=[ \\t]*(?:["']([^"']*)["']|(\\{[^\\n}]*\\}))`,
+    `^[ \\t]*["']?${escapeRegExp(name)}["']?[ \\t]*=[ \\t]*(?:["']([^"']*)["']|(\\{[^\\r\\n\\u2028\\u2029}]*\\}))`,
     'gim',
   );
 }
@@ -360,10 +438,17 @@ export function readPythonLibraryVersion(pyprojectContent: string, library: stri
     }
     if (isPoetryMainTable(table.name)) mainSpans.push([table.start, table.end]);
   }
-  const inMain = (index: number) => mainSpans.some(([s, e]) => index >= s && index < e);
+  // Both lists are in file order and disjoint, so a lookup is a binary search: a linear one per
+  // match was quadratic on a hostile file of thousands of tables, each naming the library.
+  const inMain = (index: number) => spanAt(mainSpans, index, (s) => s[0], (s) => s[1]) !== undefined;
+  // Tested once per table: a header name can be as long as the file.
+  const extraTables = new Map<Table, boolean>();
   const inExtra = (index: number) => {
-    const table = tables.find((t) => index >= t.start && index < t.end);
-    return table !== undefined && EXTRA_TABLE_RE.test(table.name);
+    const table = spanAt(tables, index, (t) => t.start, (t) => t.end);
+    if (table === undefined) return false;
+    let extra = extraTables.get(table);
+    if (extra === undefined) extraTables.set(table, (extra = EXTRA_TABLE_RE.test(table.name)));
+    return extra;
   };
   const main: Read[] = [];
   const extras: Read[] = [];
@@ -379,7 +464,9 @@ export function readPythonLibraryVersion(pyprojectContent: string, library: stri
     sort(m.index, declaration(spec, 'pep440'), optional);
   }
   // PEP 508 strings: "pandas>=2.1", "pandas[performance] (>=2.1,<3) ; python_version >= '3.9'".
-  const pep508 = new RegExp(`["']${escapeRegExp(library)}(?:\\[[^\\]"']*\\])?[ \\t]*\\(?[ \\t]*([~^=<>!][^"';)]*)`, 'gi');
+  // The whitespace after the "(" is inside the optional group: two `[ \t]*` side by side would
+  // backtrack quadratically on a long run of spaces.
+  const pep508 = new RegExp(`["']${escapeRegExp(library)}(?:\\[[^\\]"']*\\])?[ \\t]*(?:\\([ \\t]*)?([~^=<>!][^"';)]*)`, 'gi');
   for (let m = pep508.exec(content); m !== null; m = pep508.exec(content)) {
     sort(m.index, declaration(m[1], 'pep440'));
   }

@@ -144,14 +144,16 @@ function checkPythonVersionMismatch(
   // Match "Python X.Y" or "python X.Y" in instruction files (prose mentions)
   const PYTHON_VERSION_RE = /\bPython\s+(\d+)\.(\d+)\b/gi;
 
+  const mayPlanRecipe = recipeBudget();
   for (const file of files) {
     let m: RegExpExecArray | null;
     const re = new RegExp(PYTHON_VERSION_RE.source, PYTHON_VERSION_RE.flags);
+    const negated = negationTester(file.content);
     while ((m = re.exec(file.content)) !== null) {
       const instrMajor = parseInt(m[1]!, 10);
       const instrMinor = parseInt(m[2]!, 10);
 
-      if (isNegationContext(file.content, m.index)) continue;
+      if (negated(m.index)) continue;
 
       // Only flag when the instruction version is below the manifest minimum
       if (!isBelowFloor([instrMajor, instrMinor], reading.floor)) continue;
@@ -162,15 +164,15 @@ function checkPythonVersionMismatch(
       reported.add(dedupeKey);
 
       // pcic-k1t3.12: every mention of this version in the file, as this loop flags them.
-      const mentionsOf = (content: string) =>
-        [...content.matchAll(PYTHON_VERSION_RE)].filter(
-          (mm) =>
-            !isNegationContext(content, mm.index) &&
-            `${parseInt(mm[1]!, 10)}.${parseInt(mm[2]!, 10)}` === instrVersion,
+      const mentionsOf = (content: string) => {
+        const negatedIn = content === file.content ? negated : negationTester(content);
+        return [...content.matchAll(PYTHON_VERSION_RE)].filter(
+          (mm) => !negatedIn(mm.index) && `${parseInt(mm[1]!, 10)}.${parseInt(mm[2]!, 10)}` === instrVersion,
         );
+      };
       // pcic-1ik0.24: no rewrite unless the manifest settles one version (`rewriteTo`).
       const fixEdits =
-        rewriteTo === undefined
+        rewriteTo === undefined || !mayPlanRecipe(file)
           ? undefined
           : versionMentionEdits(
               file,
@@ -233,6 +235,25 @@ function displayLibraryName(library: TrackedPythonLibrary): string {
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * How many version-mismatch findings in one file get a rewrite planned, per check. Planning
+ * re-reads the whole file, and the rewritten copy, for each finding, so a hostile file naming
+ * thousands of distinct stale versions made a scan quadratic; past the budget a finding stays
+ * advisory (no `fixEdits`), as it does when any mention needs a judgement call.
+ */
+const MAX_RECIPE_PLANS_PER_FILE = 10;
+
+/** A per-file counter for {@link MAX_RECIPE_PLANS_PER_FILE}: true while `file` has budget left. */
+function recipeBudget(): (file: InstructionFile) => boolean {
+  const used = new Map<InstructionFile, number>();
+  return (file) => {
+    const count = used.get(file) ?? 0;
+    if (count >= MAX_RECIPE_PLANS_PER_FILE) return false;
+    used.set(file, count + 1);
+    return true;
+  };
 }
 
 /**
@@ -321,6 +342,7 @@ function checkLibraryVersionMismatch(
   const issues: PromptCiIssue[] = [];
   const reported = new Set<string>();
 
+  const mayPlanRecipe = recipeBudget();
   for (const [library, reading] of manifestVersions) {
     const manifestMajor = reading.declared[0]!;
     const displayName = displayLibraryName(library);
@@ -345,9 +367,10 @@ function checkLibraryVersionMismatch(
         if (reported.has(dedupeKey)) continue;
         reported.add(dedupeKey);
 
-        const fixEdits = reading.rewriteTo
-          ? libraryMajorEdits(file, libraryMentionRe, instructionVersion, reading.rewriteTo[0]!, hasCompatibilityIntent)
-          : undefined;
+        const fixEdits =
+          reading.rewriteTo && mayPlanRecipe(file)
+            ? libraryMajorEdits(file, libraryMentionRe, instructionVersion, reading.rewriteTo[0]!, hasCompatibilityIntent)
+            : undefined;
 
         issues.push({
           id: issueId(`library-version:${fileIdPath(file)}:${library}:${instructionVersion}`),
@@ -427,6 +450,7 @@ function checkJsLibraryVersionMismatch(
   const issues: PromptCiIssue[] = [];
   const reported = new Set<string>();
 
+  const mayPlanRecipe = recipeBudget();
   for (const [library, reading] of manifestVersions) {
     const manifestMajor = reading.declared[0]!;
     const displayName = JS_DISPLAY_NAMES[library];
@@ -451,9 +475,10 @@ function checkJsLibraryVersionMismatch(
         if (reported.has(dedupeKey)) continue;
         reported.add(dedupeKey);
 
-        const fixEdits = reading.rewriteTo
-          ? libraryMajorEdits(file, libraryMentionRe, instructionVersion, reading.rewriteTo[0]!, hasJsVersionIntent)
-          : undefined;
+        const fixEdits =
+          reading.rewriteTo && mayPlanRecipe(file)
+            ? libraryMajorEdits(file, libraryMentionRe, instructionVersion, reading.rewriteTo[0]!, hasJsVersionIntent)
+            : undefined;
 
         issues.push({
           id: issueId(`js-library-version:${fileIdPath(file)}:${library}:${instructionVersion}`),
@@ -493,15 +518,44 @@ function hasJsVersionIntent(content: string, index: number): boolean {
 }
 
 /**
- * Returns true when a line around the match position reads as a negation or
+ * Returns true when a line (the one holding a match) reads as a negation or
  * advisory non-use (e.g. "do not use npm", "avoid npm", "don't use npm").
  * Used to avoid false-positives on correct guidance.
  */
-function isNegationContext(content: string, matchIndex: number): boolean {
-  const lineStart = content.lastIndexOf('\n', matchIndex - 1) + 1;
-  const lineEnd = content.indexOf('\n', matchIndex);
-  const line = content.slice(lineStart, lineEnd === -1 ? undefined : lineEnd);
+function isNegationContext(line: string): boolean {
   return /\b(?:do\s+not|don'?t|avoid|never|instead\s+of|not\s+use|refrain\s+from)\b/i.test(line);
+}
+
+/**
+ * `test` applied to the line (without its "\n") holding an offset of `content`, each line tested
+ * at most once. Testing the line afresh at every match was quadratic on a long line holding
+ * thousands of matches, the shape a hostile instruction file takes.
+ */
+function lineTester(content: string, test: (line: string) => boolean): (index: number) => boolean {
+  const starts = [0];
+  for (let at = content.indexOf('\n'); at !== -1; at = content.indexOf('\n', at + 1)) starts.push(at + 1);
+  const memo = new Map<number, boolean>();
+  return (index) => {
+    let lo = 0;
+    let hi = starts.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (starts[mid]! <= index) lo = mid;
+      else hi = mid - 1;
+    }
+    let result = memo.get(lo);
+    if (result === undefined) {
+      const end = lo + 1 < starts.length ? starts[lo + 1]! - 1 : content.length;
+      result = test(content.slice(starts[lo], end));
+      memo.set(lo, result);
+    }
+    return result;
+  };
+}
+
+/** {@link isNegationContext} for the line holding each offset of `content`. */
+function negationTester(content: string): (index: number) => boolean {
+  return lineTester(content, isNegationContext);
 }
 
 /**
@@ -527,16 +581,15 @@ function checkPackageManagerMismatch(context: RepoContext): PromptCiIssue | null
   /** Every command-like mention of another manager in `content` that counts against it. */
   const hitsIn = (file: InstructionFile, content: string): PackageManagerHit[] => {
     const hits: PackageManagerHit[] = [];
+    const negated = negationTester(content);
+    const installsPnpm = lineTester(content, (line) => /\bnpm\s+(?:install|i)\s+-g\s+pnpm\b/i.test(line));
     for (const alt of alternatives) {
       // Match commands like "npm install", "yarn add", "bun run"
       const re = new RegExp(`\\b${alt.name}\\s+(?:install|add|run|exec|dlx|i)\\b`, 'gi');
       let match: RegExpExecArray | null;
       while ((match = re.exec(content)) !== null) {
-        const lineStart = content.lastIndexOf('\n', match.index - 1) + 1;
-        const lineEnd = content.indexOf('\n', match.index);
-        const line = content.slice(lineStart, lineEnd === -1 ? undefined : lineEnd);
-        if (preferred === 'pnpm' && /\bnpm\s+(?:install|i)\s+-g\s+pnpm\b/i.test(line)) continue;
-        if (!isNegationContext(content, match.index)) hits.push({ file, index: match.index, text: match[0] });
+        if (preferred === 'pnpm' && installsPnpm(match.index)) continue;
+        if (!negated(match.index)) hits.push({ file, index: match.index, text: match[0] });
       }
     }
     return hits;
@@ -767,26 +820,30 @@ function checkNodeVersionMismatch(context: RepoContext): PromptCiIssue[] {
 
   const NODE_VERSION_RE = /\bNode(?:\.js)?\s*(?:v)?(\d+)\b/gi;
 
+  const mayPlanRecipe = recipeBudget();
   for (const file of files) {
     let match: RegExpExecArray | null;
     const re = new RegExp(NODE_VERSION_RE.source, NODE_VERSION_RE.flags);
+    const negated = negationTester(file.content);
     while ((match = re.exec(file.content)) !== null) {
       const instrVersion = parseInt(match[1]!, 10);
       // MF3: no sibling check fires on a negated mention ("Do not use Node
       // 14") — this one did, since it had no negation-context guard at all.
-      if (isNegationContext(file.content, match.index)) continue;
+      if (negated(match.index)) continue;
       if (isBelowFloor([instrVersion], reading.floor)) {
         const dedupeKey = `${file.path}:${instrVersion}`;
         if (reported.has(dedupeKey)) continue;
         reported.add(dedupeKey);
 
         // pcic-k1t3.12: every mention of this version in the file, as this loop flags them.
-        const mentionsOf = (content: string) =>
-          [...content.matchAll(NODE_VERSION_RE)].filter(
-            (mm) => !isNegationContext(content, mm.index) && parseInt(mm[1]!, 10) === instrVersion,
+        const mentionsOf = (content: string) => {
+          const negatedIn = content === file.content ? negated : negationTester(content);
+          return [...content.matchAll(NODE_VERSION_RE)].filter(
+            (mm) => !negatedIn(mm.index) && parseInt(mm[1]!, 10) === instrVersion,
           );
+        };
         const fixEdits =
-          rewriteTo === undefined
+          rewriteTo === undefined || !mayPlanRecipe(file)
             ? undefined
             : versionMentionEdits(
                 file,
