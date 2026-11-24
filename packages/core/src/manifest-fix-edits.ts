@@ -17,7 +17,7 @@
  */
 
 import type { FixEdit, InstructionFile } from './types.js';
-import { applyLineEditsToText, lineNumberAt } from './line-edits.js';
+import { applyLineEditsToText } from './line-edits.js';
 import { scanFencedLines } from './markdown-fences.js';
 import { htmlCommentRanges, inRanges, indentedCodeLines } from './sample-text.js';
 
@@ -35,47 +35,132 @@ export const MAX_RECIPE_EDITS = 50;
  */
 export const MAX_EDIT_LINE_LENGTH = 2000;
 
-/** Longest heading chain or lead (see {@link framingLines}) a recipe reads before it refuses. */
+/** Longest heading chain or lead (see {@link LineIndex.framing}) a recipe reads before it refuses. */
 const MAX_FRAME_LENGTH = 4 * MAX_EDIT_LINE_LENGTH;
 
-/** The lines of `content`, without their terminators, as {@link framingLines} reads them. */
-function splitLines(content: string): string[] {
-  return content.split('\n').map((l) => l.replace(/\r$/, ''));
+/**
+ * Line facts the planners read for every hit or mention in one file, computed once per file: a
+ * line number by binary search, and each line's frame (see {@link LineIndex.framing}) by following
+ * precomputed links. Walking back through the file for every hit, as this used to, was quadratic
+ * in a hostile file of a few hundred mentions spread over hundreds of thousands of lines.
+ */
+export interface LineIndex {
+  /** 1-based line number of character `offset`, as `lineNumberAt` (line-edits.ts) counts it. */
+  lineOf(offset: number): number;
+  /**
+   * The lines that frame line `lineNo` (1-based): every ancestor heading above
+   * it (outside fenced blocks: the nearest one, then each shallower one up to the
+   * top), and up to three non-blank lines before it (or before the opening fence
+   * when it is inside a fenced block), back to the nearest heading. "If pnpm is
+   * not available, use npm:" above a fence, or a "## Legacy npm workflow" heading
+   * over a "### Build" section, changes what the line below says.
+   */
+  framing(lineNo: number): { heading: string; lead: string };
+}
+
+const FRAME_HEADING_RE = /^\s{0,3}(#{1,6})\s/;
+
+/** Exported for tests. */
+export function indexLines(content: string, fence: ReturnType<typeof scanFencedLines>): LineIndex {
+  const lines = content.split('\n').map((l) => l.replace(/\r$/, ''));
+  const starts = [0];
+  for (let at = content.indexOf('\n'); at !== -1; at = content.indexOf('\n', at + 1)) starts.push(at + 1);
+  const count = lines.length;
+  /** For a fenced line, the line its fence opened on (0 when no opener precedes it). */
+  const openOf = new Int32Array(count);
+  /** A fenced line or a heading: where the walk for lead lines stops. */
+  const stopsLead = new Uint8Array(count);
+  /** The nearest earlier line that is non-blank or stops the lead walk, or -1. */
+  const prevLead = new Int32Array(count);
+  /** The nearest earlier heading outside a fence, or -1. */
+  const nearestHeading = new Int32Array(count);
+  /** For a heading, the nearest earlier heading of a shallower level, or -1. */
+  const parentHeading = new Int32Array(count).fill(-1);
+  const stack: Array<{ level: number; line: number }> = [];
+  let lastOpen = 0;
+  let lastLead = -1;
+  for (let i = 0; i < count; i++) {
+    if (fence[i]?.kind === 'open') lastOpen = i;
+    openOf[i] = lastOpen;
+    prevLead[i] = lastLead;
+    nearestHeading[i] = stack.length > 0 ? stack[stack.length - 1]!.line : -1;
+    const inFence = fence[i]?.inFence === true;
+    const heading = inFence ? null : FRAME_HEADING_RE.exec(lines[i]!);
+    if (inFence || heading) stopsLead[i] = 1;
+    if (stopsLead[i] || lines[i]!.trim() !== '') lastLead = i;
+    if (heading) {
+      const level = heading[1]!.length;
+      while (stack.length > 0 && stack[stack.length - 1]!.level >= level) stack.pop();
+      parentHeading[i] = stack.length > 0 ? stack[stack.length - 1]!.line : -1;
+      stack.push({ level, line: i });
+    }
+  }
+  return {
+    lineOf(offset) {
+      let lo = 0;
+      let hi = starts.length - 1;
+      while (lo < hi) {
+        const mid = (lo + hi + 1) >> 1;
+        if (starts[mid]! <= offset) lo = mid;
+        else hi = mid - 1;
+      }
+      return lo + 1;
+    },
+    framing(lineNo) {
+      let anchor = lineNo - 1;
+      if (fence[anchor]?.inFence) anchor = openOf[anchor]!;
+      // Up to three non-blank lines back, stopping at a heading or a fenced block: a lead such as
+      // "Then:" carries no meaning of its own, the paragraph above it may ("build with npm").
+      const leads: string[] = [];
+      for (let i = prevLead[anchor]!; i >= 0 && leads.length < 3 && !stopsLead[i]; i = prevLead[i]!) leads.push(lines[i]!);
+      const headings: string[] = [];
+      for (let i = nearestHeading[anchor]!; i >= 0; i = parentHeading[i]!) headings.push(lines[i]!);
+      return { heading: headings.join('\n'), lead: leads.join('\n') };
+    },
+  };
 }
 
 /**
- * The lines that frame line `lineNo` (1-based): every ancestor heading above
- * it (outside fenced blocks: the nearest one, then each shallower one up to the
- * top), and up to three non-blank lines before it (or before the opening fence
- * when it is inside a fenced block), back to the nearest heading. "If pnpm is
- * not available, use npm:" above a fence, or a "## Legacy npm workflow" heading
- * over a "### Build" section, changes what the line below says.
+ * What the planners read about one file (its fences, indented code lines, HTML comments and line
+ * index), each computed on first use and kept while the file's content is unchanged. A file can
+ * carry a finding per stale version and per check; recomputing these for every one of them was
+ * most of what a long hostile file cost.
  */
-function framingLines(
-  lines: readonly string[],
-  lineNo: number,
-  fence: ReturnType<typeof scanFencedLines>,
-): { heading: string; lead: string } {
-  let anchor = lineNo - 1;
-  if (fence[anchor]?.inFence) while (anchor > 0 && fence[anchor]?.kind !== 'open') anchor--;
-  // Up to three non-blank lines back, stopping at a heading or a fenced block: a lead such as
-  // "Then:" carries no meaning of its own, the paragraph above it may ("build with npm").
-  const leads: string[] = [];
-  for (let i = anchor - 1; i >= 0 && leads.length < 3; i--) {
-    if (fence[i]?.inFence || /^\s{0,3}#{1,6}\s/.test(lines[i]!)) break;
-    if (lines[i]!.trim() !== '') leads.push(lines[i]!);
+class FileFacts {
+  private fenceLines: ReturnType<typeof scanFencedLines> | undefined;
+  private indentedLines: boolean[] | undefined;
+  private commentRanges: Array<[number, number]> | undefined;
+  private lineIndex: LineIndex | undefined;
+
+  constructor(readonly content: string) {}
+
+  get fence(): ReturnType<typeof scanFencedLines> {
+    if (this.fenceLines === undefined) this.fenceLines = scanFencedLines(this.content);
+    return this.fenceLines;
   }
-  const lead = leads.join('\n');
-  const headings: string[] = [];
-  let level = 7;
-  for (let i = anchor - 1; i >= 0 && level > 1; i--) {
-    const h = fence[i]?.inFence ? null : /^\s{0,3}(#{1,6})\s/.exec(lines[i]!);
-    if (h && h[1]!.length < level) {
-      level = h[1]!.length;
-      headings.push(lines[i]!);
-    }
+
+  get indented(): boolean[] {
+    if (this.indentedLines === undefined) this.indentedLines = indentedCodeLines(this.content);
+    return this.indentedLines;
   }
-  return { heading: headings.join('\n'), lead };
+
+  get comments(): Array<[number, number]> {
+    if (this.commentRanges === undefined) this.commentRanges = htmlCommentRanges(this.content);
+    return this.commentRanges;
+  }
+
+  get index(): LineIndex {
+    if (this.lineIndex === undefined) this.lineIndex = indexLines(this.content, this.fence);
+    return this.lineIndex;
+  }
+}
+
+const FILE_FACTS = new WeakMap<InstructionFile, FileFacts>();
+
+function factsOf(file: InstructionFile): FileFacts {
+  let facts = FILE_FACTS.get(file);
+  if (facts === undefined || facts.content !== file.content) FILE_FACTS.set(file, (facts = new FileFacts(file.content)));
+  return facts;
 }
 
 /** The text of the line holding `offset`, without its terminator, and where it starts. */
@@ -207,25 +292,19 @@ export function packageManagerSwapEdits(
   // refuse up front, before the per-hit work below (quadratic in the hit count) runs.
   if (hits.length > MAX_RECIPE_EDITS) return undefined;
   const edits: FixEdit[] = [];
-  const comments = new Map<InstructionFile, Array<[number, number]>>();
-  const fences = new Map<InstructionFile, ReturnType<typeof scanFencedLines>>();
-  const fileLines = new Map<InstructionFile, string[]>();
   const managers = /\b(?:npm|pnpm|yarn|bun)\b/gi;
   const ordered = [...hits].sort((a, b) =>
     a.file.path === b.file.path ? a.index - b.index : a.file.path < b.file.path ? -1 : 1,
   );
-  const lineOf = new Map(ordered.map((h) => [h, lineNumberAt(h.file.content, h.index)] as const));
+  const lineOf = new Map(ordered.map((h) => [h, factsOf(h.file).index.lineOf(h.index)] as const));
   for (const hit of ordered) {
     const { file, index, text } = hit;
     const m = /^(npm|yarn|pnpm|bun) (install|i|run)$/.exec(text);
     if (!m || m[1] === preferred) return undefined;
-    let ranges = comments.get(file);
-    if (!ranges) comments.set(file, (ranges = htmlCommentRanges(file.content)));
-    if (inRanges(ranges, index)) return undefined;
-    let fence = fences.get(file);
-    if (!fence) fences.set(file, (fence = scanFencedLines(file.content)));
+    const facts = factsOf(file);
+    if (inRanges(facts.comments, index)) return undefined;
     const lineNo = lineOf.get(hit)!;
-    const fenceLine = fence[lineNo - 1];
+    const fenceLine = facts.fence[lineNo - 1];
     if (fenceLine?.inFence && !SHELL_FENCE_LANGS.has(fenceLine.lang)) return undefined;
 
     const { start, text: lineText } = lineAround(file.content, index);
@@ -239,9 +318,7 @@ export function packageManagerSwapEdits(
     // Every manager named on the line must be this one: `pnpm` beside `npm run` is a contrast.
     if ((lineText.match(managers) ?? []).some((name) => name.toLowerCase() !== m[1])) return undefined;
     // The same holds for the line that introduces it and the section it sits in.
-    let lines = fileLines.get(file);
-    if (!lines) fileLines.set(file, (lines = splitLines(file.content)));
-    const { heading, lead } = framingLines(lines, lineNo, fence);
+    const { heading, lead } = facts.index.framing(lineNo);
     for (const frame of [heading, lead]) {
       if (frame.length > MAX_FRAME_LENGTH) return undefined;
       if (ALTERNATIVE_WORDING.test(frame) || LEGACY_WORDING.test(frame) || CONSUMER_WORDING.test(frame)) return undefined;
@@ -373,14 +450,11 @@ export function versionMentionEdits(
 ): FixEdit[] | undefined {
   // One edit per mention or none at all, as in packageManagerSwapEdits.
   if (mentions.length > MAX_RECIPE_EDITS) return undefined;
-  const fence = scanFencedLines(file.content);
-  const lines = splitLines(file.content);
-  const indented = indentedCodeLines(file.content);
-  const comments = htmlCommentRanges(file.content);
+  const { fence, index, indented, comments } = factsOf(file);
   const edits: FixEdit[] = [];
   for (const mention of [...mentions].sort((a, b) => a.index - b.index)) {
     if (mention.replacement === undefined || mention.text.includes('\n')) return undefined;
-    const line = lineNumberAt(file.content, mention.index);
+    const line = index.lineOf(mention.index);
     if (fence[line - 1]?.inFence || indented[line - 1] || inRanges(comments, mention.index)) return undefined;
     const { start, text } = lineAround(file.content, mention.index);
     if (text.length > MAX_EDIT_LINE_LENGTH) return undefined;
@@ -395,7 +469,7 @@ export function versionMentionEdits(
     // A library mention needs its declaring label or verb on its own line, not a cue a line above.
     if (!runtime && lead === '') return undefined;
     if (runtime && !RUNTIME_CUE_RE.test(text) && !/^(?:\+|\s+or\s+(?:later|newer|above|higher))/i.test(after)) return undefined;
-    const { heading } = framingLines(lines, line, fence);
+    const { heading } = index.framing(line);
     if (heading.length > MAX_FRAME_LENGTH) return undefined;
     if (VERSION_HEADING_RE.test(heading) || VERSION_HISTORY_RE.test(heading)) return undefined;
     edits.push({ filePath: file.path, line, find: mention.text, replace: mention.replacement });

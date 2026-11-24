@@ -377,10 +377,14 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-/** The `python` or library key of a Poetry table line: a string, or an inline table's `version`. */
+/**
+ * The `python` or library key of a Poetry table line: a string, or an inline table's `version`.
+ * The inline table stops at every character the `m` flag reads as a line end, not only "\n": a
+ * `^` after each of thousands of "\r" would otherwise rescan to the end of the file.
+ */
 function poetryKeyRe(name: string): RegExp {
   return new RegExp(
-    `^[ \\t]*["']?${escapeRegExp(name)}["']?[ \\t]*=[ \\t]*(?:["']([^"']*)["']|(\\{[^\\n}]*\\}))`,
+    `^[ \\t]*["']?${escapeRegExp(name)}["']?[ \\t]*=[ \\t]*(?:["']([^"']*)["']|(\\{[^\\r\\n\\u2028\\u2029}]*\\}))`,
     'gim',
   );
 }
@@ -437,9 +441,14 @@ export function readPythonLibraryVersion(pyprojectContent: string, library: stri
   // Both lists are in file order and disjoint, so a lookup is a binary search: a linear one per
   // match was quadratic on a hostile file of thousands of tables, each naming the library.
   const inMain = (index: number) => spanAt(mainSpans, index, (s) => s[0], (s) => s[1]) !== undefined;
+  // Tested once per table: a header name can be as long as the file.
+  const extraTables = new Map<Table, boolean>();
   const inExtra = (index: number) => {
     const table = spanAt(tables, index, (t) => t.start, (t) => t.end);
-    return table !== undefined && EXTRA_TABLE_RE.test(table.name);
+    if (table === undefined) return false;
+    let extra = extraTables.get(table);
+    if (extra === undefined) extraTables.set(table, (extra = EXTRA_TABLE_RE.test(table.name)));
+    return extra;
   };
   const main: Read[] = [];
   const extras: Read[] = [];

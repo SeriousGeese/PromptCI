@@ -21,9 +21,13 @@ import {
 import {
   MAX_EDIT_LINE_LENGTH,
   MAX_RECIPE_EDITS,
+  indexLines,
   packageManagerSwapEdits,
   versionMentionEdits,
 } from '../src/manifest-fix-edits.js';
+import { lineNumberAt } from '../src/line-edits.js';
+import { scanFencedLines } from '../src/markdown-fences.js';
+import { htmlCommentRanges } from '../src/sample-text.js';
 import type { PackageManagerHit } from '../src/manifest-fix-edits.js';
 import { detectManifestConsistency } from '../src/manifest-consistency.js';
 import type { RepoContext } from '../src/repo-context.js';
@@ -154,8 +158,30 @@ describe('pyproject.toml dependency strings', () => {
   });
 
   it('thousands of tables each naming the library: linear time', () => {
+    // 400 KB of real work, so a looser budget than the single-line cases.
     const content = '[a]\n"pandas>=1"\n'.repeat(20_000) + '[project]\ndependencies = ["pandas>=2"]\n';
-    expect(quick(() => readPythonLibraryVersion(content, 'pandas'))?.rewriteTo).toEqual([2]);
+    expect(quick(() => readPythonLibraryVersion(content, 'pandas'), 250)?.rewriteTo).toEqual([2]);
+  });
+
+  it('a very long extras header over many entries: linear time', () => {
+    const content = '[tool.poetry.group.' + 'a'.repeat(200_000) + ']\n' + '"pandas>=1" '.repeat(20_000);
+    quick(() => readPythonLibraryVersion(content, 'pandas'), 250);
+  });
+
+  it.each([
+    ['python, no table', 'python={\r'.repeat(55_000), 'python'],
+    ['a library, no table', 'pandas={\r'.repeat(55_000), 'pandas'],
+    ['a library under Poetry', '[tool.poetry.dependencies]\n' + 'pandas={\r'.repeat(55_000), 'pandas'],
+    ['python under U+2028', 'python={\u2028'.repeat(55_000), 'python'],
+  ])('unclosed inline tables on "\\r"-separated lines (%s): linear time', (_label, content, key) => {
+    if (key === 'python') expect(quick(() => readPythonVersion(content))).toBeNull();
+    else expect(quick(() => readPythonLibraryVersion(content, key))).toBeNull();
+  });
+
+  it('a Poetry inline table still reads, with CRLF line ends', () => {
+    const content = '[tool.poetry.dependencies]\r\npython = {version = "^3.11"}\r\npandas = { version = "^2.1" }\r\n';
+    expect(readPythonVersion(content)?.rewriteTo).toEqual([3, 11]);
+    expect(readPythonLibraryVersion(content, 'pandas')?.rewriteTo).toEqual([2]);
   });
 
   it('still reads "pandas (>=2.1)" with spaces around the paren', () => {
@@ -196,6 +222,15 @@ describe('version-mention edits', () => {
     expect(quick(() => nodeEdits('Requires Node.js 18' + spaces(200_000) + 'x'))).toBeUndefined();
   });
 
+  it('fifty mentions far apart in a long file: linear time', () => {
+    const content = ('Requires Node.js 18+\n' + '\n'.repeat(10_000)).repeat(MAX_RECIPE_EDITS);
+    const mentions = [...content.matchAll(/Node\.js 18/g)].map((m) => ({ index: m.index, text: m[0], replacement: 'Node.js 22' }));
+    // Half a million lines: the budget covers the linear passes over them, not a walk per mention.
+    expect(quick(() => versionMentionEdits(fileOf(content), mentions, NODE_RE, true, () => false), 1000)).toHaveLength(
+      MAX_RECIPE_EDITS,
+    );
+  });
+
   it('more mentions than an edit list holds refuse up front', () => {
     const content = 'Requires Node.js 18+\n'.repeat(20_000);
     const mentions = Array.from({ length: 20_000 }, (_, i) => ({
@@ -207,6 +242,51 @@ describe('version-mention edits', () => {
     expect(versionMentionEdits(fileOf(content), mentions.slice(0, MAX_RECIPE_EDITS), NODE_RE, true, () => false)).toHaveLength(
       MAX_RECIPE_EDITS,
     );
+  });
+});
+
+describe('the per-file line index', () => {
+  // The per-hit walk the index replaced, kept as the oracle.
+  function oracleFraming(content: string, lineNo: number): { heading: string; lead: string } {
+    const fence = scanFencedLines(content);
+    const lines = content.split('\n').map((l) => l.replace(/\r$/, ''));
+    let anchor = lineNo - 1;
+    if (fence[anchor]?.inFence) while (anchor > 0 && fence[anchor]?.kind !== 'open') anchor--;
+    const leads: string[] = [];
+    for (let i = anchor - 1; i >= 0 && leads.length < 3; i--) {
+      if (fence[i]?.inFence || /^\s{0,3}#{1,6}\s/.test(lines[i]!)) break;
+      if (lines[i]!.trim() !== '') leads.push(lines[i]!);
+    }
+    const headings: string[] = [];
+    let level = 7;
+    for (let i = anchor - 1; i >= 0 && level > 1; i--) {
+      const h = fence[i]?.inFence ? null : /^\s{0,3}(#{1,6})\s/.exec(lines[i]!);
+      if (h && h[1]!.length < level) {
+        level = h[1]!.length;
+        headings.push(lines[i]!);
+      }
+    }
+    return { heading: headings.join('\n'), lead: leads.join('\n') };
+  }
+
+  it('gives the frames and line numbers the per-hit walk gave, on thousands of generated files', () => {
+    const pool = ['# A', '## B', '### C', '#### D', '    # indented', '#no', '', '  ', 'text', 'Then:', '```bash', '```', '~~~', 'npm i', 'x\r'];
+    let seed = 0x51ce;
+    const next = () => {
+      seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+      return seed;
+    };
+    for (let n = 0; n < 3000; n++) {
+      const length = 1 + (next() % 16);
+      const content = Array.from({ length }, () => pool[next() % pool.length]).join('\n');
+      const index = indexLines(content, scanFencedLines(content));
+      for (let lineNo = 1; lineNo <= length; lineNo++) {
+        expect(index.framing(lineNo), JSON.stringify({ content, lineNo })).toEqual(oracleFraming(content, lineNo));
+      }
+      for (let offset = 0; offset <= content.length; offset++) {
+        expect(index.lineOf(offset)).toBe(lineNumberAt(content, offset));
+      }
+    }
   });
 });
 
@@ -226,12 +306,35 @@ describe('package-manager swap edits', () => {
     quick(() => pmEdits(content, [content.indexOf('npm install')]));
   });
 
+  it('fifty hits deep in a long fenced block, or far apart: linear time', () => {
+    const fenced = '```bash\n' + 'echo\n'.repeat(200_000) + 'npm install\n'.repeat(MAX_RECIPE_EDITS) + '```\n';
+    const at = (content: string) => [...content.matchAll(/npm install/g)].map((m) => m.index);
+    // Half a million lines: the budget covers the linear passes over them, not a walk per hit.
+    quick(() => pmEdits(fenced, at(fenced)), 1000);
+    const spread = ('npm install\n' + '\n'.repeat(5_000)).repeat(MAX_RECIPE_EDITS);
+    quick(() => pmEdits(spread, at(spread)), 1000);
+  });
+
   it('a subshell cd still refuses, an unclosed or empty one does not', () => {
     const at = (s: string) => [s.indexOf('npm install')];
     expect(pmEdits('Run (cd docs && npm install) first.', at('Run (cd docs && npm install) first.'))).toBeUndefined();
     expect(pmEdits('Run npm install (CD\tsite).', at('Run npm install (CD\tsite).'))).toBeUndefined();
     expect(pmEdits('Paren (cd docs, run npm install.', at('Paren (cd docs, run npm install.'))).toBeDefined();
     expect(pmEdits('Paren (cd ), run npm install.', at('Paren (cd ), run npm install.'))).toBeDefined();
+  });
+});
+
+describe('HTML comment ranges', () => {
+  it('a long line of code-span comment openers: linear time', () => {
+    expect(quick(() => htmlCommentRanges('`' + '<!--'.repeat(100_000)))).toEqual([]);
+  });
+
+  it('still skips an opener inside a code span and opens one after it', () => {
+    const content = 'Write `<!--` to open. <!-- hidden --> shown `a` <!-- b';
+    expect(htmlCommentRanges(content)).toEqual([
+      [content.indexOf('<!-- hidden'), content.indexOf('-->') + 3],
+      [content.lastIndexOf('<!--'), content.length],
+    ]);
   });
 });
 
@@ -275,6 +378,13 @@ describe('detectManifestConsistency on hostile instruction files', () => {
   ] as const)('%s', (_label, files, pkg) => {
     const { ms, value } = elapsed(() => detectManifestConsistency(context(files, pkg)));
     expect(value.length).toBeGreaterThanOrEqual(0);
+    expect(ms).toBeLessThan(DETECTOR_BUDGET_MS);
+  });
+
+  it('ten stale versions, each mentioned 49 times, spread over 500k blank lines', () => {
+    const block = Array.from({ length: 10 }, (_, v) => `Requires Node.js ${v + 1}+\n` + '\n'.repeat(1_000)).join('');
+    const claude = block.repeat(49);
+    const { ms } = elapsed(() => detectManifestConsistency(context({ 'CLAUDE.md': claude }, { engines: { node: '>=22' } })));
     expect(ms).toBeLessThan(DETECTOR_BUDGET_MS);
   });
 
