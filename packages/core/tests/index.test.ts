@@ -17,4 +17,11 @@ describe('core exports', () => {
   it('exports computeHealthScore function', () => {
     expect(typeof core.computeHealthScore).toBe('function');
   });
+
+  it('exports the manifest version readers a consumer re-checks a rewrite with (pcic-1ik0.24)', () => {
+    expect(core.readNodeEngineVersion('>=22')?.rewriteTo).toEqual([22]);
+    expect(typeof core.readJsLibraryVersion).toBe('function');
+    expect(typeof core.readPythonVersion).toBe('function');
+    expect(typeof core.readPythonLibraryVersion).toBe('function');
+  });
 });

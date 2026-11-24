@@ -30,6 +30,15 @@ import { collectCiPackageManagers } from './ci-alignment.js';
 import type { RepoTree } from './repo-tree.js';
 import { packageManagerSwapEdits, versionMentionEdits } from './manifest-fix-edits.js';
 import type { PackageManagerHit } from './manifest-fix-edits.js';
+import {
+  formatVersion,
+  isBelowFloor,
+  readJsLibraryVersion,
+  readNodeEngineVersion,
+  readPythonLibraryVersion,
+  readPythonVersion,
+  type ManifestVersionReading,
+} from './manifest-versions.js';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -122,15 +131,12 @@ function checkPythonVersionMismatch(
   files: InstructionFile[],
   pyprojectContent: string,
 ): PromptCiIssue[] {
-  // Extract the minimum Python version from pyproject.toml.
-  // Handles: python = "^3.11", ">=3.10", "~=3.9", "3.11.*"
-  const manifestMatch =
-    /^python\s*=\s*["'][\^~>=<*]*(\d+)\.(\d+)/m.exec(pyprojectContent) ||
-    /^requires-python\s*=\s*["'][\^~>=<*]*(\d+)\.(\d+)/m.exec(pyprojectContent);
-  if (!manifestMatch) return [];
-
-  const manifestMajor = parseInt(manifestMatch[1]!, 10);
-  const manifestMinor = parseInt(manifestMatch[2]!, 10);
+  // The minimum Python version from pyproject.toml: requires-python and Poetry's python constraint
+  // (pcic-1ik0.24: ">3.8" excludes 3.8, and a rewrite needs both to agree; manifest-versions.ts).
+  const reading = readPythonVersion(pyprojectContent);
+  if (!reading) return [];
+  const manifestLabel = reading.label;
+  const rewriteTo = reading.rewriteTo ? formatVersion(reading.rewriteTo) : undefined;
 
   const issues: PromptCiIssue[] = [];
   const reported = new Set<string>();
@@ -147,14 +153,10 @@ function checkPythonVersionMismatch(
 
       if (isNegationContext(file.content, m.index)) continue;
 
-      // Only flag when the instruction version is strictly older than the manifest minimum
-      const isOlder =
-        instrMajor < manifestMajor ||
-        (instrMajor === manifestMajor && instrMinor < manifestMinor);
-      if (!isOlder) continue;
+      // Only flag when the instruction version is below the manifest minimum
+      if (!isBelowFloor([instrMajor, instrMinor], reading.floor)) continue;
 
       const instrVersion = `${instrMajor}.${instrMinor}`;
-      const manifestVersion = `${manifestMajor}.${manifestMinor}`;
       const dedupeKey = `${file.path}:${instrVersion}`;
       if (reported.has(dedupeKey)) continue;
       reported.add(dedupeKey);
@@ -166,35 +168,39 @@ function checkPythonVersionMismatch(
             !isNegationContext(content, mm.index) &&
             `${parseInt(mm[1]!, 10)}.${parseInt(mm[2]!, 10)}` === instrVersion,
         );
-      const fixEdits = versionMentionEdits(
-        file,
-        mentionsOf(file.content).map((mm) => ({
-          index: mm.index,
-          text: mm[0],
-          replacement: mm[0].slice(0, mm[0].length - `${mm[1]}.${mm[2]}`.length) + manifestVersion,
-        })),
-        PYTHON_VERSION_RE,
-        true,
-        (next) => mentionsOf(next).length > 0,
-      );
+      // pcic-1ik0.24: no rewrite unless the manifest settles one version (`rewriteTo`).
+      const fixEdits =
+        rewriteTo === undefined
+          ? undefined
+          : versionMentionEdits(
+              file,
+              mentionsOf(file.content).map((mm) => ({
+                index: mm.index,
+                text: mm[0],
+                replacement: mm[0].slice(0, mm[0].length - `${mm[1]}.${mm[2]}`.length) + rewriteTo,
+              })),
+              PYTHON_VERSION_RE,
+              true,
+              (next) => mentionsOf(next).length > 0,
+            );
 
       issues.push({
         id: issueId(`python-version:${fileIdPath(file)}:${instrVersion}`),
         severity: 'high',
         category: 'stale_instruction',
-        title: `Python version mismatch: instruction says ${instrVersion}, pyproject.toml requires ≥${manifestVersion}`,
+        title: `Python version mismatch: instruction says ${instrVersion}, pyproject.toml requires ${manifestLabel}`,
         summary:
-          `An instruction file refers to Python ${instrVersion}, but pyproject.toml declares ` +
-          `\`python = "^${manifestVersion}"\` (or newer). An agent following this instruction ` +
+          `An instruction file refers to Python ${instrVersion}, but pyproject.toml requires ` +
+          `Python ${manifestLabel}. An agent following this instruction ` +
           `would target an older interpreter and may avoid language features or APIs that are ` +
           `safe to use in this project.`,
         filePaths: [file.path],
         locations: [{ filePath: file.path }],
         evidence: [
-          `Instruction says "Python ${instrVersion}"; pyproject.toml requires ≥${manifestVersion}`,
+          `Instruction says "Python ${instrVersion}"; pyproject.toml requires ${manifestLabel}`,
         ],
         recommendation:
-          `Update the instruction file to reference Python ${manifestVersion} (or remove the ` +
+          `Update the instruction file to reference ${rewriteTo ? `Python ${rewriteTo}` : `a Python version pyproject.toml allows (${manifestLabel})`} (or remove the ` +
           `version claim and rely on pyproject.toml as the authoritative source).`,
         ...versionFix(fixEdits),
         confidence: 0.85,
@@ -280,51 +286,13 @@ function libraryMajorEdits(
   );
 }
 
-function parseAuthoritativeMajorVersion(versionSpec: string): number | null {
-  const spec = versionSpec.trim();
-
-  // Upper-bound-only constraints do not prove the project has moved to that major.
-  if (/^<=?\s*\d+/.test(spec)) return null;
-
-  const match = /^(?:\^|~=|==|>=|>|=)?\s*(\d+)(?:\.\d+)?/.exec(spec);
-  if (!match) return null;
-
-  return parseInt(match[1]!, 10);
-}
-
-function extractManifestLibraryMajors(pyprojectContent: string): Map<TrackedPythonLibrary, number> {
-  const versions = new Map<TrackedPythonLibrary, number>();
-
+/** pcic-1ik0.24: each tracked library pyproject.toml declares, main dependencies over extras. */
+function extractManifestLibraryVersions(pyprojectContent: string): Map<TrackedPythonLibrary, ManifestVersionReading> {
+  const versions = new Map<TrackedPythonLibrary, ManifestVersionReading>();
   for (const library of TRACKED_PYTHON_LIBRARIES) {
-    const name = escapeRegExp(library);
-
-    // [tool.poetry.dependencies]
-    // pandas = "^2.1"
-    const poetryLineRe = new RegExp(`^\\s*${name}\\s*=\\s*["']([^"']+)["']`, 'im');
-    const poetryMatch = poetryLineRe.exec(pyprojectContent);
-    if (poetryMatch) {
-      const major = parseAuthoritativeMajorVersion(poetryMatch[1]!);
-      if (major !== null) {
-        versions.set(library, major);
-        continue;
-      }
-    }
-
-    // [project]
-    // dependencies = ["pandas>=2.1", "numpy==1.26", "pandas[performance]>=2.1"]
-    const projectDependencyRe = new RegExp(
-      `["']${name}(?:\\[[^\\]]+\\])?\\s*([~^=<>!]{1,2}\\s*\\d+(?:\\.\\d+)?)`,
-      'gim',
-    );
-    let match: RegExpExecArray | null;
-    while ((match = projectDependencyRe.exec(pyprojectContent)) !== null) {
-      const major = parseAuthoritativeMajorVersion(match[1]!);
-      if (major === null) continue;
-      versions.set(library, major);
-      break;
-    }
+    const reading = readPythonLibraryVersion(pyprojectContent, library);
+    if (reading) versions.set(library, reading);
   }
-
   return versions;
 }
 
@@ -347,13 +315,14 @@ function checkLibraryVersionMismatch(
   files: InstructionFile[],
   pyprojectContent: string,
 ): PromptCiIssue[] {
-  const manifestVersions = extractManifestLibraryMajors(pyprojectContent);
+  const manifestVersions = extractManifestLibraryVersions(pyprojectContent);
   if (manifestVersions.size === 0) return [];
 
   const issues: PromptCiIssue[] = [];
   const reported = new Set<string>();
 
-  for (const [library, manifestMajor] of manifestVersions) {
+  for (const [library, reading] of manifestVersions) {
+    const manifestMajor = reading.declared[0]!;
     const displayName = displayLibraryName(library);
     const libraryMentionRe = new RegExp(
       `\\b${escapeRegExp(displayName)}\\s+(?:v(?:ersion)?\\s*)?(\\d+)(?:\\.(\\d+|x))?\\b`,
@@ -367,7 +336,7 @@ function checkLibraryVersionMismatch(
         if (!hasCompatibilityIntent(file.content, match.index)) continue;
 
         const instructionMajor = parseInt(match[1]!, 10);
-        if (instructionMajor >= manifestMajor) continue;
+        if (!isBelowFloor([instructionMajor], reading.floor)) continue;
 
         const instructionVersion = match[2]
           ? `${instructionMajor}.${match[2]}`
@@ -376,7 +345,9 @@ function checkLibraryVersionMismatch(
         if (reported.has(dedupeKey)) continue;
         reported.add(dedupeKey);
 
-        const fixEdits = libraryMajorEdits(file, libraryMentionRe, instructionVersion, manifestMajor, hasCompatibilityIntent);
+        const fixEdits = reading.rewriteTo
+          ? libraryMajorEdits(file, libraryMentionRe, instructionVersion, reading.rewriteTo[0]!, hasCompatibilityIntent)
+          : undefined;
 
         issues.push({
           id: issueId(`library-version:${fileIdPath(file)}:${library}:${instructionVersion}`),
@@ -432,33 +403,17 @@ const JS_DISPLAY_NAMES: Record<TrackedJsLibrary, string> = {
   jest: 'Jest',
 };
 
-function parsePackageJsonVersions(packageJsonContent: string): Map<TrackedJsLibrary, number> {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(packageJsonContent);
-  } catch {
-    return new Map();
+/**
+ * pcic-1ik0.24: each tracked library package.json declares. dependencies and devDependencies are
+ * what the project installs; a peerDependencies range is a compatibility claim, read for the floor
+ * only (it used to win because it was read last).
+ */
+function parsePackageJsonVersions(packageJsonContent: string): Map<TrackedJsLibrary, ManifestVersionReading> {
+  const versions = new Map<TrackedJsLibrary, ManifestVersionReading>();
+  for (const library of TRACKED_JS_LIBRARIES) {
+    const reading = readJsLibraryVersion(packageJsonContent, library);
+    if (reading) versions.set(library, reading);
   }
-
-  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-    return new Map();
-  }
-
-  const obj = parsed as Record<string, unknown>;
-  const versions = new Map<TrackedJsLibrary, number>();
-  const dependencyBlocks = [obj.dependencies, obj.devDependencies, obj.peerDependencies];
-
-  for (const block of dependencyBlocks) {
-    if (typeof block !== 'object' || block === null || Array.isArray(block)) continue;
-    const deps = block as Record<string, unknown>;
-    for (const library of TRACKED_JS_LIBRARIES) {
-      const spec = deps[library];
-      if (typeof spec !== 'string') continue;
-      const major = parseAuthoritativeMajorVersion(spec);
-      if (major !== null) versions.set(library, major);
-    }
-  }
-
   return versions;
 }
 
@@ -472,7 +427,8 @@ function checkJsLibraryVersionMismatch(
   const issues: PromptCiIssue[] = [];
   const reported = new Set<string>();
 
-  for (const [library, manifestMajor] of manifestVersions) {
+  for (const [library, reading] of manifestVersions) {
+    const manifestMajor = reading.declared[0]!;
     const displayName = JS_DISPLAY_NAMES[library];
     const libraryMentionRe = new RegExp(
       `\\b${escapeRegExp(displayName)}\\s+(?:v(?:ersion)?\\s*)?(\\d+)(?:\\.(\\d+|x))?\\b`,
@@ -486,7 +442,7 @@ function checkJsLibraryVersionMismatch(
         if (!hasJsVersionIntent(file.content, match.index)) continue;
 
         const instructionMajor = parseInt(match[1]!, 10);
-        if (instructionMajor >= manifestMajor) continue;
+        if (!isBelowFloor([instructionMajor], reading.floor)) continue;
 
         const instructionVersion = match[2]
           ? `${instructionMajor}.${match[2]}`
@@ -495,7 +451,9 @@ function checkJsLibraryVersionMismatch(
         if (reported.has(dedupeKey)) continue;
         reported.add(dedupeKey);
 
-        const fixEdits = libraryMajorEdits(file, libraryMentionRe, instructionVersion, manifestMajor, hasJsVersionIntent);
+        const fixEdits = reading.rewriteTo
+          ? libraryMajorEdits(file, libraryMentionRe, instructionVersion, reading.rewriteTo[0]!, hasJsVersionIntent)
+          : undefined;
 
         issues.push({
           id: issueId(`js-library-version:${fileIdPath(file)}:${library}:${instructionVersion}`),
@@ -795,11 +753,11 @@ function checkNodeVersionMismatch(context: RepoContext): PromptCiIssue[] {
   const { packageJson, files } = context;
   if (!packageJson.enginesNode) return [];
 
-  // Simplified version parsing: look for >= or ^ followed by a number
-  const minVersionMatch = />=\s*(\d+)/.exec(packageJson.enginesNode) || /\^\s*(\d+)/.exec(packageJson.enginesNode);
-  if (!minVersionMatch) return [];
-
-  const minNodeVersion = parseInt(minVersionMatch[1]!, 10);
+  // pcic-1ik0.24: the whole range (manifest-versions.ts): alternatives floor at the lowest
+  // ("^18.18 || >=20" used to read as 20), ">18" excludes 18, and a rewrite needs one inclusive floor.
+  const reading = readNodeEngineVersion(packageJson.enginesNode);
+  if (!reading) return [];
+  const rewriteTo = reading.rewriteTo?.[0];
   const issues: PromptCiIssue[] = [];
   // MF3 / B2: no dedupe set, unlike every sibling check in this file — "Node 12"
   // mentioned twice in one file emitted two issues sharing the identical id
@@ -817,7 +775,7 @@ function checkNodeVersionMismatch(context: RepoContext): PromptCiIssue[] {
       // MF3: no sibling check fires on a negated mention ("Do not use Node
       // 14") — this one did, since it had no negation-context guard at all.
       if (isNegationContext(file.content, match.index)) continue;
-      if (instrVersion < minNodeVersion) {
+      if (isBelowFloor([instrVersion], reading.floor)) {
         const dedupeKey = `${file.path}:${instrVersion}`;
         if (reported.has(dedupeKey)) continue;
         reported.add(dedupeKey);
@@ -827,29 +785,32 @@ function checkNodeVersionMismatch(context: RepoContext): PromptCiIssue[] {
           [...content.matchAll(NODE_VERSION_RE)].filter(
             (mm) => !isNegationContext(content, mm.index) && parseInt(mm[1]!, 10) === instrVersion,
           );
-        const fixEdits = versionMentionEdits(
-          file,
-          mentionsOf(file.content).map((mm) => ({
-            index: mm.index,
-            text: mm[0],
-            replacement: mm[0].slice(0, mm[0].length - mm[1]!.length) + String(minNodeVersion),
-          })),
-          NODE_VERSION_RE,
-          true,
-          (next) => mentionsOf(next).length > 0,
-        );
+        const fixEdits =
+          rewriteTo === undefined
+            ? undefined
+            : versionMentionEdits(
+                file,
+                mentionsOf(file.content).map((mm) => ({
+                  index: mm.index,
+                  text: mm[0],
+                  replacement: mm[0].slice(0, mm[0].length - mm[1]!.length) + String(rewriteTo),
+                })),
+                NODE_VERSION_RE,
+                true,
+                (next) => mentionsOf(next).length > 0,
+              );
 
         issues.push({
           id: `manifest-node-version-mismatch:${fileIdPath(file)}:${instrVersion}`,
           severity: 'warning',
           category: 'stale_instruction',
-          title: `Node.js version mismatch: instruction says ${instrVersion}, project requires ≥${minNodeVersion}`,
+          title: `Node.js version mismatch: instruction says ${instrVersion}, project requires ${reading.label}`,
           summary:
-            `Instructions mention Node.js ${instrVersion}, but package.json specifies a minimum version of ${minNodeVersion} in \`engines.node\`.`,
+            `Instructions mention Node.js ${instrVersion}, but package.json requires Node.js ${reading.label} in \`engines.node\`.`,
           filePaths: [file.path],
           locations: [{ filePath: file.path }],
           evidence: [`Instruction says Node ${instrVersion}; engines.node says ${packageJson.enginesNode}`],
-          recommendation: `Update instructions to reflect the minimum supported Node.js version (${minNodeVersion}).`,
+          recommendation: `Update instructions to reflect the minimum supported Node.js version (${reading.label}).`,
           ...versionFix(fixEdits),
           confidence: 0.8,
         });

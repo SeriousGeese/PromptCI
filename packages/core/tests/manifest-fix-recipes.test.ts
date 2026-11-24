@@ -227,6 +227,143 @@ describe('library and Python version recipes', () => {
   });
 });
 
+describe('the manifest version a rewrite writes (pcic-1ik0.24)', () => {
+  const isTitled = (prefix: string) => (i: PromptCiIssue) => i.title.startsWith(prefix);
+
+  it('reads devDependencies over a peer range: the finding stays, the rewrite is refused when they disagree', async () => {
+    // A component library: installs React 19 to develop, supports 18 and 19.
+    const packageJson = JSON.stringify({
+      name: '@acme/ui',
+      version: '2.3.0',
+      peerDependencies: { react: '^18.0.0 || ^19.0.0', 'react-dom': '^18.0.0 || ^19.0.0' },
+      devDependencies: { react: '^19.1.0', 'react-dom': '^19.1.0', typescript: '^5.8.3' },
+    });
+    const repo = repoWith({ 'package.json': packageJson, 'CLAUDE.md': '# UI\n\nUse this stack for new features:\n\n- **Framework:** React 17\n' });
+    const issue = await finding(repo, isTitled('React version mismatch'));
+    expect(issue.title).toBe('React version mismatch: instruction says 17.x, package.json uses 19.x');
+    expectAdvisory(issue);
+
+    const supported = repoWith({ 'package.json': packageJson, 'CLAUDE.md': '# UI\n\nComponents must support React 18.\n' });
+    expect((await scan({ repoPath: supported })).issues.some(isTitled('React version mismatch'))).toBe(false);
+  });
+
+  it('still rewrites when the installed version and the peer range agree', async () => {
+    const repo = repoWith({
+      'package.json': JSON.stringify({ name: 'x', peerDependencies: { vite: '^8.0.0' }, devDependencies: { vite: '^8.1.0' } }),
+      'CLAUDE.md': '# Repo\n\nWe use Vite 6.x\n',
+    });
+    expect(await applied(repo, await finding(repo, isTitled('Vite version mismatch')))).toBe('# Repo\n\nWe use Vite 8.x\n');
+  });
+
+  it('reads the main dependency over a Poetry group pin, and refuses the rewrite they disagree on', async () => {
+    const pyproject = [
+      '[project]',
+      'name = "shop"',
+      'version = "0.4.0"',
+      'requires-python = ">=3.11"',
+      'dependencies = [',
+      '    "django>=5.0,<6",',
+      '    "psycopg[binary]>=3.1",',
+      ']',
+      '',
+      '[tool.poetry.group.lts.dependencies]',
+      'django = "^4.2"',
+      '',
+    ].join('\n');
+    const repo = repoWith({ 'pyproject.toml': pyproject, 'CLAUDE.md': '# Shop\n\nTarget library: Django 3.x\n' });
+    const issue = await finding(repo, isTitled('Django version mismatch'));
+    expect(issue.title).toBe('Django version mismatch: instruction says 3.x, pyproject.toml uses 5.x');
+    expectAdvisory(issue);
+
+    // Between the two: the group pin is not the project's version, so 4.x is stale too.
+    const between = repoWith({ 'pyproject.toml': pyproject, 'CLAUDE.md': '# Shop\n\nTarget library: Django 4.x\n' });
+    expectAdvisory(await finding(between, isTitled('Django version mismatch')));
+  });
+
+  it('reads an optional-dependencies entry as a claim, not as the version to write', async () => {
+    const pyproject = [
+      '[project]',
+      'name = "toolkit"',
+      'requires-python = ">=3.10"',
+      'dependencies = ["httpx>=0.27"]',
+      '',
+      '[project.optional-dependencies]',
+      'django = ["django>=4.2"]',
+      '',
+    ].join('\n');
+    const repo = repoWith({ 'pyproject.toml': pyproject, 'CLAUDE.md': '# Toolkit\n\nTarget library: Django 3.x\n' });
+    expectAdvisory(await finding(repo, isTitled('Django version mismatch')));
+
+    // The same line is rewritten once the main dependency declares it.
+    const main = repoWith({
+      'pyproject.toml': pyproject.replace('dependencies = ["httpx>=0.27"]', 'dependencies = ["httpx>=0.27", "django>=4.2"]'),
+      'CLAUDE.md': '# Toolkit\n\nTarget library: Django 3.x\n',
+    });
+    expect(await applied(main, await finding(main, isTitled('Django version mismatch')))).toBe('# Toolkit\n\nTarget library: Django 4.x\n');
+  });
+
+  it('reads requires-python ">3.8" as excluding 3.8: both 3.7 and 3.8 are flagged, neither is rewritten', async () => {
+    const pyproject = '[project]\nname = "x"\nversion = "1.0.0"\nrequires-python = ">3.8"\ndependencies = []\n';
+    for (const [mention, title] of [
+      ['3.7', 'Python version mismatch: instruction says 3.7, pyproject.toml requires >3.8'],
+      ['3.8', 'Python version mismatch: instruction says 3.8, pyproject.toml requires >3.8'],
+    ]) {
+      const repo = repoWith({ 'pyproject.toml': pyproject, 'CLAUDE.md': `# Repo\n\n- Runtime: Python ${mention}\n` });
+      const issue = await finding(repo, isTitled('Python version mismatch'));
+      expect(issue.title).toBe(title);
+      expectAdvisory(issue);
+    }
+  });
+
+  it('refuses the Python rewrite when requires-python and Poetry\'s python constraint disagree', async () => {
+    const pyproject = [
+      '[project]',
+      'name = "x"',
+      'requires-python = ">=3.9"',
+      '',
+      '[tool.poetry.dependencies]',
+      'python = "^3.10"',
+      '',
+    ].join('\n');
+    for (const mention of ['3.8', '3.9']) {
+      // 3.9 is allowed by requires-python but not by Poetry, which also enforces its constraint.
+      const repo = repoWith({ 'pyproject.toml': pyproject, 'CLAUDE.md': `# Repo\n\n- Runtime: Python ${mention}\n` });
+      const issue = await finding(repo, isTitled('Python version mismatch'));
+      expect(issue.title).toBe(`Python version mismatch: instruction says ${mention}, pyproject.toml requires ≥3.10`);
+      expectAdvisory(issue);
+    }
+  });
+
+  it('reads a requires-python whose upper bound comes first', async () => {
+    const repo = repoWith({
+      'pyproject.toml': '[project]\nname = "x"\nrequires-python = "<4,>=3.10"\n',
+      'CLAUDE.md': '# Repo\n\n- Runtime: Python 3.8\n',
+    });
+    expect(await applied(repo, await finding(repo, isTitled('Python version mismatch')))).toBe('# Repo\n\n- Runtime: Python 3.10\n');
+  });
+
+  it('floors engines.node alternatives at the lowest: Node 18 is supported, Node 16 is flagged without a rewrite', async () => {
+    const packageJson = JSON.stringify({ name: 'x', engines: { node: '^18.18.0 || ^20.9.0 || >=21.1.0' } });
+    const supported = repoWith({ 'package.json': packageJson, 'CLAUDE.md': '# Repo\n\nRequires Node.js 18+.\n' });
+    expect((await scan({ repoPath: supported })).issues.some(isNode)).toBe(false);
+
+    const old = repoWith({ 'package.json': packageJson, 'CLAUDE.md': '# Repo\n\nRequires Node.js 16+.\n' });
+    const issue = await finding(old, isNode);
+    expect(issue.title).toBe('Node.js version mismatch: instruction says 16, project requires ≥18');
+    expectAdvisory(issue);
+  });
+
+  it('reads engines.node ">18" as excluding 18, with no rewrite', async () => {
+    const repo = repoWith({
+      'package.json': JSON.stringify({ name: 'x', engines: { node: '>18' } }),
+      'CLAUDE.md': '# Repo\n\nRequires Node.js 18+.\n',
+    });
+    const issue = await finding(repo, isNode);
+    expect(issue.title).toBe('Node.js version mismatch: instruction says 18, project requires >18');
+    expectAdvisory(issue);
+  });
+});
+
 describe('the fixture', () => {
   it('carries edits on all three findings, and fixing them all clears them', async () => {
     const repo = makeTempRepo('promptci-manifest-fixture-');
@@ -242,6 +379,23 @@ describe('the fixture', () => {
     for (const issue of targets) await applied(repo, issue);
     const after = (await scan({ repoPath: repo })).issues;
     for (const t of targets) expect(after.some((i) => i.id === t.id)).toBe(false);
+  });
+});
+
+describe('the version-reading fixture (pcic-1ik0.24)', () => {
+  it('flags each version a disagreeing manifest excludes, rewrites none, and leaves the supported Node.js line clean', async () => {
+    const repo = makeTempRepo('promptci-manifest-reading-');
+    tempRepos.push(repo);
+    fs.cpSync(path.resolve(FIXTURE, '../fixture-manifest-version-reading'), repo, { recursive: true });
+    const issues = (await scan({ repoPath: repo })).issues;
+    const versions = issues.filter((i) => / version mismatch: /.test(i.title));
+    expect(versions.map((i) => i.title).sort()).toEqual([
+      'Django version mismatch: instruction says 3.x, pyproject.toml uses 4.x',
+      'Python version mismatch: instruction says 3.8, pyproject.toml requires >3.8',
+      'React version mismatch: instruction says 17.x, package.json uses 19.x',
+    ]);
+    for (const issue of versions) expectAdvisory(issue);
+    expect(issues.some(isNode)).toBe(false);
   });
 });
 
