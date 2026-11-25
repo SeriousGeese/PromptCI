@@ -97,8 +97,12 @@ export function normalizeSection(text: string): string {
   return text
     .toLowerCase()
     .replace(/^#{1,6}\s+/gm, '')
-    .replace(/^[\s]*[-*+]\s+/gm, '')
-    .replace(/^[\s]*\d+\.\s+/gm, '')
+    // pcic-1ik0.25: the indent before a list marker stays on its own line. `^[\s]*` also ran across the
+    // blank lines above it, from every line start in a run of them: 86 s for 150,000 blank lines.
+    // The blank lines it removed are whitespace next to a kept line break, which the collapse below
+    // folds the same way, so the result is unchanged.
+    .replace(/^[^\S\n\r\u2028\u2029]*[-*+]\s+/gm, '')
+    .replace(/^[^\S\n\r\u2028\u2029]*\d+\.\s+/gm, '')
     .replace(/\s+/g, ' ')
     .trim();
 }

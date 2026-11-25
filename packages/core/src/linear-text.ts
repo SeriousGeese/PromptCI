@@ -10,7 +10,19 @@
 export type TextMatcher = { test(text: string): boolean };
 
 /** A matcher that can also say where its first match starts (-1 when there is none). */
-export type LocatingMatcher = TextMatcher & { firstIndex(text: string): number };
+export type LocatingMatcher = TextMatcher & {
+  firstIndex(text: string): number;
+  /** The last part, for evidence that has to know whether a match runs on past a window. */
+  lastPart: RegExp;
+};
+
+/**
+ * A part written after `\s+` in the original pattern (`/report.*\s+before/`): it must follow at least
+ * one whitespace character, and that whitespace may cross a line break, which the `.*` gap before it
+ * cannot. Searched as `(?<=\s)before`, so a long run of spaces is not re-read from each of its
+ * positions (`/\s+before/` was quadratic on one).
+ */
+export type AfterSpace = { afterSpace: RegExp };
 
 const LINE_BREAK_RE = /[\n\r\u2028\u2029]/g;
 
@@ -23,8 +35,13 @@ const LINE_BREAK_RE = /[\n\r\u2028\u2029]/g;
  * `/read.*before.*edit/i` tried every "read" against the rest of its line, and every "before"
  * after it against the rest again: minutes on one long line. This walks each part once.
  */
-export function inOrderOnOneLine(...parts: RegExp[]): LocatingMatcher {
-  const sources = parts.map((p) => ({ source: p.source, flags: p.flags.replace(/[gy]/g, '') + 'g' }));
+export function inOrderOnOneLine(...parts: Array<RegExp | AfterSpace>): LocatingMatcher {
+  const sources = parts.map((p) => {
+    const re = p instanceof RegExp ? p : p.afterSpace;
+    const source = p instanceof RegExp ? re.source : `(?<=\\s)(?:${re.source})`;
+    return { source, flags: re.flags.replace(/[gy]/g, '') + 'g', afterSpace: !(p instanceof RegExp) };
+  });
+  const isSpace = (char: string | undefined) => char !== undefined && /\s/.test(char);
   const firstIndex = (text: string): number => {
     const res = sources.map((s) => new RegExp(s.source, s.flags));
     const breaks: number[] = [];
@@ -38,6 +55,17 @@ export function inOrderOnOneLine(...parts: RegExp[]): LocatingMatcher {
         else hi = mid;
       }
       return lo < breaks.length ? breaks[lo]! : text.length;
+    };
+    // Where the run of spaces ending at `index` starts, worked out once per run.
+    const runStarts = new Map<number, number>();
+    const spaceRunStart = (index: number): number => {
+      let at = runStarts.get(index);
+      if (at === undefined) {
+        at = index;
+        while (at > 0 && isSpace(text[at - 1])) at--;
+        runStarts.set(index, at);
+      }
+      return at;
     };
     // The leftmost match of part k at or after `pos`, kept while later questions it answers come.
     const cache: Array<{ from: number; match: RegExpExecArray | null } | undefined> = res.map(() => undefined);
@@ -56,16 +84,22 @@ export function inOrderOnOneLine(...parts: RegExp[]): LocatingMatcher {
       let end = first.index + first[0].length;
       let k = 1;
       for (; k < res.length; k++) {
-        const next = find(k, end);
+        const afterSpace = sources[k]!.afterSpace;
+        let next = find(k, end);
+        // At least one of an after-space part's spaces must lie past the previous part.
+        if (next && afterSpace && next.index <= end) next = find(k, end + 1);
         if (!next) return -1;
-        if (nextBreak(end) < next.index) break;
+        // The gap may not cross a line break; an after-space part owns the spaces before it.
+        const gapEnd = afterSpace ? Math.max(end, spaceRunStart(next.index)) : next.index;
+        if (nextBreak(end) < gapEnd) break;
         end = next.index + next[0].length;
       }
       if (k === res.length) return first.index;
       start = first.index + 1;
     }
   };
-  return { test: (text: string) => firstIndex(text) !== -1, firstIndex };
+  const last = parts[parts.length - 1]!;
+  return { test: (text: string) => firstIndex(text) !== -1, firstIndex, lastPart: last instanceof RegExp ? last : last.afterSpace };
 }
 
 /** The offsets at which the lines of `content` start (after each `\n`), ascending. */

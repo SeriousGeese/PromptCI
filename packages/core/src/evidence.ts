@@ -85,7 +85,9 @@ export function matchEvidence(
   maxLen = 120,
   locate?: LocatingMatcher,
 ): string {
-  const matched = locate ? firstMatchAt(content, pattern, locate.firstIndex(content), maxLen) : firstMatch(content, pattern, maxLen);
+  const matched = locate
+    ? firstMatchAt(content, pattern, locate.firstIndex(content), maxLen, locate.lastPart)
+    : firstMatch(content, pattern, maxLen);
   return matched ? `${label}: "${matched}"` : label;
 }
 
@@ -98,9 +100,30 @@ const EVIDENCE_WINDOW = 2000;
  * starts, and the pattern only runs there, over a bounded window. A match longer than the window
  * is clipped to it, which the snippet would clip anyway.
  */
-export function firstMatchAt(content: string, pattern: RegExp, start: number, maxLen = 120): string | undefined {
+export function firstMatchAt(
+  content: string,
+  pattern: RegExp,
+  start: number,
+  maxLen = 120,
+  lastPart?: RegExp,
+): string | undefined {
   if (start < 0) return undefined;
+  const window = content.slice(start, start + EVIDENCE_WINDOW);
   const re = new RegExp(pattern.source, pattern.flags.replace(/[gy]/g, '') + 'y');
-  const m = re.exec(content.slice(start, start + EVIDENCE_WINDOW));
-  return m ? snippet(m[0], maxLen) : undefined;
+  const m = re.exec(window);
+  // The match runs on past the window (the matcher found one starting here): quote the window,
+  // whose first `maxLen` characters are the match's.
+  if (!m) return snippet(window, maxLen);
+  const quoted = snippet(m[0], maxLen);
+  if (quoted.endsWith('…') || !lastPart || window.length < EVIDENCE_WINDOW) return quoted;
+  // A short match in a full window: greedy `.*` would have run on to a later occurrence of the
+  // last part further along the same line, past the window.
+  const lineEnd = content.slice(start, start + EVIDENCE_WINDOW).search(/[\n\r\u2028\u2029]/);
+  if (lineEnd !== -1) return quoted;
+  const rest = new RegExp(lastPart.source, lastPart.flags.replace(/[gy]/g, '') + 'g');
+  rest.lastIndex = start + EVIDENCE_WINDOW;
+  const later = rest.exec(content);
+  const breakAt = content.slice(start + EVIDENCE_WINDOW).search(/[\n\r\u2028\u2029]/);
+  const restEnd = breakAt === -1 ? content.length : start + EVIDENCE_WINDOW + breakAt;
+  return later && later.index < restEnd ? snippet(window, maxLen) : quoted;
 }

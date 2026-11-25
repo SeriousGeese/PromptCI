@@ -813,12 +813,12 @@ export function detectSecurityPack(context: RepoContext): PromptCiIssue[] {
       { re: /check\s+.*\.promptci\s+before/i, find: inOrderOnOneLine(/check\s+/i, /\.promptci\s+before/i), label: 'Instruction to check .promptci reports first' },
       {
         re: /read\s+.*report.*\s+before\s+.*(source|docs|code)/i,
-        find: inOrderOnOneLine(/read\s+/i, /report/i, /\s+before\s+/i, /(source|docs|code)/i),
+        find: inOrderOnOneLine(/read\s+/i, /report/i, { afterSpace: /before\s+/i }, /(source|docs|code)/i),
         label: 'Instruction to read generated reports before source',
       },
       {
         re: /inspect\s+.*report.*\s+before\s+.*(source|docs|code)/i,
-        find: inOrderOnOneLine(/inspect\s+/i, /report/i, /\s+before\s+/i, /(source|docs|code)/i),
+        find: inOrderOnOneLine(/inspect\s+/i, /report/i, { afterSpace: /before\s+/i }, /(source|docs|code)/i),
         label: 'Instruction to inspect generated reports before source',
       },
     ];

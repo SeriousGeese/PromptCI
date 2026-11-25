@@ -26,6 +26,8 @@ import { scopedInvocationTester } from '../src/manifest-consistency.js';
 import { headingChain, lineStructure, nearestHeading } from '../src/command-context.js';
 import { htmlCommentLines, htmlCommentRanges, inRanges } from '../src/sample-text.js';
 import { firstMatch, matchEvidence } from '../src/evidence.js';
+import { normalizeSection } from '../src/duplicates.js';
+import { normalizeParagraph } from '../src/within-section-dedup.js';
 import { makeTempRepo, writeFile } from './ai-config-helpers.js';
 
 /**
@@ -90,6 +92,10 @@ const HOSTILE_FILES: Array<[label: string, content: string]> = [
   ['one line of "<!-- TODO "', oneLine('<!-- TODO ')],
   ['one line of "read before "', oneLine('read before ')],
   ['one line of "read report before "', oneLine('read report before ')],
+  ['"read x report" and a long run of spaces', 'read x report' + ' '.repeat(SIZE)],
+  ['blank lines', '\n'.repeat(SIZE)],
+  ['lines of one space', ' \n'.repeat(SIZE / 2)],
+  ['CRLF blank lines', '\r\n'.repeat(SIZE / 2)],
   ['one line of "never print "', oneLine('never print ')],
   ['one line of "supabase service role key "', oneLine('supabase service role key ')],
   ['one line of "unity "', oneLine('unity ')],
@@ -188,7 +194,9 @@ describe('the linear readers give what the regexes they replace gave', () => {
     ],
     [/supabase\s+service\s+role\s+key.*server-side/i, [/supabase\s+service\s+role\s+key/i, /server-side/i]],
     [/read\s+.*\.promptci\s+before/i, [/read\s+/i, /\.promptci\s+before/i]],
-    [/read\s+.*report.*\s+before\s+.*(source|docs|code)/i, [/read\s+/i, /report/i, /\s+before\s+/i, /(source|docs|code)/i]],
+    [/read\s+.*report.*\s+before\s+.*(source|docs|code)/i, [/read\s+/i, /report/i, { afterSpace: /before\s+/i }, /(source|docs|code)/i]],
+    [/inspect\s+.*report.*\s+before\s+.*(source|docs|code)/i, [/inspect\s+/i, /report/i, { afterSpace: /before\s+/i }, /(source|docs|code)/i]],
+    [/check\s+.*\.promptci\s+before/i, [/check\s+/i, /\.promptci\s+before/i]],
     [/\bunity\b.*\b(lts|editor|hub|engine)\b/i, [/\bunity\b/i, /\b(lts|editor|hub|engine)\b/i]],
     [/instantiate\b.*monobehaviour/i, [/instantiate\b/i, /monobehaviour/i]],
     [/avoid\b.*update/i, [/avoid\b/i, /update/i]],
@@ -359,10 +367,48 @@ describe('the linear readers give what the regexes they replace gave', () => {
     }
   });
 
+  it('section and paragraph normalization', () => {
+    // The chains before pcic-1ik0.25, whose list-marker patterns ran across blank lines.
+    const oldSection = (text: string) =>
+      text
+        .toLowerCase()
+        .replace(/^#{1,6}\s+/gm, '')
+        .replace(/^[\s]*[-*+]\s+/gm, '')
+        .replace(/^[\s]*\d+\.\s+/gm, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+    const oldParagraph = (text: string) =>
+      text
+        .toLowerCase()
+        .replace(/^#{1,6}\s+/gm, '')
+        .replace(/^[\s]*[-*+]\s+/gm, '')
+        .replace(/^[\s]*\d+[.)]\s+/gm, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+    const pool = ['- ', '* ', '+ ', '1. ', '2) ', '-', ' ', '  ', '\t', '\n', '\r\n', '\r', '\u2028', '\u00a0', 'x', 'Word', '## ', '#'];
+    const next = generator(0xad3d);
+    for (let n = 0; n < RUNS * 2; n++) {
+      const text = randomText(pool, 14, next);
+      expect(normalizeSection(text), JSON.stringify(text)).toBe(oldSection(text));
+      expect(normalizeParagraph(text), JSON.stringify(text)).toBe(oldParagraph(text));
+    }
+  });
+
+  it('evidence past the quoting window', () => {
+    const regex = /read\s+.*\.promptci\s+before/i;
+    const matcher = inOrderOnOneLine(/read\s+/i, /\.promptci\s+before/i);
+    for (const filler of [1_900, 2_100, 5_000]) {
+      const text = '# Rules\n\nRead ' + 'x '.repeat(filler / 2) + ' .promptci before editing source code files.\n';
+      expect(matchEvidence(text, regex, 'L', 120, matcher), String(filler)).toBe(matchEvidence(text, regex, 'L'));
+    }
+    const twice = 'Read .promptci before you start. ' + 'x '.repeat(1_500) + 'and read .promptci before you stop.';
+    expect(matchEvidence(twice, regex, 'L', 120, matcher)).toBe(matchEvidence(twice, regex, 'L'));
+  });
+
   it('evidence quotes the same text as the plain regex', () => {
     const text = 'Intro.\nPlease read the latest report before you look at the source code.\n';
     const regex = /read\s+.*report.*\s+before\s+.*(source|docs|code)/i;
-    const matcher = inOrderOnOneLine(/read\s+/i, /report/i, /\s+before\s+/i, /(source|docs|code)/i);
+    const matcher = inOrderOnOneLine(/read\s+/i, /report/i, { afterSpace: /before\s+/i }, /(source|docs|code)/i);
     expect(matchEvidence(text, regex, 'Reports first', 120, matcher)).toBe(matchEvidence(text, regex, 'Reports first'));
     expect(firstMatch(text, regex)).toBe('read the latest report before you look at the source code');
   });
