@@ -81,6 +81,19 @@ const LEADING_DIRECTIVE_VERBS = new Set([
 ]);
 
 /**
+ * pcic-1ik0.25: how far past (or before) its anchor a directive's subject is read. A subject is a few
+ * words, so this changes nothing on ordinary text; it keeps a long logical line (one 300 KB line, or
+ * thousands of lines with no terminal punctuation, which buildLogicalLines joins) from being re-read
+ * from every anchor on it, which was quadratic (seconds per 100 KB).
+ */
+const SUBJECT_WINDOW = 400;
+
+/** The text after a directive's anchor that its subject is read from (see SUBJECT_WINDOW). */
+function textAfterAnchor(line: string, anchorIndex: number): string {
+  return line.slice(anchorIndex, anchorIndex + SUBJECT_WINDOW).replace(/^\s+/, '');
+}
+
+/**
  * Extract up to `maxWords` content words after an anchor position,
  * stopping at stop-words or non-word characters.
  *
@@ -91,7 +104,7 @@ const LEADING_DIRECTIVE_VERBS = new Set([
  */
 function extractSubjectWords(line: string, anchorIndex: number, maxWords = 3, skipLeadingVerb = false): string {
   // Consume the rest of the line after the anchor
-  let rest = line.slice(anchorIndex).replace(/^\s+/, '');
+  let rest = textAfterAnchor(line, anchorIndex);
 
   // Optionally skip a leading directive verb so "always use X" → subject "X"
   if (skipLeadingVerb) {
@@ -271,7 +284,7 @@ function detectQualifierAfterSubject(
   subject: string,
   skipLeadingVerb: boolean,
 ): boolean {
-  let rest = line.slice(anchorIndex).replace(/^\s+/, '');
+  let rest = textAfterAnchor(line, anchorIndex);
 
   if (skipLeadingVerb) {
     const fw = /^([a-zA-Z]+)\s+/.exec(rest);
@@ -348,7 +361,7 @@ function subjectSimilarity(a: string, b: string): number {
  * period, or start of string), then extracts the last N content words.
  */
 function extractSubjectWordsBefore(line: string, anchorIndex: number, maxWords = 4): string {
-  const before = line.slice(0, anchorIndex).trimEnd();
+  const before = line.slice(Math.max(0, anchorIndex - SUBJECT_WINDOW), anchorIndex).trimEnd();
   if (!before) return '';
 
   // Find the nearest clause start (after a comma, period, semicolon, or start of line)
@@ -465,7 +478,10 @@ function extractDirectives(section: InstructionSection): DirectiveMatch[] {
       // negative match's span is masked out (replaced with spaces, same
       // length so all downstream indices stay valid) before the positive
       // pattern searches.
-      let lineForPositiveSearch = line;
+      // pcic-1ik0.25: the masked line is built once from its pieces; rebuilding the whole line per
+      // negative match was quadratic on a long line of them.
+      const maskedPieces: string[] = [];
+      let maskedUpTo = 0;
       for (const negMatch of negMatches) {
         const anchorEnd = negMatch.index + negMatch.text.length;
         // Negatives always extract AFTER the anchor unless the pair is fully symmetric
@@ -478,11 +494,10 @@ function extractDirectives(section: InstructionSection): DirectiveMatch[] {
           const hasQualifier = !negBefore && detectQualifierAfterSubject(line, anchorEnd, subject, skip);
           results.push({ section, pairIndex: pi, polarity: 'negative', subject, matchedLine: line, hasQualifier });
         }
-        lineForPositiveSearch =
-          lineForPositiveSearch.slice(0, negMatch.index) +
-          ' '.repeat(negMatch.text.length) +
-          lineForPositiveSearch.slice(anchorEnd);
+        maskedPieces.push(line.slice(maskedUpTo, negMatch.index), ' '.repeat(negMatch.text.length));
+        maskedUpTo = anchorEnd;
       }
+      const lineForPositiveSearch = negMatches.length === 0 ? line : maskedPieces.join('') + line.slice(maskedUpTo);
 
       const posMatches = execAll(pair.positivePattern, lineForPositiveSearch);
       for (const posMatch of posMatches) {
@@ -513,11 +528,36 @@ function conflictId(
   startB: number,
   pairIndex: number,
   subject: string,
+  known?: Map<string, string>,
 ): string {
   const parts = [`${fileA}:${startA}`, `${fileB}:${startB}`].sort();
   const raw = `${parts[0]}|${parts[1]}|${pairIndex}|${subject}`;
+  const cached = known?.get(raw);
+  if (cached) return cached;
   const hash = crypto.createHash('sha1').update(raw).digest('hex').slice(0, 12);
+  known?.set(raw, `conflict-${hash}`);
   return `conflict-${hash}`;
+}
+
+/**
+ * pcic-1ik0.25: a ceiling on directive comparisons per scan. Ordinary files make hundreds at most;
+ * a file built to repeat one subject in thousands of opposite directives stops here instead of
+ * comparing every pair (the findings already reported stand).
+ */
+const MAX_DIRECTIVE_COMPARISONS = 250_000;
+/** And on conflict findings per scan: past a few hundred, more of them tell the reader nothing new. */
+const MAX_CONFLICT_FINDINGS = 500;
+
+/** The first position in an ascending list whose value is above `value`. */
+function firstAbove(list: readonly number[], value: number): number {
+  let lo = 0;
+  let hi = list.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (list[mid]! <= value) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
 }
 
 /**
@@ -543,7 +583,8 @@ export function detectConflicts(files: InstructionFile[]): PromptCiIssue[] {
 
   const directives: DirectiveMatch[] = [];
   for (const section of sections) {
-    directives.push(...extractDirectives(section));
+    // A loop, not push(...spread): a section of 100,000+ directives overflowed the call stack.
+    for (const directive of extractDirectives(section)) directives.push(directive);
   }
 
   const issues: PromptCiIssue[] = [];
@@ -559,13 +600,64 @@ export function detectConflicts(files: InstructionFile[]): PromptCiIssue[] {
     return fx !== undefined && fy !== undefined && neverLoadedTogether(fx, fy);
   };
 
-  for (let i = 0; i < directives.length; i++) {
-    for (let j = i + 1; j < directives.length; j++) {
-      const a = directives[i];
-      const b = directives[j];
 
-      if (a.pairIndex !== b.pairIndex) continue;
-      if (a.polarity === b.polarity) continue;
+  // pcic-1ik0.25: only directives of the same pair, opposite polarity and at least one shared
+  // subject word can conflict (identical subjects share every word; a partial match needs a
+  // Jaccard overlap of 0.5). Comparing every directive with every other was quadratic: about
+  // 80,000 directives in a 20,000-line file never finished. Candidates are visited in the old
+  // (i, j) order, so the findings and their order are unchanged.
+  const subjectWords = directives.map((d) => [...new Set(d.subject.split(' ').filter(Boolean))]);
+  const byWord = new Map<string, number[]>();
+  const wordKey = (pairIndex: number, polarity: string, word: string) => `${pairIndex}|${polarity}|${word}`;
+  directives.forEach((d, index) => {
+    for (const word of subjectWords[index]!) {
+      const key = wordKey(d.pairIndex, d.polarity, word);
+      const list = byWord.get(key);
+      if (list) list.push(index);
+      else byWord.set(key, [index]);
+    }
+  });
+  // What a pair asks of its lines, answered once per line: a long logical line is shared by every
+  // directive on it, and re-reading it per pair was quadratic (pcic-1ik0.25).
+  const lineAnswers = new Map<string, Map<string, boolean>>();
+  const lineHas = (line: string, question: string, answer: () => boolean): boolean => {
+    let answers = lineAnswers.get(line);
+    if (!answers) lineAnswers.set(line, (answers = new Map()));
+    let known = answers.get(question);
+    if (known === undefined) answers.set(question, (known = answer()));
+    return known;
+  };
+  // A pair of sections shares one id per subject: hashed once, not per pair of directives in them,
+  // and once reported, the other directive pairs of those sections and subject are passed over
+  // before the id is even built (their id is the reported one, so the old code skipped them too).
+  const knownIds = new Map<string, string>();
+  const reportedGroups = new Map<InstructionSection, Map<InstructionSection, Set<string>>>();
+  const alreadyReported = (pos: InstructionSection, neg: InstructionSection, pairIndex: number, subject: string) =>
+    reportedGroups.get(pos)?.get(neg)?.has(`${pairIndex}|${subject}`) === true;
+  const markReported = (pos: InstructionSection, neg: InstructionSection, pairIndex: number, subject: string) => {
+    let byNeg = reportedGroups.get(pos);
+    if (!byNeg) reportedGroups.set(pos, (byNeg = new Map()));
+    let groups = byNeg.get(neg);
+    if (!groups) byNeg.set(neg, (groups = new Set()));
+    groups.add(`${pairIndex}|${subject}`);
+  };
+  let comparisons = 0;
+  const exhausted = () => comparisons >= MAX_DIRECTIVE_COMPARISONS || issues.length >= MAX_CONFLICT_FINDINGS;
+
+  for (let i = 0; i < directives.length && !exhausted(); i++) {
+    const a = directives[i]!;
+    const opposite = a.polarity === 'positive' ? 'negative' : 'positive';
+    const candidates = new Set<number>();
+    for (const word of subjectWords[i]!) {
+      const list = byWord.get(wordKey(a.pairIndex, opposite, word));
+      if (!list) continue;
+      const from = firstAbove(list, i);
+      for (let k = from; k < list.length; k++) candidates.add(list[k]!);
+      comparisons += list.length - from;
+    }
+    for (const j of [...candidates].sort((x, y) => x - y)) {
+      if (issues.length >= MAX_CONFLICT_FINDINGS) break;
+      const b = directives[j]!;
       if (apartScopes(a, b)) continue;
 
       const pos = a.polarity === 'positive' ? a : b;
@@ -594,12 +686,12 @@ export function detectConflicts(files: InstructionFile[]): PromptCiIssue[] {
         // confidence because their lines don't contain "`jest.something`" patterns.
         const subjectTokenCount = pos.subject.split(' ').filter(Boolean).length;
         const truncatedByMethodCall = subjectTokenCount === 1 && (
-          new RegExp(`\`${pos.subject}\\.[a-z]`, 'i').test(pos.matchedLine) ||
-          new RegExp(`\`${neg.subject}\\.[a-z]`, 'i').test(neg.matchedLine)
+          lineHas(pos.matchedLine, `call:${pos.subject}`, () => new RegExp(`\`${pos.subject}\\.[a-z]`, 'i').test(pos.matchedLine)) ||
+          lineHas(neg.matchedLine, `call:${neg.subject}`, () => new RegExp(`\`${neg.subject}\\.[a-z]`, 'i').test(neg.matchedLine))
         );
         const pair = DIRECTIVE_PAIRS[a.pairIndex]!;
         const scopedButPositiveIsAbsoluteAlways =
-          neg.hasQualifier && /\balways\b/i.test(pos.matchedLine) && pair.label.includes('always');
+          neg.hasQualifier && lineHas(pos.matchedLine, 'always', () => /\balways\b/i.test(pos.matchedLine)) && pair.label.includes('always');
         confidence = scopedButPositiveIsAbsoluteAlways
           ? 0.5
           : (neg.hasQualifier ? 0.35 : (truncatedByMethodCall ? 0.5 : 0.8));
@@ -627,6 +719,7 @@ export function detectConflicts(files: InstructionFile[]): PromptCiIssue[] {
 
       // Below actionable threshold — skip
       if (confidence < 0.4) continue;
+      if (alreadyReported(pos.section, neg.section, a.pairIndex, pos.subject)) continue;
 
       const id = conflictId(
         sectionIdPath(pos.section),
@@ -635,10 +728,12 @@ export function detectConflicts(files: InstructionFile[]): PromptCiIssue[] {
         neg.section.startLine,
         a.pairIndex,
         pos.subject,
+        knownIds,
       );
 
       if (reported.has(id)) continue;
       reported.add(id);
+      markReported(pos.section, neg.section, a.pairIndex, pos.subject);
 
       const severity: PromptCiIssue['severity'] = confidence >= 0.7 ? 'high' : 'warning';
       const pair = DIRECTIVE_PAIRS[a.pairIndex];
@@ -698,9 +793,15 @@ export function detectConflicts(files: InstructionFile[]): PromptCiIssue[] {
   for (const [subject, posList] of subjectPos) {
     const negList = subjectNeg.get(subject);
     if (!negList) continue;
+    // BUG-010 below needs two words on both sides, and both sides carry this subject: a one-word
+    // subject never fires, so its (possibly thousands of) pairs are not walked (pcic-1ik0.25).
+    if (subject.split(' ').filter(Boolean).length < 2) continue;
 
     for (const pos of posList) {
+      if (exhausted()) break;
+      comparisons += negList.length;
       for (const neg of negList) {
+        if (issues.length >= MAX_CONFLICT_FINDINGS) break;
         // Same pair is already handled — skip
         if (pos.pairIndex === neg.pairIndex) continue;
         // Same section — skip
@@ -719,6 +820,7 @@ export function detectConflicts(files: InstructionFile[]): PromptCiIssue[] {
         if (neg.hasQualifier) continue;
         if (apartScopes(pos, neg)) continue;
 
+        if (alreadyReported(pos.section, neg.section, -1, subject)) continue;
         // Use -1 as pairIndex sentinel to distinguish cross-pair IDs from within-pair IDs
         const id = conflictId(
           sectionIdPath(pos.section),
@@ -727,9 +829,11 @@ export function detectConflicts(files: InstructionFile[]): PromptCiIssue[] {
           neg.section.startLine,
           -1,
           subject,
+          knownIds,
         );
         if (reported.has(id)) continue;
         reported.add(id);
+        markReported(pos.section, neg.section, -1, subject);
 
         const filePaths = Array.from(new Set([pos.section.filePath, neg.section.filePath]));
 

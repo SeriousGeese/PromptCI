@@ -31,6 +31,8 @@ import { aliasesWithNewType, groupAliasesByTarget } from './alias-files.js';
 import { UNSCORED_TAG } from './health-score.js';
 import { importingToolFor, resolvedImports } from './mirror-import.js';
 import type { RepoTree } from './repo-tree.js';
+import { inOrderOnOneLine } from './linear-text.js';
+import type { TextMatcher } from './linear-text.js';
 
 // ── Practice checks ──────────────────────────────────────────────────────────
 
@@ -41,7 +43,7 @@ interface PracticeCheck {
   label: string;
   summary: string;
   /** At least one pattern must match somewhere across all files to pass. */
-  patterns: RegExp[];
+  patterns: TextMatcher[];
   recommendation: string;
   confidence: number;
   fixRecipe?: string;
@@ -156,11 +158,13 @@ const CHECKS: PracticeCheck[] = [
       "Agents that edit files they haven't read may clobber context or introduce inconsistencies.",
     patterns: [
       /read\s+(the\s+|a\s+|any\s+)?file\s+(fully\s+|first\s+)?before\s+(edit|modif|chang)/i,
-      /read\s+(the\s+|a\s+)?file.*before\s+(edit|modif|chang)/i,
+      // pcic-1ik0.25: /read\s+(the\s+|a\s+)?file.*before\s+(edit|modif|chang)/i, linear.
+      inOrderOnOneLine(/read\s+(the\s+|a\s+)?file/i, /before\s+(edit|modif|chang)/i),
       /must\s+(first\s+)?read\s+(the\s+|a\s+|any\s+)?(file|source|code)/i,
       /always\s+read\s+(the\s+|a\s+)?(file|source|code)/i,
       /inspect\s+(the\s+|a\s+)?file\s+before/i,
-      /read.*before.*edit/i,
+      // /read.*before.*edit/i, linear (pcic-1ik0.25: minutes on one long line of "read").
+      inOrderOnOneLine(/read/i, /before/i, /edit/i),
       // AP5: reversed word order — "Before editing, read the relevant files."
       // The rule reads before/edit FIRST and "read" second, so the read.*edit
       // patterns above never matched this common phrasing.
@@ -240,7 +244,8 @@ const CHECKS: PracticeCheck[] = [
       /outline\s+(the\s+)?(approach|plan|design|steps)\s+before/i,
       /think\s+(?:through|it\s+through)\s+(?:the\s+)?(?:approach|plan|design|steps|task|problem)/i,
       /propose\s+(a\s+)?(plan|approach|design)/i,
-      /before\s+implement\w+.*\b(plan|outline|design)\b/i,
+      // /before\s+implement\w+.*\b(plan|outline|design)\b/i, linear (pcic-1ik0.25).
+      inOrderOnOneLine(/before\s+implement\w+/i, /\b(plan|outline|design)\b/i),
       /design\s+before\s+(implement|cod)/i,
     ],
     recommendation:
@@ -391,7 +396,7 @@ function perFileBehaviorIssueId(filePath: string): string {
  * for the same file path; the public id PREFIX is unchanged so existing
  * baselines/tooling that pattern-match on `behavior-duplication-` still work.
  */
-function matchesAny(text: string, patterns: RegExp[]): boolean {
+function matchesAny(text: string, patterns: readonly TextMatcher[]): boolean {
   return patterns.some((p) => p.test(text));
 }
 

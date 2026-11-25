@@ -45,19 +45,126 @@ import { htmlCommentRanges, indentedCodeLines, inRanges } from './sample-text.js
 import { liveImportLines, importingToolFor } from './mirror-import.js';
 import { RepoTree, errorCode, incompleteCheckIssue, isAbsoluteAnywhere } from './repo-tree.js';
 import type { Lookup } from './repo-tree.js';
+import { forwardIndexOf } from './linear-text.js';
 
 // ── Patterns ──────────────────────────────────────────────────────────────────
 
-/** Matches markdown inline links: [label](target) — captures target (may include a title). */
-const MD_LINK_RE = /\[(?:[^\]]*)\]\(([^)]+)\)/g;
-const NESTED_MD_LINK_RE = /\[(?:[^\]]|\]\([^)]*\))*\]\(([^)]+)\)/g;
+// Markdown inline links, [label](target) with the target possibly carrying a title, are read by
+// markdownLinks and nestedMarkdownLinks below, linear versions of the regexes they quote.
+
+type LinkMatch = { index: number; text: string; target: string };
 
 /**
- * Matches markdown reference-style link definitions: `[ref]: path/to/file.md "Title"`
- * These are easy to miss because the usage site `[text][ref]` never carries the path —
- * only the definition line does.
+ * The matches of /\[(?:[^\]]*)\]\(([^)]+)\)/g, in order, without its backtracking: the regex read
+ * from every "[" to the end of the file when no "](" followed, minutes on a line of "[a](b"
+ * (pcic-1ik0.25). A label ends at the first "]" after its "[" and a target at the first ")".
  */
-const LINK_REF_DEF_RE = /^[ \t]{0,3}\[[^\]]+\]:\s*(\S+)/gm;
+export function markdownLinks(content: string): LinkMatch[] {
+  const links: LinkMatch[] = [];
+  const nextClose = forwardIndexOf(content, ']');
+  const nextParen = forwardIndexOf(content, ')');
+  for (let pos = 0; ; ) {
+    const open = content.indexOf('[', pos);
+    if (open === -1) break;
+    const close = nextClose(open + 1);
+    if (close === -1) break;
+    if (content[close + 1] !== '(') {
+      pos = open + 1;
+      continue;
+    }
+    const end = nextParen(close + 2);
+    if (end === -1) break;
+    if (end === close + 2) {
+      pos = open + 1;
+      continue;
+    }
+    links.push({ index: open, text: content.slice(open, end + 1), target: content.slice(close + 2, end) });
+    pos = end + 1;
+  }
+  return links;
+}
+
+/**
+ * The matches of /\[(?:[^\]]|\]\([^)]*\))*\]\(([^)]+)\)/g, in order. The label runs over any
+ * character but "]", and over a whole "](…)" link target; the regex took the furthest "](target)"
+ * such a walk reaches from each "[". That walk is the same from every point on it, so the furthest
+ * reachable end is worked out once, from the end of the file back (pcic-1ik0.25).
+ */
+export function nestedMarkdownLinks(content: string): LinkMatch[] {
+  const n = content.length;
+  const nextParen = new Int32Array(n + 2).fill(-1);
+  for (let i = n - 1; i >= 0; i--) nextParen[i] = content[i] === ')' ? i : nextParen[i + 1]!;
+  // furthest[x]: the "]" of the furthest "](target)" a label walk starting at x reaches, or -1.
+  const furthest = new Int32Array(n + 2).fill(-1);
+  for (let x = n - 1; x >= 0; x--) {
+    if (content[x] !== ']') {
+      furthest[x] = furthest[x + 1]!;
+      continue;
+    }
+    if (content[x + 1] !== '(') continue;
+    const end = nextParen[x + 2]!;
+    if (end === -1) continue;
+    const further = furthest[end + 1]!;
+    furthest[x] = further !== -1 ? further : end >= x + 3 ? x : -1;
+  }
+  const links: LinkMatch[] = [];
+  for (let pos = 0; ; ) {
+    const open = content.indexOf('[', pos);
+    if (open === -1) break;
+    const close = furthest[open + 1]!;
+    if (close === -1) {
+      pos = open + 1;
+      continue;
+    }
+    const end = nextParen[close + 2]!;
+    links.push({ index: open, text: content.slice(open, end + 1), target: content.slice(close + 2, end) });
+    pos = end + 1;
+  }
+  return links;
+}
+
+/** JavaScript's `\s`. */
+const isSpace = (char: string | undefined): boolean => char !== undefined && /\s/.test(char);
+
+/**
+ * Markdown reference-style link definitions: `[ref]: path/to/file.md "Title"`. These are easy to
+ * miss because the usage site `[text][ref]` never carries the path; only the definition line does.
+ *
+ * The matches of /^[ \t]{0,3}\[[^\]]+\]:\s*(\S+)/gm, in order: at a line start, up to three spaces
+ * or tabs, a label to the first "]", a colon, any whitespace, and the first non-space run. The
+ * regex sent a label with no "]" across the rest of the file from every such line (pcic-1ik0.25).
+ */
+export function linkReferenceDefinitions(content: string): Array<{ index: number; text: string; target: string }> {
+  const defs: Array<{ index: number; text: string; target: string }> = [];
+  const nextClose = forwardIndexOf(content, ']');
+  for (let lineStart = 0; lineStart <= content.length; ) {
+    let at = lineStart;
+    while (at < lineStart + 3 && (content[at] === ' ' || content[at] === '\t')) at++;
+    let resumeAt = -1;
+    if (content[at] === '[') {
+      const close = nextClose(at + 1);
+      if (close > at + 1 && content[close + 1] === ':') {
+        let target = close + 2;
+        while (isSpace(content[target])) target++;
+        let end = target;
+        while (end < content.length && !isSpace(content[end])) end++;
+        if (end > target) {
+          defs.push({ index: lineStart, text: content.slice(lineStart, end), target: content.slice(target, end) });
+          resumeAt = end;
+        }
+      }
+    }
+    // The next line start (the m flag's ^: after \n, \r, U+2028 or U+2029) at or after resumeAt.
+    let next = Math.max(lineStart, resumeAt);
+    for (; next < content.length; next++) {
+      const c = content[next];
+      if (c === '\n' || c === '\r' || c === '\u2028' || c === '\u2029') break;
+    }
+    if (next >= content.length) break;
+    lineStart = next + 1;
+  }
+  return defs;
+}
 
 /**
  * Matches @-file references: @AGENTS.md, @./path/file.ts, @docs/guide.md
@@ -214,8 +321,45 @@ const LAYOUT_SECTION_HEADING_RE = new RegExp(
  * "Create a file named `ci.yml`, like the one in `docs/other.md`") is still
  * flagged.
  */
-const CREATION_INTENT_RE =
-  /\b(?:create|add|generate|scaffold|place|put|save|make)\s+(?:a\s+|an\s+|the\s+|your\s+|this\s+|new\s+)*(?:file|workflow|config(?:uration)?|script|action|manifest|template|module|component)\b[^.\n]*?\b(?:named|called|at|as|in|to|like)\s+[`'"(]*([^\s`'"()]+)/i;
+//   /\b(?:create|…)\s+(?:a\s+|…)*(?:file|…)\b[^.\n]*?\b(?:named|…)\s+[`'"(]*([^\s`'"()]+)/i, read in two
+// parts by creationTarget (pcic-1ik0.25: the lazy gap re-read the rest of a long line per verb).
+const CREATION_VERB_RE =
+  /\b(?:create|add|generate|scaffold|place|put|save|make)\s+(?:a\s+|an\s+|the\s+|your\s+|this\s+|new\s+)*(?:file|workflow|config(?:uration)?|script|action|manifest|template|module|component)\b/gi;
+const CREATION_NAME_RE = /\b(?:named|called|at|as|in|to|like)\s+[`'"(]*([^\s`'"()]+)/gi;
+
+/**
+ * The file a line asks the reader to create ("create a file named `x.yml`"): a creation verb and
+ * noun, then, in the same sentence, "named", "called", "at"... and the name. The first verb whose
+ * sentence names something wins, as with the single regex this replaces.
+ */
+export function creationTarget(lineText: string): string | undefined {
+  const verbs = new RegExp(CREATION_VERB_RE.source, CREATION_VERB_RE.flags);
+  const names = new RegExp(CREATION_NAME_RE.source, CREATION_NAME_RE.flags);
+  let name: RegExpExecArray | null = null;
+  let nameFrom = -1;
+  let stop = -1;
+  let stopFrom = -1;
+  for (let start = 0; ; ) {
+    verbs.lastIndex = start;
+    const verb = verbs.exec(lineText);
+    if (!verb) return undefined;
+    const end = verb.index + verb[0].length;
+    if (nameFrom === -1 || end < nameFrom || (name !== null && name.index < end)) {
+      names.lastIndex = end;
+      name = names.exec(lineText);
+      nameFrom = end;
+    }
+    if (name === null) return undefined;
+    if (stopFrom === -1 || end < stopFrom || (stop !== -1 && stop < end)) {
+      const dot = lineText.indexOf('.', end);
+      const newline = lineText.indexOf('\n', end);
+      stop = dot === -1 ? newline : newline === -1 ? dot : Math.min(dot, newline);
+      stopFrom = end;
+    }
+    if (stop === -1 || stop >= name.index) return name[1];
+    start = verb.index + 1;
+  }
+}
 
 /** Normalizes a ref for creation-target comparison (slashes, ./ prefix, case). */
 function normalizeRefPath(ref: string): string {
@@ -593,7 +737,7 @@ function extractCodeBlockLayoutPaths(
   for (const block of fencedBlocks(content)) {
     if (!block.closed) continue;
     const startOffset = lineOffsets[block.contentStartLine - 1] ?? content.length;
-    results.push(...collectLayoutEntryPaths(block.lines, lineOffsets, startOffset));
+    for (const entry of collectLayoutEntryPaths(block.lines, lineOffsets, startOffset)) results.push(entry);
   }
 
   return results;
@@ -618,11 +762,20 @@ function collectRefs(
   // `handlers[type](payload)` in a code fence or `a[i](b)` in a code span has
   // the shape of a link without being one. Checkable-extension targets keep
   // their historical behavior; the extension-less check only reads real prose.
+  // Backticks before each offset, so a code-span check is a subtraction, not a re-read of the line
+  // (pcic-1ik0.25: quadratic on one long line of links).
+  let backticks: Int32Array | undefined;
+  const backticksBefore = (offset: number): number => {
+    if (!backticks) {
+      backticks = new Int32Array(content.length + 1);
+      for (let i = 0; i < content.length; i++) backticks[i + 1] = backticks[i]! + (content[i] === '`' ? 1 : 0);
+    }
+    return backticks[offset]!;
+  };
   const inCode = (index: number): boolean => {
     const line = lineForOffset(lineOffsets, index);
     if (fenceLines[line - 1]?.inFence) return true;
-    const before = content.slice(lineOffsets[line - 1] ?? 0, index);
-    return (before.match(/`/g)?.length ?? 0) % 2 === 1;
+    return (backticksBefore(index) - backticksBefore(lineOffsets[line - 1] ?? 0)) % 2 === 1;
   };
   const pushLink = (ref: string, evidence: string, index: number, linkRaw?: string): void => {
     if (!ref || isExternalRef(ref)) return;
@@ -644,34 +797,31 @@ function collectRefs(
 
   // Markdown links: [label](target) or [label](target "Title")
   let m: RegExpExecArray | null;
-  const linkRe = new RegExp(MD_LINK_RE.source, MD_LINK_RE.flags);
-  while ((m = linkRe.exec(content)) !== null) {
-    if (m.index >= 2 && content[m.index - 2] === '[' && content[m.index - 1] === '!') continue;
-    const raw = m[1] ?? '';
-    pushLink(stripFragment(stripLinkTitle(raw)), `[...](${raw})`, m.index, raw);
+  for (const link of markdownLinks(content)) {
+    if (link.index >= 2 && content[link.index - 2] === '[' && content[link.index - 1] === '!') continue;
+    const raw = link.target;
+    pushLink(stripFragment(stripLinkTitle(raw)), `[...](${raw})`, link.index, raw);
   }
 
-  const nestedLinkRe = new RegExp(NESTED_MD_LINK_RE.source, NESTED_MD_LINK_RE.flags);
-  while ((m = nestedLinkRe.exec(content)) !== null) {
-    const labelPart = m[0].slice(0, m[0].lastIndexOf(']('));
+  for (const link of nestedMarkdownLinks(content)) {
+    const labelPart = link.text.slice(0, link.text.lastIndexOf(']('));
     if (!labelPart.includes('](')) continue;
-    const raw = m[1] ?? '';
+    const raw = link.target;
     // pcic-1ik0.7: this pattern can start at an EARLIER link and run, through
     // that link's own `](…)` and any prose between, to the last link in the
     // file. `m.index` is then the first link's position while `raw` is the last
     // link's target, which put the finding on the wrong line and starved the
     // moved-link recipe of the `](target)` it looks for. The captured target
     // belongs to the final `](`, so that is where the reference lives.
-    pushLink(stripFragment(stripLinkTitle(raw)), `[...](${raw})`, m.index + m[0].lastIndexOf(']('), raw);
+    pushLink(stripFragment(stripLinkTitle(raw)), `[...](${raw})`, link.index + link.text.lastIndexOf(']('), raw);
   }
 
   // Reference-style link definitions: [ref]: docs/missing.md "Title"
-  const linkDefRe = new RegExp(LINK_REF_DEF_RE.source, LINK_REF_DEF_RE.flags);
-  while ((m = linkDefRe.exec(content)) !== null) {
-    const raw = m[1] ?? '';
+  for (const def of linkReferenceDefinitions(content)) {
+    const raw = def.target;
     // `[^1]: Footnote text` is a footnote, not a link definition.
-    if (/^[ \t]*\[\^/.test(m[0])) continue;
-    pushLink(stripFragment(raw), m[0].trim(), m.index);
+    if (/^[ \t]*\[\^/.test(def.text)) continue;
+    pushLink(stripFragment(raw), def.text.trim(), def.index);
   }
 
   // Live `@path` import lines of a file whose tool loads imports are imports,
@@ -729,14 +879,20 @@ function collectRefs(
 
   // pcic-2b6.8: backtick directory / extension-less paths: `src/payments/`, `apps/admin`.
   const btDirRe = new RegExp(BACKTICK_DIR_RE.source, BACKTICK_DIR_RE.flags);
+  // One answer per line, not per code span on it (pcic-1ik0.25).
+  const nonPathLines = new Map<number, boolean>();
   while ((m = btDirRe.exec(content)) !== null) {
     const ref = m[1] ?? '';
     const last = ref.replace(/\/+$/, '').split('/').pop() ?? '';
     if (!ref.endsWith('/') && path.extname(last) !== '') continue; // a file: BACKTICK_PATH_RE's job
     // Slash-shaped names that are not paths: git branches, HTTP routes, URLs.
     const lineNo = lineForOffset(lineOffsets, m.index);
-    const lineText = content.slice(lineOffsets[lineNo - 1] ?? 0, lineOffsets[lineNo] ?? content.length);
-    if (NON_PATH_CONTEXT_RE.test(lineText)) continue;
+    let nonPath = nonPathLines.get(lineNo);
+    if (nonPath === undefined) {
+      nonPath = NON_PATH_CONTEXT_RE.test(content.slice(lineOffsets[lineNo - 1] ?? 0, lineOffsets[lineNo] ?? content.length));
+      nonPathLines.set(lineNo, nonPath);
+    }
+    if (nonPath) continue;
     found.push({ ref, evidence: `\`${ref}\``, line: lineForOffset(lineOffsets, m.index), kind: 'rootedPath' });
   }
 
@@ -765,11 +921,13 @@ function collectRefs(
   // BUG-D1: Drop only the reference the line instructs the reader to CREATE
   // (a template for their repo), not every ref that happens to share the line.
   const contentLines = content.split('\n');
+  // One reading per line, not per reference on it (pcic-1ik0.25).
+  const creationTargets = new Map<number, string | undefined>();
   return found.filter(({ ref, line }) => {
-    const lineText = contentLines[line - 1] ?? '';
-    const m = CREATION_INTENT_RE.exec(lineText);
-    if (!m) return true;
-    const target = normalizeRefPath(m[1] ?? '');
+    if (!creationTargets.has(line)) creationTargets.set(line, creationTarget(contentLines[line - 1] ?? ''));
+    const created = creationTargets.get(line);
+    if (created === undefined) return true;
+    const target = normalizeRefPath(created);
     if (!target) return true;
     const refNorm = normalizeRefPath(ref);
     // Suppress the ref that IS the creation target (allow basename-level match so

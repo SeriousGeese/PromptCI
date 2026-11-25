@@ -35,12 +35,14 @@ type Paragraph = {
 };
 
 /** Normalise paragraph text for comparison: lowercase, strip markdown, collapse ws. */
-function normalize(text: string): string {
+export function normalizeParagraph(text: string): string {
   return text
     .toLowerCase()
     .replace(/^#{1,6}\s+/gm, '')
-    .replace(/^[\s]*[-*+]\s+/gm, '')
-    .replace(/^[\s]*\d+[.)]\s+/gm, '')
+    // pcic-1ik0.25: the indent before a marker stays on its own line (see normalizeSection in
+    // duplicates.ts: `^[\s]*` ran across every blank line above it, quadratic).
+    .replace(/^[^\S\n\r\u2028\u2029]*[-*+]\s+/gm, '')
+    .replace(/^[^\S\n\r\u2028\u2029]*\d+[.)]\s+/gm, '')
     .replace(/\s+/g, ' ')
     .trim();
 }
@@ -74,7 +76,7 @@ function splitParagraphs(section: InstructionSection): Paragraph[] {
     paragraphNumber++;
     const text = current.join('\n');
     if (!text.includes('```') && !text.includes('~~~')) {
-      const norm = normalize(text);
+      const norm = normalizeParagraph(text);
       const tokens = tokenize(norm);
       if (norm.length >= MIN_PARAGRAPH_CHARS && tokens.size >= MIN_PARAGRAPH_TOKENS) {
         paragraphs.push({ number: paragraphNumber, text, startLine: currentStart, tokens });
