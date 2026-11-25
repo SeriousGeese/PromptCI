@@ -55,7 +55,7 @@ import { scanFencedLines } from './markdown-fences.js';
 import { fileIdPath } from './finding-id.js';
 import { snippet } from './evidence.js';
 import { UNSCORED_TAG } from './health-score.js';
-import { ruleActivation } from './rule-activation.js';
+import { agentsOverridePairs, ruleActivation } from './rule-activation.js';
 
 /** The file types that are one tool's own instruction file. */
 const TOOL_TYPES: ReadonlySet<FileType> = new Set<FileType>([
@@ -437,8 +437,11 @@ export type CrossToolParityOptions = {
  * is compared and what is deliberately not.
  */
 export function detectCrossToolParity(files: InstructionFile[], options: CrossToolParityOptions = {}): PromptCiIssue[] {
+  // Codex reads AGENTS.override.md INSTEAD of the AGENTS.md beside it, so the
+  // override is never compared with that AGENTS.md (pcic-k1t3.10).
+  const overrides = new Set(agentsOverridePairs(files).map(([, override]) => override));
   const tools = files
-    .filter((f) => TOOL_TYPES.has(f.fileType) && !isTaskPromptFile(f) && !isScopedRuleFile(f))
+    .filter((f) => TOOL_TYPES.has(f.fileType) && !isTaskPromptFile(f) && !isScopedRuleFile(f) && !overrides.has(f))
     .sort((x, y) => (fileIdPath(x) < fileIdPath(y) ? -1 : fileIdPath(x) > fileIdPath(y) ? 1 : 0));
   if (tools.length < 2) return [];
 

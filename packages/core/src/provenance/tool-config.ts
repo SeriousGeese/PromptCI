@@ -625,7 +625,7 @@ export const TOOL_CONFIG_PROVENANCE: readonly CheckProvenance[] = [
       ),
     ],
     caveat:
-      'docs.windsurf.com redirects to these Devin Local docs, so the record names Devin Local rather than Windsurf; whether a Windsurf build still on its own docs behaves the same is not shown. PromptCI reads only the top level of each rules directory, as the page describes.',
+      'docs.windsurf.com redirects to these Devin Local docs, so the record names Devin Local rather than Windsurf; whether a Windsurf build still on its own docs behaves the same is not shown. PromptCI reads only the top level of each rules directory, as the page describes. Because the page states no size limit, the tighter .windsurfrules size thresholds (context-bloat/windsurf-truncation, itself unverified) apply only to the legacy .windsurfrules file; files in .windsurf/rules/ and .devin/ get the generic thresholds.',
     lastVerified: VERIFIED_FORMATS,
   },
   {

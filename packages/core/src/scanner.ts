@@ -8,7 +8,7 @@ import { isWithinRoot, realPath, realPathWithinRoot } from './path-containment.j
 import { createGitSymlinkOracle } from './git-symlinks.js';
 import { RepoTree } from './repo-tree.js';
 import type { GitSymlinkOracle } from './git-symlinks.js';
-import { SCAN_IGNORE_DIRS, defaultInstructionPatterns, MAX_FILE_SIZE, BINARY_CHECK_BYTES } from './discovery.js';
+import { SCAN_IGNORE_DIRS, defaultInstructionPatterns, MAX_FILE_SIZE, BINARY_CHECK_BYTES, ROO_MODE_SLUG } from './discovery.js';
 
 // 'worktrees'/'.worktrees' covers git worktree checkouts nested anywhere in the
 // tree (e.g. Claude Code's .claude/worktrees/<name>/, or a top-level worktrees/
@@ -32,7 +32,7 @@ export { MAX_FILE_SIZE, BINARY_CHECK_BYTES };
 
 const PERSONA_ROOT_PATHS: ReadonlySet<string> = new Set(['/SOUL.md', '/USER.md', '/TOOLS.md']);
 /** Roo Code rule files: `.roo/rules/`, `.roo/rules-<mode>/`, `.roorules` and `.roorules-<mode>`, at the root. */
-const ROO_RULES_RE = /^\/(?:\.roo\/rules(?:-[^/]+)?\/|\.roorules(?:-[^/]+)?$)/;
+const ROO_RULES_RE = new RegExp(`^/(?:\\.roo/rules(?:-[^/]+)?/|\\.roorules(?:-${ROO_MODE_SLUG})?$)`);
 
 // Takes the repo-root-relative path (not the absolute path): classification must
 // depend only on where a file sits INSIDE the scanned repo. Using the absolute

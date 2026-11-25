@@ -16,6 +16,13 @@ import { ruleActivation } from '../src/rule-activation.js';
 import { detectCrossToolParity } from '../src/cross-tool-parity.js';
 import { detectContextBloat } from '../src/context-bloat.js';
 import { detectAgentPractices } from '../src/agent-practices.js';
+import { detectConflicts } from '../src/conflicts.js';
+import { detectMissingContext } from '../src/missing-context.js';
+import { detectWindsurfRules } from '../src/windsurf-detector.js';
+import { scanFilesWithAliases } from '../src/scanner.js';
+import { canSymlink, makeTempRepo, trySymlink, writeFile } from './ai-config-helpers.js';
+import * as fs from 'node:fs';
+import { afterEach } from 'vitest';
 import { INSTRUCTION_FILE_TYPES } from '../src/types.js';
 import type { FileType, InstructionFile } from '../src/types.js';
 
@@ -213,5 +220,119 @@ describe('legacy .windsurfrules checks stay on the legacy file', () => {
     const rule = file('.windsurf/rules/style.md', '# Style\n\nTwo-space indentation.\n', 'windsurf');
     const titles = detectAgentPractices([agents, rule]).map((i) => i.title);
     expect(titles.some((t) => t.includes('.windsurfrules'))).toBe(false);
+  });
+});
+
+describe('review of PromptCI#247: scopes, overrides and file names', () => {
+  const tempDirs: string[] = [];
+  afterEach(() => {
+    for (const dir of tempDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+  });
+  const tempRepo = (files: Record<string, string>): string => {
+    const repo = makeTempRepo('promptci-instruction-tools-');
+    tempDirs.push(repo);
+    for (const [rel, content] of Object.entries(files)) writeFile(repo, rel, content);
+    return repo;
+  };
+  const TABS = '# Indentation\n\nAlways use tabs for indentation in every source file of this project.\n';
+  const NO_TABS = '# Indentation\n\nNever use tabs for indentation in every source file of this project.\n';
+  const tabConflicts = (...files: InstructionFile[]) =>
+    detectConflicts(files).filter((i) => i.title.toLowerCase().includes('tabs'));
+
+  it('opposite directives in two Roo Code mode rules are not a conflict; a mode rule against an always-on rule still is', () => {
+    const code = file('.roo/rules-code/style.md', TABS, 'roo');
+    const ask = file('.roo/rules-ask/style.md', NO_TABS, 'roo');
+    expect(tabConflicts(code, ask)).toEqual([]);
+    expect(tabConflicts(file('.roorules-code', TABS, 'roo'), file('.roorules-ask', NO_TABS, 'roo'))).toEqual([]);
+    expect(tabConflicts(code, file('AGENTS.md', NO_TABS, 'agents')).length).toBeGreaterThan(0);
+  });
+
+  it('two Kiro fileMatch files with different patterns are not a conflict; the same pattern still is', () => {
+    const kiro = (rel: string, pattern: string, body: string) =>
+      file(rel, `---\ninclusion: fileMatch\nfileMatchPattern: "${pattern}"\n---\n${body}`, 'kiro');
+    expect(tabConflicts(kiro('.kiro/steering/a.md', 'api/**', TABS), kiro('.kiro/steering/b.md', 'web/**', NO_TABS))).toEqual([]);
+    expect(tabConflicts(kiro('.kiro/steering/a.md', 'api/**', TABS), kiro('.kiro/steering/b.md', 'api/**', NO_TABS)).length).toBeGreaterThan(0);
+    // Copilot applyTo and Cursor globs scope the same way.
+    const copilot = (rel: string, glob: string, body: string) =>
+      file(rel, `---\napplyTo: "${glob}"\n---\n${body}`, 'copilot');
+    expect(tabConflicts(copilot('.github/instructions/a.instructions.md', '**/*.ts', TABS), copilot('.github/instructions/b.instructions.md', '**/*.py', NO_TABS))).toEqual([]);
+  });
+
+  it('Copilot does not read AGENT.md or AGENTS.override.md, so they do not silence the Copilot topic check', () => {
+    const copilot = file('.github/copilot-instructions.md', '# Copilot\n\nKeep answers short.\n', 'copilot');
+    const cursor = file('.cursorrules', '# Naming\n\nUse kebab-case for every file name.\n', 'cursor');
+    const silent = (...files: InstructionFile[]) =>
+      detectMissingContext(files, 'unknown').filter((i) => i.title.startsWith('copilot-instructions.md is silent on'));
+    expect(silent(copilot, cursor, file('AGENT.md', '# Agent\n\nShip it.\n', 'agents'))).toHaveLength(1);
+    expect(silent(copilot, cursor, file('AGENTS.override.md', '# Override\n\nShip it.\n', 'agents'))).toHaveLength(1);
+    expect(silent(copilot, cursor, file('agents.md', '# Agents\n\nShip it.\n', 'agents'))).toEqual([]);
+  });
+
+  it('AGENTS.override.md is not compared with the AGENTS.md beside it, and the pair counts once in the total', () => {
+    const FILLER = '# Notes\n\nKeep changes small.\nWrite a test for every fix.\nExplain the why in the PR body.\nAsk before large refactors.\n';
+    const agents = file('AGENTS.md', `${FILLER}Install with \`pnpm install\`.\n`, 'agents');
+    const override = file('AGENTS.override.md', 'Install with `npm install`.\n', 'agents');
+    const parity = (...files: InstructionFile[]) =>
+      detectCrossToolParity(files).filter((i) => i.title.startsWith('Possible package manager disagreement'));
+    expect(parity(agents, override)).toEqual([]);
+    // AGENTS.md is still the anchor for every other tool file in that directory.
+    const claude = file('CLAUDE.md', `${FILLER.replace('Notes', 'Claude')}Install with \`npm install\`.\n`, 'claude');
+    expect(parity(agents, override, claude).map((i) => i.filePaths.map((p) => p.split('/').pop()))).toEqual([['AGENTS.md', 'CLAUDE.md']]);
+
+    const big = (rel: string) => file(rel, `# Rules\n\n${'Keep this rule in mind. '.repeat(900)}\n`, 'agents');
+    const total = (...files: InstructionFile[]) => detectContextBloat(files).filter((i) => i.id === 'context-bloat-total');
+    expect(total(big('AGENTS.md'), big('AGENTS.override.md'))).toEqual([]);
+    expect(total(big('AGENTS.md'), big('AGENT.md'))).toHaveLength(1);
+  });
+
+  it('globs / applyTo do not scope an Amazon Q or Junie file, whose docs describe no frontmatter', () => {
+    const fm = '---\nglobs: "**/*.ts"\napplyTo: "**/*.ts"\n---\n# A\n';
+    expect(ruleActivation(file('.amazonq/rules/a.md', fm, 'amazonq'))).toBe('always');
+    expect(ruleActivation(file('.junie/guidelines.md', fm, 'junie'))).toBe('always');
+    expect(ruleActivation(file('.kiro/steering/a.md', fm, 'kiro'))).toBe('always');
+    expect(ruleActivation(file('.windsurf/rules/a.md', fm, 'windsurf'))).toBe('always');
+    expect(ruleActivation(file('.github/instructions/a.instructions.md', fm, 'copilot'))).toBe('scoped');
+    expect(ruleActivation(file('docs/rules.md', fm, 'unknown'))).toBe('scoped');
+  });
+
+  it('a frontmatter block needs its closing --- on a line of its own', () => {
+    expect(ruleActivation(file('.kiro/steering/a.md', '---\ninclusion: manual\n----\n# A\n', 'kiro'))).toBe('always');
+    expect(ruleActivation(file('.kiro/steering/a.md', '---\ninclusion: manual\n---  \n# A\n', 'kiro'))).toBe('scoped');
+  });
+
+  it('a symlink alias .windsurf/rules/x.md -> AGENTS.md gets the Windsurf scope check, not the .windsurfrules size limit (synthetic alias)', () => {
+    const MULTI = `# Rules\n\n## TypeScript\n\nStrict mode.\n\n## Python\n\nType hints.\n\n${'Keep this rule in mind. '.repeat(300)}\n`;
+    const agents = file('AGENTS.md', MULTI, 'agents');
+    const alias: InstructionFile = { ...file('.windsurf/rules/x.md', MULTI, 'windsurf'), aliasOf: 'AGENTS.md' };
+    const ctx = { files: [agents], aliasFiles: [alias] } as unknown as Parameters<typeof detectWindsurfRules>[0];
+    expect(detectWindsurfRules(ctx).map((i) => i.filePaths)).toEqual([[alias.path]]);
+    expect(detectContextBloat([agents], undefined, [alias]).some((i) => i.title.includes('.windsurfrules'))).toBe(false);
+  });
+
+  it.skipIf(!canSymlink)('a real symlink .windsurf/rules/x.md -> AGENTS.md is scanned once, as a Windsurf alias', async () => {
+    const repo = tempRepo({ 'AGENTS.md': '# Agents\n\nRun the tests before you finish.\n' });
+    fs.mkdirSync(path.join(repo, '.windsurf', 'rules'), { recursive: true });
+    expect(trySymlink(path.join('..', '..', 'AGENTS.md'), path.join(repo, '.windsurf', 'rules', 'x.md'))).toBe(true);
+    const { files, aliases } = await scanFilesWithAliases({ repoPath: repo });
+    expect(files.map((f) => f.relativePath)).toEqual(['AGENTS.md']);
+    expect(aliases.map((f) => [f.relativePath, f.fileType, f.aliasOf])).toEqual([['.windsurf/rules/x.md', 'windsurf', 'AGENTS.md']]);
+  });
+
+  it('.roorules-<mode> files honour exclude, and an include list replaces the defaults (scan and selectScanPaths agree)', async () => {
+    const repo = tempRepo({
+      'AGENTS.md': '# Agents\n\nRun the tests.\n',
+      '.roorules-ask': '# Ask\n\nAnswer only.\n',
+      '.roorules-code': '# Code\n\nWrite code.\n',
+      '.kiro/steering/tech.md': '# Tech\n\nTypeScript.\n',
+    });
+    const paths = ['AGENTS.md', '.roorules-ask', '.roorules-code', '.kiro/steering/tech.md'];
+    const scanned = async (opts: { include?: string[]; exclude?: string[] }) =>
+      (await scanFiles({ repoPath: repo, ...opts })).map((f) => f.relativePath!).sort();
+
+    expect(await scanned({})).toEqual(['.kiro/steering/tech.md', '.roorules-ask', '.roorules-code', 'AGENTS.md']);
+    expect(await scanned({ exclude: ['.roorules-ask'] })).toEqual(['.kiro/steering/tech.md', '.roorules-code', 'AGENTS.md']);
+    expect(selectScanPaths(paths, { exclude: ['.roorules-ask'] }).instructionFiles).toEqual(['.kiro/steering/tech.md', '.roorules-code', 'AGENTS.md']);
+    expect(await scanned({ include: ['AGENTS.md'] })).toEqual(['AGENTS.md']);
+    expect(selectScanPaths(paths, { include: ['AGENTS.md'] }).instructionFiles).toEqual(['AGENTS.md']);
   });
 });

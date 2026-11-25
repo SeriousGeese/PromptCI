@@ -110,8 +110,14 @@ const CLINE_DIR_PATTERNS: ReadonlySet<string> = new Set([
   '!.clinerules/workflows/**',
 ]);
 
-/** A Roo Code mode-specific rules file at the root (`.roorules-code`); plain slug characters only, so it is a literal glob. */
-const ROO_MODE_FILE_RE = /^\.roorules-[A-Za-z0-9_-]+$/;
+/**
+ * The characters of a Roo Code mode slug in a root `.roorules-<mode>` file name:
+ * plain ones only, so the name is a literal glob. scanner.ts and
+ * rule-activation.ts build their `.roorules-<mode>` matches from it too.
+ */
+export const ROO_MODE_SLUG = '[A-Za-z0-9_-]+';
+/** A Roo Code mode-specific rules file at the root (`.roorules-code`). */
+const ROO_MODE_FILE_RE = new RegExp(`^\\.roorules-${ROO_MODE_SLUG}$`);
 
 /** The root entry names that are Roo Code `.roorules-<mode>` files, sorted, to add as literal patterns. */
 export function rootModeRuleFiles(rootNames: Iterable<string>): string[] {

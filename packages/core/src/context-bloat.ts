@@ -16,7 +16,7 @@ import type { InstructionFile, PromptCiIssue } from './types.js';
 import { fileIdPath } from './finding-id.js';
 import { UNSCORED_TAG } from './health-score.js';
 import { aliasesWithNewType } from './alias-files.js';
-import { ruleActivation } from './rule-activation.js';
+import { agentsOverridePairs, ruleActivation } from './rule-activation.js';
 
 export type ContextBloatThresholds = {
   fileWarning: number;
@@ -230,7 +230,12 @@ export function detectContextBloat(
   // without alwaysApply, a Copilot applyTo, a Kiro fileMatch, a Windsurf glob
   // trigger, a Roo Code mode directory) still gets the per-file checks above,
   // but is not added to every turn's cost (pcic-k1t3.10).
-  const alwaysLoaded = files.filter((f) => ruleActivation(f) === 'always');
+  // Codex reads AGENTS.override.md instead of the AGENTS.md beside it, so the
+  // pair is counted once, as the larger of the two.
+  const replaced = new Set(
+    agentsOverridePairs(files).map(([agents, override]) => (override.charCount >= agents.charCount ? agents : override)),
+  );
+  const alwaysLoaded = files.filter((f) => ruleActivation(f) === 'always' && !replaced.has(f));
   const totalChars = alwaysLoaded.reduce((sum, f) => sum + f.charCount, 0);
   const totalTokens = alwaysLoaded.reduce((sum, f) => sum + f.estimatedTokens, 0);
   const allPaths = alwaysLoaded.map((f) => f.path);

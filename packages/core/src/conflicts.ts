@@ -19,6 +19,7 @@ import * as path from 'node:path';
 import type { InstructionFile, InstructionSection, PromptCiIssue } from './types.js';
 import { stripCodeBlocks } from './markdown-fences.js';
 import { sectionIdPath } from './finding-id.js';
+import { neverLoadedTogether } from './rule-activation.js';
 
 /**
  * C2: previously a 50-char floor dropped every section shorter than that —
@@ -548,6 +549,16 @@ export function detectConflicts(files: InstructionFile[]): PromptCiIssue[] {
   const issues: PromptCiIssue[] = [];
   const reported = new Set<string>();
 
+  // pcic-k1t3.10: two scoped rules with different scopes (two Roo Code modes, two
+  // Kiro fileMatchPatterns, two Copilot applyTo / Cursor globs) are never loaded in
+  // the same request, so opposite directives in them are not a conflict an agent sees.
+  const fileByPath = new Map(files.map((f) => [f.path, f] as const));
+  const apartScopes = (x: DirectiveMatch, y: DirectiveMatch): boolean => {
+    const fx = fileByPath.get(x.section.filePath);
+    const fy = fileByPath.get(y.section.filePath);
+    return fx !== undefined && fy !== undefined && neverLoadedTogether(fx, fy);
+  };
+
   for (let i = 0; i < directives.length; i++) {
     for (let j = i + 1; j < directives.length; j++) {
       const a = directives[i];
@@ -555,6 +566,7 @@ export function detectConflicts(files: InstructionFile[]): PromptCiIssue[] {
 
       if (a.pairIndex !== b.pairIndex) continue;
       if (a.polarity === b.polarity) continue;
+      if (apartScopes(a, b)) continue;
 
       const pos = a.polarity === 'positive' ? a : b;
       const neg = a.polarity === 'negative' ? a : b;
@@ -705,6 +717,7 @@ export function detectConflicts(files: InstructionFile[]): PromptCiIssue[] {
         }
         // BUG-011: scoped negatives are complementary — skip cross-pair too
         if (neg.hasQualifier) continue;
+        if (apartScopes(pos, neg)) continue;
 
         // Use -1 as pairIndex sentinel to distinguish cross-pair IDs from within-pair IDs
         const id = conflictId(
