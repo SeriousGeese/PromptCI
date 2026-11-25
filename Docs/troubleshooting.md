@@ -5,9 +5,14 @@ Common issues and solutions when running or configuring PromptCI.
 ### No files scanned / health score 100 with no issues on a real repo
 
 Default patterns scan:
-`CLAUDE.md`, `AGENTS.md`, `.cursorrules`, `.windsurfrules`, `GEMINI.md`, `.clinerules` (the single file, or `.clinerules/**/*.md` except `.clinerules/workflows/`), `SOUL.md`, `USER.md`, `TOOLS.md`, `.cursor/rules/**`, `.github/copilot-instructions.md`, `.github/instructions/**/*.md`, `.claude/**/*.md`, `README.md`, `ai/**/*.md`, `ai-instructions/**/*.md`, `prompts/**/*.md`, `system-prompts/**/*.md`
+`CLAUDE.md`, `AGENTS.md`, `AGENTS.override.md` (Codex), `AGENT.md`, `.cursorrules`, `.windsurfrules`, `.windsurf/rules/*.md`, `.devin/rules/*.md` and `.devin/global_rules.md` (Windsurf / Devin Local), `.kiro/steering/*.md` (Kiro), `.roo/rules/**` and `.roo/rules-<mode>/**` (`.md`, `.mdc` and `.txt`), `.roorules` and `.roorules-<mode>` (Roo Code), `.amazonq/rules/*.md` (Amazon Q Developer), `.junie/AGENTS.md`, `.junie/playbook.md`, `.junie/rules/*.md`, `.junie/guidelines.md` and `.junie/guidelines/**/*.md` (Junie), `GEMINI.md`, `.clinerules` (the single file, or `.clinerules/**/*.md` except `.clinerules/workflows/`), `SOUL.md`, `USER.md`, `TOOLS.md`, `.cursor/rules/**`, `.github/copilot-instructions.md`, `.github/instructions/**/*.md`, `.claude/**/*.md`, `README.md`, `ai/**/*.md`, `ai-instructions/**/*.md`, `prompts/**/*.md`, `system-prompts/**/*.md`
 
-Bare file names match at the repository root only. `GEMINI.md` and the persona files
+Rule files that a tool loads only for some files, modes or requests (a Kiro `inclusion` other than
+`always`, a Windsurf `trigger` other than `always_on`, a Roo Code mode directory, a Cursor rule without
+`alwaysApply: true`, a Copilot `applyTo`) are still scanned, but cross-tool parity does not compare them
+with `AGENTS.md`.
+
+Bare file names match at the repository root only. `GEMINI.md`, `AGENT.md` and the persona files
 (`SOUL.md`, `USER.md`, `TOOLS.md`) are deliberately root-only: a nested `docs/USER.md` is far
 more likely a user guide than an agent persona. Add nested copies to `include` if you want them
 scanned (a nested persona-named file is then typed `unknown`, not `persona`).

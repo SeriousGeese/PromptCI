@@ -1,0 +1,1 @@
+Roo Code reads plain text rule files too.

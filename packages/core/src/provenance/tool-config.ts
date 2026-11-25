@@ -13,6 +13,9 @@ import type { CheckProvenance, ProvenanceSource, ProvenanceThreshold, SourceStan
 
 const D1 = '2026-11-13';
 const D2 = '2026-11-14';
+/** The instruction-file formats core discovers (pcic-k1t3.10). */
+const D_FORMATS = '2026-11-25';
+const VERIFIED_FORMATS = { date: D_FORMATS, by: 'agent run 2026-11-25 (pcic-k1t3.10), pending human review' } as const;
 
 type Page = { url: string; title: string; readOn: string };
 
@@ -55,6 +58,21 @@ const PAGES = {
   },
   windsurfRules: { url: 'https://docs.devin.ai/desktop/devin-local/customizations', title: 'Devin Local docs: Customizations (docs.windsurf.com redirects here; Windsurf has no docs of its own to read, so this is another product\'s documentation)', readOn: D2 },
   rfc8259: { url: 'https://www.rfc-editor.org/info/rfc8259/', title: 'RFC 8259: The JSON Data Interchange Format', readOn: D2 },
+  // Read 2026-11-25 for the instruction-file formats core discovers (pcic-k1t3.10).
+  codexAgentsMd: { url: 'https://learn.chatgpt.com/docs/agent-configuration/agents-md', title: 'OpenAI Codex: Custom instructions with AGENTS.md', readOn: D_FORMATS },
+  devinCustomizations: { url: 'https://docs.devin.ai/desktop/devin-local/customizations', title: 'Devin Local docs: Customizations (docs.windsurf.com redirects here)', readOn: D_FORMATS },
+  kiroSteering: { url: 'https://kiro.dev/docs/steering/', title: 'Kiro docs: Steering', readOn: D_FORMATS },
+  rooInstructions: {
+    url: 'https://roocodeinc.github.io/Roo-Code/features/custom-instructions',
+    title: 'Roo Code docs: Custom Instructions (docs.roocode.com redirects here)',
+    readOn: D_FORMATS,
+  },
+  amazonQRules: {
+    url: 'https://docs.aws.amazon.com/amazonq/latest/qdeveloper-ug/context-project-rules.html',
+    title: 'Amazon Q Developer User Guide: Creating project rules',
+    readOn: D_FORMATS,
+  },
+  junieGuidelines: { url: 'https://junie.jetbrains.com/docs/guidelines-and-memory.html', title: 'Junie docs: Guidelines and memory', readOn: D_FORMATS },
 } as const satisfies Record<string, Page>;
 
 const cite = (page: Page, stance: SourceStance, note: string): ProvenanceSource => ({ ...page, stance, note });
@@ -568,6 +586,119 @@ export const TOOL_CONFIG_PROVENANCE: readonly CheckProvenance[] = [
     ],
     thresholds: [unverified('MIN_DISTINCT_TOPICS', 2, 'windsurf-detector.ts:MIN_DISTINCT_TOPICS', 'distinct topics')],
     lastVerified: VERIFIED,
+  },
+
+  // ── instruction-file formats (pcic-k1t3.10) ─────────────────────────────────
+  // What core discovers as always-loaded instruction prose, and when each tool
+  // loads it. Kept under context-bloat, whose cost claim rests on the files a
+  // tool loads; cross-tool-parity reads the activation part (rule-activation.ts).
+  {
+    id: 'context-bloat/codex-agents-override',
+    detector: 'context-bloat',
+    title: 'Codex reads AGENTS.override.md before AGENTS.md',
+    kind: 'tool-fact',
+    claim:
+      'In each directory from the project root down to the working directory Codex reads AGENTS.override.md if present, otherwise AGENTS.md, at most one file per directory, and concatenates them root first.',
+    appliesTo: ['codex'],
+    sources: [
+      cite(
+        PAGES.codexAgentsMd,
+        'supports',
+        'Says Codex checks AGENTS.override.md, then AGENTS.md, then any project_doc_fallback_filenames in each directory, includes at most one file per directory, concatenates them from the root down and stops at project_doc_max_bytes (32 KiB by default).',
+      ),
+    ],
+    lastVerified: VERIFIED_FORMATS,
+  },
+  {
+    id: 'context-bloat/devin-local-rule-files',
+    detector: 'context-bloat',
+    title: 'Devin Local (Windsurf) rule files and triggers',
+    kind: 'tool-fact',
+    claim:
+      'Devin Local loads one rule per file from .devin/rules/*.md, imports the legacy .windsurf/rules/*.md and .windsurfrules files by default, treats .devin/global_rules.md, AGENTS.md and AGENT.md as always-on rules, and loads a rule file every session only when its trigger is always_on (glob, model_decision and manual load it conditionally).',
+    appliesTo: ['devin-local'],
+    sources: [
+      cite(
+        PAGES.devinCustomizations,
+        'supports',
+        'Lists .devin/rules/*.md (one rule per file), says the legacy .windsurf/rules/*.md and .windsurfrules files are imported by default, names .devin/global_rules.md, AGENTS.md, AGENTS.local.md and AGENT.md as always-on, and defines the always_on, glob, model_decision and manual triggers; it states no size limit and does not describe subdirectories of the rules directory.',
+      ),
+    ],
+    caveat:
+      'docs.windsurf.com redirects to these Devin Local docs, so the record names Devin Local rather than Windsurf; whether a Windsurf build still on its own docs behaves the same is not shown. PromptCI reads only the top level of each rules directory, as the page describes. Because the page states no size limit, the tighter .windsurfrules size thresholds (context-bloat/windsurf-truncation, itself unverified) apply only to the legacy .windsurfrules file; files in .windsurf/rules/ and .devin/ get the generic thresholds.',
+    lastVerified: VERIFIED_FORMATS,
+  },
+  {
+    id: 'context-bloat/kiro-steering',
+    detector: 'context-bloat',
+    title: 'Kiro steering files and inclusion modes',
+    kind: 'tool-fact',
+    claim:
+      'Kiro reads workspace steering files from .kiro/steering/ and loads one into every interaction unless its frontmatter inclusion is fileMatch, manual or auto (always is the default with no frontmatter).',
+    appliesTo: ['kiro'],
+    sources: [
+      cite(
+        PAGES.kiroSteering,
+        'supports',
+        'Says workspace steering files live under .kiro/steering/, that inclusion always (the default) loads a file into every interaction, fileMatch loads it for files matching fileMatchPattern, manual on a #steering-file-name mention and auto when the request matches its description, and that AGENTS.md is always included.',
+      ),
+    ],
+    lastVerified: VERIFIED_FORMATS,
+  },
+  {
+    id: 'context-bloat/roo-code-rules',
+    detector: 'context-bloat',
+    title: 'Roo Code rule directories and mode rules',
+    kind: 'tool-fact',
+    claim:
+      'Roo Code reads workspace rules recursively from .roo/rules/ (falling back to a .roorules file), mode-specific rules from .roo/rules-<mode>/ or .roorules-<mode> that apply only in that mode, and AGENTS.md (or AGENT.md) by default.',
+    appliesTo: ['roo-code'],
+    sources: [
+      cite(
+        PAGES.rooInstructions,
+        'supports',
+        'Lists .roo/rules/ with .roorules as its fallback, .roo/rules-{modeSlug}/ with .roorules-{modeSlug} as its fallback, says files in rule directories are read recursively and sorted by name, that mode-specific instructions apply only to that mode, and that AGENTS.md (AGENT.md as a fallback) loads by default.',
+      ),
+    ],
+    caveat:
+      'The page gives .md and .txt as examples of rule files without listing every accepted extension; PromptCI reads .md, .txt and the Cursor-style .mdc files some repositories keep there.',
+    lastVerified: VERIFIED_FORMATS,
+  },
+  {
+    id: 'context-bloat/amazon-q-rules',
+    detector: 'context-bloat',
+    title: 'Amazon Q Developer project rules',
+    kind: 'tool-fact',
+    claim:
+      'Amazon Q Developer reads Markdown project rules from .amazonq/rules in the project root and uses them as context in every chat in that project.',
+    appliesTo: ['amazon-q'],
+    sources: [
+      cite(
+        PAGES.amazonQRules,
+        'supports',
+        'Says project rules are Markdown files in {{project-root}}/.amazonq/rules and that Amazon Q uses them as context automatically whenever a developer chats within the project; a person can toggle a rule off for one chat session.',
+      ),
+    ],
+    lastVerified: VERIFIED_FORMATS,
+  },
+  {
+    id: 'context-bloat/junie-guidelines',
+    detector: 'context-bloat',
+    title: 'Junie guideline files',
+    kind: 'tool-fact',
+    claim:
+      'Junie reads project guidelines from .junie/AGENTS.md, else the root AGENTS.md together with .junie/playbook.md and .junie/rules/*.md, else the legacy .junie/guidelines.md file or .junie/guidelines/ folder, and adds them to every task.',
+    appliesTo: ['junie'],
+    sources: [
+      cite(
+        PAGES.junieGuidelines,
+        'supports',
+        'Lists the three steps in that discovery order, calls .junie/guidelines.md and .junie/guidelines/ the legacy format that is still supported, and says Junie adds the guidelines to every task it works on.',
+      ),
+    ],
+    caveat:
+      'The page does not say whether the files of a later step are read when an earlier one exists, so PromptCI scans every one it finds.',
+    lastVerified: VERIFIED_FORMATS,
   },
 
   // ── skill-supply-chain ──────────────────────────────────────────────────────

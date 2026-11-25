@@ -13,8 +13,8 @@ the health badge above reports the score from the committed baseline.
      file types PromptCI scans. They are product terminology here, not references to files in
      this repository. -->
 PromptCI scans AI coding instruction files (`CLAUDE.md`, `AGENTS.md`, `.cursorrules`, Copilot
-instructions, `GEMINI.md`, Cline's `.clinerules`, agent persona files such as `SOUL.md`,
-README-style context, and more) and produces actionable health reports so you can catch
+instructions, `GEMINI.md`, Cline's `.clinerules`, Windsurf, Kiro, Roo Code, Amazon Q and Junie
+rule files, agent persona files such as `SOUL.md`, README-style context, and more) and produces actionable health reports so you can catch
 instruction rot before it costs you.
 
 The scanner is **deterministic and rule-based** — no LLM calls, identical output for identical

@@ -1,0 +1,8 @@
+---
+description: Testing
+globs: "**/*.test.ts"
+---
+
+# Testing
+
+Roo Code reads this file as a rule even though it is written in the Cursor format.

@@ -445,8 +445,11 @@ function isCursorRulesFile(file: InstructionFile): boolean {
   return file.fileType === 'cursor' || path.basename(file.path).toLowerCase() === '.cursorrules';
 }
 
+// Only the legacy single file: a `.windsurf/rules/*.md` or `.devin/` rule file is
+// one of many rule files Windsurf reads together (pcic-k1t3.10), like a file
+// inside a `.clinerules/` directory, so one lacking guidance is not a gap.
 function isWindsurfRulesFile(file: InstructionFile): boolean {
-  return file.fileType === 'windsurf' || path.basename(file.path).toLowerCase() === '.windsurfrules';
+  return path.basename(file.path).toLowerCase() === '.windsurfrules';
 }
 
 function isClaudeInstructionsFile(file: InstructionFile): boolean {

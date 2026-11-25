@@ -454,7 +454,7 @@ const STALE_SOURCE_REF_RE = /(?:^|[/\\])(?:legacy|old|deprecated|archive|archive
  * BUG-002: Expanded from readme-only to all instruction file types.
  */
 const SKIP_SOURCE_BACKTICK_FILE_TYPES = new Set([
-  'readme', 'claude', 'agents', 'cursor', 'windsurf', 'copilot', 'gemini', 'cline', 'persona',
+  'readme', 'claude', 'agents', 'cursor', 'windsurf', 'copilot', 'gemini', 'cline', 'kiro', 'roo', 'amazonq', 'junie', 'persona',
   'docs', 'prompt', 'unknown',
 ]);
 
