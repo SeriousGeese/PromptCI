@@ -89,8 +89,57 @@ const CLEANUP_KEYWORD_RE =
  * neither of which the old `[^>]*?` / `[^(>\n]*` classes permitted, while
  * still stopping at the actual end of the same comment.
  */
-const HTML_COMMENT_DATED_TODO_RE =
-  /<!--(?:(?!-->)[\s\S])*?\b(TODO|FIXME|WORKAROUND|HACK|NOTE)\b(?:(?!-->)[\s\S])*?\(\s*(\d{4})[-–\d]/gi;
+//   /<!--(?:(?!-->)[\s\S])*?\b(TODO|FIXME|WORKAROUND|HACK|NOTE)\b(?:(?!-->)[\s\S])*?\(\s*(\d{4})[-–\d]/gi
+// is read in parts by htmlCommentDatedTodos (pcic-1ik0.25): the tempered spans re-read the rest of
+// the file from every "<!--" with no "-->" after it, seconds on a line of "<!-- ".
+const DATED_TODO_KEYWORD_RE = /\b(TODO|FIXME|WORKAROUND|HACK|NOTE)\b/gi;
+const DATED_TODO_DATE_RE = /\(\s*(\d{4})[-–\d]/g;
+
+/**
+ * The matches the HTML-comment dated-TODO pattern above finds, in order: from a "<!--", the first
+ * keyword before the comment closes, then the first "(yyyy-" date after it before the close.
+ * Each part is searched forward once, so the whole file is read a bounded number of times.
+ */
+export function htmlCommentDatedTodos(text: string): Array<{ match: string; keyword: string; year: string }> {
+  const found: Array<{ match: string; keyword: string; year: string }> = [];
+  const keywords = new RegExp(DATED_TODO_KEYWORD_RE.source, DATED_TODO_KEYWORD_RE.flags);
+  const dates = new RegExp(DATED_TODO_DATE_RE.source, DATED_TODO_DATE_RE.flags);
+  const firstFrom = (re: RegExp) => {
+    let from = -1;
+    let hit: RegExpExecArray | null = null;
+    return (pos: number): RegExpExecArray | null => {
+      if (from !== -1 && pos >= from && (hit === null || hit.index >= pos)) return hit;
+      re.lastIndex = pos;
+      hit = re.exec(text);
+      from = pos;
+      return hit;
+    };
+  };
+  const keywordFrom = firstFrom(keywords);
+  const dateFrom = firstFrom(dates);
+  let closeFrom = -1;
+  let close = -1;
+  for (let pos = 0; ; ) {
+    const open = text.indexOf('<!--', pos);
+    if (open === -1) break;
+    const body = open + 4;
+    if (closeFrom === -1 || body < closeFrom || (close !== -1 && close < body)) {
+      close = text.indexOf('-->', body);
+      closeFrom = body;
+    }
+    const end = close === -1 ? text.length : close;
+    const keyword = keywordFrom(body);
+    const date = keyword && keyword.index < end ? dateFrom(keyword.index + keyword[0].length) : null;
+    if (!keyword || !date || date.index >= end) {
+      pos = open + 1;
+      continue;
+    }
+    const matchEnd = date.index + date[0].length;
+    found.push({ match: text.slice(open, matchEnd), keyword: keyword[1]!, year: date[1]! });
+    pos = matchEnd;
+  }
+  return found;
+}
 
 /**
  * "deprecated" within ~10 words of a version number or recognisable tool name.
@@ -164,14 +213,12 @@ function collectMatchesWithIndex(text: string, re: RegExp): Array<{ match: strin
 
 function collectOldHtmlTodoMatches(text: string): string[] {
   const matches: string[] = [];
-  let m: RegExpExecArray | null;
-  const cloned = new RegExp(HTML_COMMENT_DATED_TODO_RE.source, HTML_COMMENT_DATED_TODO_RE.flags);
-  while ((m = cloned.exec(text)) !== null) {
-    const year = Number(m[2]);
+  for (const m of htmlCommentDatedTodos(text)) {
+    const year = Number(m.year);
     // BUG-14: was `year <= 2025`. Anything before the current year is a dated
     // marker that has already come due; the current year has not.
     if (year < currentYear()) {
-      matches.push(m[0]);
+      matches.push(m.match);
     }
   }
   return matches;

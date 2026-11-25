@@ -47,8 +47,31 @@ export function htmlCommentRanges(content: string): Array<[number, number]> {
   return ranges;
 }
 
+/**
+ * Whether `offset` lies in one of `ranges`. The ranges htmlCommentRanges returns are ascending and
+ * apart, so the one that could hold it is found by halving (pcic-1ik0.25: a scan per lookup was
+ * quadratic for a file of many links and comments); any other list is walked as before.
+ */
 export function inRanges(ranges: ReadonlyArray<[number, number]>, offset: number): boolean {
-  return ranges.some(([start, end]) => offset >= start && offset < end);
+  if (!ascendingApart(ranges)) return ranges.some(([start, end]) => offset >= start && offset < end);
+  let lo = 0;
+  let hi = ranges.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (ranges[mid]![0] <= offset) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo > 0 && offset < ranges[lo - 1]![1];
+}
+
+const checkedApart = new WeakMap<ReadonlyArray<[number, number]>, boolean>();
+function ascendingApart(ranges: ReadonlyArray<[number, number]>): boolean {
+  let apart = checkedApart.get(ranges);
+  if (apart === undefined) {
+    apart = ranges.every((r, i) => i === 0 || ranges[i - 1]![1] <= r[0]);
+    checkedApart.set(ranges, apart);
+  }
+  return apart;
 }
 
 /**
@@ -70,9 +93,12 @@ export function htmlCommentLines(content: string): boolean[] {
   const ranges = htmlCommentRanges(content);
   const flags: boolean[] = [];
   let start = 0;
+  // The ranges are ascending and apart: one pass over them alongside the lines (pcic-1ik0.25).
+  let k = 0;
   for (const line of content.split('\n')) {
     const end = start + line.length;
-    flags.push(ranges.some(([a, b]) => a < end + 1 && b > start));
+    while (k < ranges.length && ranges[k]![1] <= start) k++;
+    flags.push(k < ranges.length && ranges[k]![0] < end + 1);
     start = end + 1;
   }
   return flags;

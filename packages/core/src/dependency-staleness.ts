@@ -383,10 +383,23 @@ function collectMentions(file: InstructionFile): Mention[] {
     mentions.push({ pkg, kind, file, line, text });
   };
 
+  // pcic-1ik0.25: one answer per line, not per code span on it (quadratic on one long line of spans).
+  // Keyed by the line string itself, whose hash is computed once.
+  const negatedLines = { fenced: new Map<string, boolean>(), prose: new Map<string, boolean>() };
+  const negated = (text: string, fenced: boolean): boolean => {
+    const known = fenced ? negatedLines.fenced : negatedLines.prose;
+    let answer = known.get(text);
+    if (answer === undefined) {
+      answer = NEGATION_RE.test(fenced ? commentOf(text) : text);
+      known.set(text, answer);
+    }
+    return answer;
+  };
+
   for (const seg of segments) {
     // In a fence only the trailing comment can carry prose; an identifier like
     // `import { without } from 'lodash'` is not a negation.
-    if (NEGATION_RE.test(seg.fenced ? commentOf(seg.lineText) : seg.lineText)) continue;
+    if (negated(seg.lineText, seg.fenced)) continue;
     const text = seg.text;
 
     if (!seg.fenced || SHELL_LANGS.has(seg.lang)) {
@@ -410,7 +423,7 @@ function collectMentions(file: InstructionFile): Mention[] {
   }
 
   for (const { line, text } of prose) {
-    if (NEGATION_RE.test(text)) continue;
+    if (negated(text, false)) continue;
     for (const pkg of qualifiedSpanNames(text)) add(pkg, 'qualified', line, text);
   }
   return mentions;

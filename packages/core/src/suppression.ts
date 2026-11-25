@@ -23,6 +23,7 @@
 import * as crypto from 'node:crypto';
 import type { IssueCategory, InstructionFile, InstructionSection, PromptCiIssue } from './types.js';
 import { blankCodeBlockLines } from './markdown-fences.js';
+import { lineNumberIndex } from './linear-text.js';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -80,9 +81,25 @@ const RANGE_END_RE = /<!--\s*promptci-ignore-end\s*-->/g;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-/** Convert a character offset in content to a 1-indexed line number. */
-function charToLine(content: string, offset: number): number {
-  return content.slice(0, offset).split('\n').length;
+/**
+ * Section-scope lookups for one file, built once (pcic-1ik0.25): splitting the file and walking its
+ * sections per annotation was quadratic, 10 s for a file of 10,000 annotations.
+ */
+type SectionScope = {
+  lines: string[];
+  /** `nonBlankFrom[i]`: the first line index at or after `i` that is not blank (`lines.length` if none). */
+  nonBlankFrom: Int32Array;
+  /** Whether `sections` are in line order without overlap, so a containing section can be found by halving. */
+  ordered: boolean;
+};
+
+function sectionScope(sections: InstructionSection[], content: string): SectionScope {
+  const lines = content.split(/\r?\n/);
+  const nonBlankFrom = new Int32Array(lines.length + 1);
+  nonBlankFrom[lines.length] = lines.length;
+  for (let i = lines.length - 1; i >= 0; i--) nonBlankFrom[i] = lines[i]!.trim() === '' ? nonBlankFrom[i + 1]! : i;
+  const ordered = sections.every((s, i) => i === 0 || sections[i - 1]!.endLine < s.startLine);
+  return { lines, nonBlankFrom, ordered };
 }
 
 /**
@@ -95,11 +112,27 @@ function getSectionEndLine(
   annotationEndLine: number,
   sections: InstructionSection[],
   fileLineCount: number,
-  content: string,
+  scope: SectionScope,
 ): number {
-  const lines = content.split(/\r?\n/);
-  // Find the section that contains this line
-  for (let i = 0; i < sections.length; i++) {
+  const { lines, nonBlankFrom } = scope;
+  // Find the section that contains this line: the first one, which in line order is the last
+  // section starting at or before it.
+  let first = 0;
+  let last = sections.length;
+  if (scope.ordered) {
+    let lo = 0;
+    let hi = sections.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (sections[mid]!.startLine <= annotationLine) lo = mid + 1;
+      else hi = mid;
+    }
+    // Only the last section starting at or before the line can hold it; the one after it is the
+    // first that starts below it.
+    first = Math.max(0, lo - 1);
+    last = Math.min(sections.length, lo + 1);
+  }
+  for (let i = first; i < last; i++) {
     const section = sections[i]!;
     if (section.startLine <= annotationLine && section.endLine >= annotationLine) {
       // SU2: an annotation on the LAST line of a section, immediately
@@ -110,8 +143,8 @@ function getSectionEndLine(
       // PREVIOUS section under a naive "which section contains this line"
       // lookup, so it silently suppressed zero lines of the intended target.
       const next = sections[i + 1];
-      const gapLines = lines.slice(annotationEndLine, Math.max(annotationEndLine, next?.startLine ? next.startLine - 1 : annotationEndLine));
-      const gapIsBlank = gapLines.every((line) => line.trim() === '');
+      const gapEnd = Math.min(lines.length, Math.max(annotationEndLine, next?.startLine ? next.startLine - 1 : annotationEndLine));
+      const gapIsBlank = annotationEndLine >= gapEnd || nonBlankFrom[annotationEndLine]! >= gapEnd;
       if (next && next.startLine > annotationEndLine && gapIsBlank) {
         return next.endLine;
       }
@@ -119,7 +152,8 @@ function getSectionEndLine(
     }
   }
   // Annotation falls between sections — use the next section's end
-  for (const section of sections) {
+  for (let i = first; i < last; i++) {
+    const section = sections[i]!;
     if (section.startLine > annotationLine) {
       return section.endLine;
     }
@@ -179,18 +213,24 @@ function parseFileSuppressions(file: InstructionFile): SuppressionAnnotation[] {
   // syntax (e.g. in README.md) don't get interpreted as real suppressions.
   // Preserve line count so offsets still map to the original file's lines.
   const contentForParsing = blankCodeBlockLines(content);
+  const lineOf = lineNumberIndex(contentForParsing);
+  const charToLine = (_content: string, offset: number): number => lineOf(offset);
+  let scope: SectionScope | undefined;
+  // pcic-1ik0.25: past the last "-->" no annotation can close, so the lazy body is not tried there.
+  const lastClose = contentForParsing.lastIndexOf('-->');
 
   // ── Single annotations ────────────────────────────────────────────────────
   const singleRe = new RegExp(SINGLE_RE.source, SINGLE_RE.flags);
   let m: RegExpExecArray | null;
 
-  while ((m = singleRe.exec(contentForParsing)) !== null) {
+  while (singleRe.lastIndex <= lastClose && (m = singleRe.exec(contentForParsing)) !== null) {
     const rawCategory = m[1]?.trim() ?? '';
     const body = m[2] ?? '';
     const reason = extractReason(body);
     const startLine = charToLine(contentForParsing, m.index);
     const annotationEndLine = charToLine(contentForParsing, m.index + m[0].length);
-    const endLine = getSectionEndLine(startLine, annotationEndLine, sections, lineCount, content);
+    scope ??= sectionScope(sections, content);
+    const endLine = getSectionEndLine(startLine, annotationEndLine, sections, lineCount, scope);
 
     const { valid, message } = validate(rawCategory, reason);
     annotations.push({
@@ -226,7 +266,7 @@ function parseFileSuppressions(file: InstructionFile): SuppressionAnnotation[] {
 
   const markers: RangeMarker[] = [];
   const startRe = new RegExp(RANGE_START_RE.source, RANGE_START_RE.flags);
-  while ((m = startRe.exec(contentForParsing)) !== null) {
+  while (startRe.lastIndex <= lastClose && (m = startRe.exec(contentForParsing)) !== null) {
     markers.push({
       kind: 'start',
       offset: m.index,

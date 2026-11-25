@@ -3,6 +3,8 @@ import * as path from 'node:path';
 import type { PromptCiIssue } from './types.js';
 import type { RepoContext } from './repo-context.js';
 import { matchEvidence } from './evidence.js';
+import { inOrderOnOneLine } from './linear-text.js';
+import type { LocatingMatcher, TextMatcher } from './linear-text.js';
 import { PROMPTCI_GITIGNORE_BLOCK, PROMPTCI_GITIGNORE_LINES } from './promptci-gitignore.js';
 import { fileIdPath } from './finding-id.js';
 import { treeFor } from './repo-tree.js';
@@ -12,7 +14,7 @@ interface SecurityCheck {
   title: string;
   summary: string;
   /** At least one pattern must match somewhere across all files to pass. */
-  patterns: RegExp[];
+  patterns: TextMatcher[];
   recommendation: string;
   severity: PromptCiIssue['severity'];
   confidence: number;
@@ -27,8 +29,10 @@ const SECURITY_CHECKS: SecurityCheck[] = [
       'Environment variables are used in this repository, but no instruction found ' +
       'warning the agent never to print or commit secrets.',
     patterns: [
-      /never\s+.*(print|commit|log|expose)\s+.*(secret|password|token|key|credential)/i,
-      /do\s+not\s+.*(print|commit|log|expose)\s+.*(secret|password|token|key|credential)/i,
+      // pcic-1ik0.25: /never\s+.*(print|commit|log|expose)\s+.*(secret|password|token|key|credential)/i and
+      // its "do not" twin, without the backtracking (seconds on one long line).
+      inOrderOnOneLine(/never\s+/i, /(print|commit|log|expose)\s+/i, /(secret|password|token|key|credential)/i),
+      inOrderOnOneLine(/do\s+not\s+/i, /(print|commit|log|expose)\s+/i, /(secret|password|token|key|credential)/i),
       /secrets?\s+must\s+never\s+be/i,
       /keep\s+secrets?\s+secure/i,
     ],
@@ -48,7 +52,7 @@ const SECURITY_CHECKS: SecurityCheck[] = [
     patterns: [
       /service\s+role\s+key\s+must\s+(stay|only\s+be\s+used)\s+server-side/i,
       /never\s+expose\s+supabase\s+service\s+role/i,
-      /supabase\s+service\s+role\s+key.*server-side/i,
+      inOrderOnOneLine(/supabase\s+service\s+role\s+key/i, /server-side/i), // /supabase\s+service\s+role\s+key.*server-side/i
     ],
     recommendation:
       'Add a rule such as: "The Supabase service role key must stay server-side and never be exposed to the client."',
@@ -393,7 +397,7 @@ function inspectReportsFirstIssueId(filePath: string): string {
   return `security-pack-inspect-reports-first-${hash}`;
 }
 
-function matchesAny(text: string, patterns: RegExp[]): boolean {
+function matchesAny(text: string, patterns: readonly TextMatcher[]): boolean {
   return patterns.some((p) => p.test(text));
 }
 
@@ -801,16 +805,26 @@ export function detectSecurityPack(context: RepoContext): PromptCiIssue[] {
   for (const file of files) {
     // BUG-20: each pattern carries a human label so evidence can quote the
     // matched instruction text instead of the regex source.
-    const inspectBeforePatterns: Array<{ re: RegExp; label: string }> = [
-      { re: /read\s+.*\.promptci\s+before/i, label: 'Instruction to read .promptci reports first' },
-      { re: /inspect\s+.*\.promptci\s+before/i, label: 'Instruction to inspect .promptci reports first' },
-      { re: /check\s+.*\.promptci\s+before/i, label: 'Instruction to check .promptci reports first' },
-      { re: /read\s+.*report.*\s+before\s+.*(source|docs|code)/i, label: 'Instruction to read generated reports before source' },
-      { re: /inspect\s+.*report.*\s+before\s+.*(source|docs|code)/i, label: 'Instruction to inspect generated reports before source' },
+    // pcic-1ik0.25: each regex is searched by its linear matcher (`find`); the regex itself only runs
+    // where that found a match, to quote it.
+    const inspectBeforePatterns: Array<{ re: RegExp; find: LocatingMatcher; label: string }> = [
+      { re: /read\s+.*\.promptci\s+before/i, find: inOrderOnOneLine(/read\s+/i, /\.promptci\s+before/i), label: 'Instruction to read .promptci reports first' },
+      { re: /inspect\s+.*\.promptci\s+before/i, find: inOrderOnOneLine(/inspect\s+/i, /\.promptci\s+before/i), label: 'Instruction to inspect .promptci reports first' },
+      { re: /check\s+.*\.promptci\s+before/i, find: inOrderOnOneLine(/check\s+/i, /\.promptci\s+before/i), label: 'Instruction to check .promptci reports first' },
+      {
+        re: /read\s+.*report.*\s+before\s+.*(source|docs|code)/i,
+        find: inOrderOnOneLine(/read\s+/i, /report/i, { afterSpace: /before\s+/i }, /(source|docs|code)/i),
+        label: 'Instruction to read generated reports before source',
+      },
+      {
+        re: /inspect\s+.*report.*\s+before\s+.*(source|docs|code)/i,
+        find: inOrderOnOneLine(/inspect\s+/i, /report/i, { afterSpace: /before\s+/i }, /(source|docs|code)/i),
+        label: 'Instruction to inspect generated reports before source',
+      },
     ];
 
     for (const pat of inspectBeforePatterns) {
-      if (pat.re.test(file.content)) {
+      if (pat.find.test(file.content)) {
         issues.push({
           // SP1 / B3: was a constant id inside this per-file loop — the
           // `break` below only exits the pattern loop, not the file loop, so
@@ -824,7 +838,7 @@ export function detectSecurityPack(context: RepoContext): PromptCiIssue[] {
             `generated reports before source files, which can cause circular or outdated guidance ingestion.`,
           filePaths: [file.path],
           locations: [],
-          evidence: [matchEvidence(file.content, pat.re, pat.label)],
+          evidence: [matchEvidence(file.content, pat.re, pat.label, 120, pat.find)],
           recommendation: 'Recommend linking to latest reports or directing the agent to read source documents first instead of generated reports.',
           fixRecipe: 'Update the instruction to prioritize reading source files and configuration rather than relying on generated reports.',
           confidence: 0.7,

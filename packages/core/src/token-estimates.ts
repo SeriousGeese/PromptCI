@@ -43,11 +43,17 @@ function normPath(p: string): string {
   return CASE_INSENSITIVE_FS ? normalized.toLowerCase() : normalized;
 }
 
-/** Lines of a file with their char cost (line text plus its newline). */
+/**
+ * Lines of a file with their char cost (line text plus its newline), as running totals:
+ * `costs[n]` is the cost of lines 1..n, so a range is a subtraction (pcic-1ik0.25: summing the
+ * lines of every finding was quadratic for thousands of whole-file findings).
+ */
 function lineCosts(file: InstructionFile): number[] {
   const parts = file.content.split('\n');
   if (file.content.endsWith('\n')) parts.pop();
-  return parts.map((line) => line.length + 1);
+  const totals = [0];
+  for (const line of parts) totals.push(totals[totals.length - 1]! + line.length + 1);
+  return totals;
 }
 
 function mergeRanges(ranges: Range[]): Range[] {
@@ -64,10 +70,11 @@ function mergeRanges(ranges: Range[]): Range[] {
 /** Tokens in the merged ranges of one file, never above the file's own estimate. */
 function tokensInRanges(file: InstructionFile, costs: number[], ranges: Range[]): number {
   let chars = 0;
+  const lineCount = costs.length - 1;
   for (const [start, end] of mergeRanges(ranges)) {
-    for (let line = Math.max(1, start); line <= Math.min(end, costs.length); line++) {
-      chars += costs[line - 1]!;
-    }
+    const first = Math.max(1, start);
+    const last = Math.min(end, lineCount);
+    if (last >= first) chars += costs[last]! - costs[first - 1]!;
   }
   return Math.min(estimateTokens(chars), file.estimatedTokens);
 }
@@ -90,7 +97,12 @@ function makeResolver(files: InstructionFile[], aliases: InstructionFile[] = [])
     const target = alias.aliasOf ? byRelative.get(alias.aliasOf) : undefined;
     if (target) byPath.set(normPath(alias.path), target);
   }
-  return (filePath) => byPath.get(normPath(filePath));
+  // One normalization per distinct path: findings repeat the same few paths thousands of times.
+  const resolved = new Map<string, InstructionFile | undefined>();
+  return (filePath) => {
+    if (!resolved.has(filePath)) resolved.set(filePath, byPath.get(normPath(filePath)));
+    return resolved.get(filePath);
+  };
 }
 
 /** A location with no start line is a whole-file finding. */
@@ -186,9 +198,9 @@ export function computeAddressableTokens(
   };
   const chars = (e: Entry): number => {
     const costs = costsOf(e.file);
-    let sum = 0;
-    for (let l = Math.max(1, e.range[0]); l <= Math.min(e.range[1], costs.length); l++) sum += costs[l - 1]!;
-    return sum;
+    const first = Math.max(1, e.range[0]);
+    const last = Math.min(e.range[1], costs.length - 1);
+    return last >= first ? costs[last]! - costs[first - 1]! : 0;
   };
 
   const perFile = new Map<InstructionFile, Range[]>();

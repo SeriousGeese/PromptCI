@@ -43,8 +43,50 @@ const ATX_RE = /^ {0,3}(#{1,6})(?:\s|$)/;
 const SETEXT_UNDERLINE_RE = /^ {0,3}(=+|-{2,})\s*$/;
 const LIST_ITEM_RE = /^\s*(?:[-*+]|\d+[.)])\s/;
 
-/** The level (1-6) of the heading at line `n`: ATX, or the text line above a setext underline. Never inside a fence. */
+/** Every line's heading level, and each heading's parent, worked out once per document (pcic-1ik0.25). */
+type HeadingIndex = {
+  /** `level[n]`: the heading level of line `n`, 0 when it is not a heading. */
+  level: Uint8Array;
+  /** `nearest[n]`: the nearest heading line at or above `n`, 0 when there is none. */
+  nearest: Int32Array;
+  /** `parent[h]`: the nearest heading above heading `h` with a lower level, 0 when there is none. */
+  parent: Int32Array;
+};
+const headingIndexes = new WeakMap<LineStructure, HeadingIndex>();
+
+/**
+ * Walking up from every command to its headings re-read the document once per command: 28 s for a
+ * file of 20,000 commands with no top-level heading. The walk's answers are read from this index.
+ */
+function headingIndex(s: LineStructure): HeadingIndex {
+  let index = headingIndexes.get(s);
+  if (index) return index;
+  const count = s.lines.length;
+  const level = new Uint8Array(count + 1);
+  const nearest = new Int32Array(count + 1);
+  const parent = new Int32Array(count + 1);
+  const lastAtLevel = new Int32Array(8);
+  for (let n = 1; n <= count; n++) {
+    level[n] = readHeadingLevel(s, n) ?? 0;
+    nearest[n] = level[n] ? n : nearest[n - 1]!;
+    if (level[n]) {
+      for (let l = 1; l < level[n]!; l++) parent[n] = Math.max(parent[n]!, lastAtLevel[l]!);
+      lastAtLevel[level[n]!] = n;
+    }
+  }
+  index = { level, nearest, parent };
+  headingIndexes.set(s, index);
+  return index;
+}
+
+/** The level (1-6) of the heading at line `n`, from the index. */
 function headingLevel(s: LineStructure, n: number): number | undefined {
+  if (n < 1 || n > s.lines.length) return undefined;
+  return headingIndex(s).level[n] || undefined;
+}
+
+/** The level (1-6) of the heading at line `n`: ATX, or the text line above a setext underline. Never inside a fence. */
+function readHeadingLevel(s: LineStructure, n: number): number | undefined {
   if (n < 1 || n > s.lines.length || s.inFence[n - 1]) return undefined;
   const text = s.lines[n - 1]!;
   const atx = ATX_RE.exec(text);
@@ -63,21 +105,16 @@ export function isHeadingLine(s: LineStructure, n: number): boolean {
 
 /** The nearest heading at or above line `n`, as a line number. */
 export function nearestHeading(s: LineStructure, n: number): number | undefined {
-  for (let i = Math.min(n, s.lines.length); i >= 1; i--) if (isHeadingLine(s, i)) return i;
-  return undefined;
+  if (n < 1) return undefined;
+  return headingIndex(s).nearest[Math.min(n, s.lines.length)] || undefined;
 }
 
 /** The nearest heading at or above line `n` and every heading above it of a lower level (its parents), nearest first. */
 export function headingChain(s: LineStructure, n: number): number[] {
   const chain: number[] = [];
-  let level = 7;
-  for (let i = Math.min(n, s.lines.length); i >= 1 && level > 1; i--) {
-    const l = headingLevel(s, i);
-    if (l !== undefined && l < level) {
-      chain.push(i);
-      level = l;
-    }
-  }
+  if (n < 1) return chain;
+  const { level, nearest, parent } = headingIndex(s);
+  for (let h = nearest[Math.min(n, s.lines.length)]!; h !== 0; h = level[h] === 1 ? 0 : parent[h]!) chain.push(h);
   return chain;
 }
 
@@ -166,13 +203,31 @@ function runOfLines(s: LineStructure, line: number, keep: (text: string) => bool
   return s.lines.slice(first - 1, last);
 }
 
+/** Which lines close or open a `<details>` element, read once per document (pcic-1ik0.25). */
+const detailsTags = new WeakMap<LineStructure, { closes: Uint8Array; opens: Uint8Array }>();
+function detailsTagsOf(s: LineStructure): { closes: Uint8Array; opens: Uint8Array } {
+  let tags = detailsTags.get(s);
+  if (!tags) {
+    const closes = new Uint8Array(s.lines.length);
+    const opens = new Uint8Array(s.lines.length);
+    s.lines.forEach((text, i) => {
+      closes[i] = /<\/details>/i.test(text) ? 1 : 0;
+      opens[i] = /<details\b/i.test(text) ? 1 : 0;
+    });
+    tags = { closes, opens };
+    detailsTags.set(s, tags);
+  }
+  return tags;
+}
+
 /** The `<summary>` text of the `<details>` element that encloses line `from`, if any. */
 function enclosingSummary(s: LineStructure, from: number): string[] {
   let depth = 0;
+  const { closes, opens } = detailsTagsOf(s);
   for (let n = from - 1; n >= 1 && from - n <= 300; n--) {
     const text = s.lines[n - 1]!;
-    if (/<\/details>/i.test(text)) depth++;
-    if (/<details\b/i.test(text)) {
+    if (closes[n - 1]) depth++;
+    if (opens[n - 1]) {
       if (depth > 0) {
         depth--;
         continue;
