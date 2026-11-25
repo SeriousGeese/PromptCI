@@ -1,6 +1,13 @@
 import type { RepoContext } from '../repo-context.js';
 import type { PromptCiIssue } from '../types.js';
 import { treeFor } from '../repo-tree.js';
+import { inOrderOnOneLine } from '../linear-text.js';
+
+// pcic-1ik0.25: the `.*` alternatives of the two patterns below, read without backtracking (a long
+// line of "unity" or "avoid" took seconds); the rest of each pattern is unchanged.
+const UNITY_TOOL_MENTION = inOrderOnOneLine(/\bunity\b/i, /\b(lts|editor|hub|engine)\b/i);
+const INSTANTIATE_MONOBEHAVIOUR = inOrderOnOneLine(/instantiate\b/i, /monobehaviour/i);
+const AVOID_UPDATE = inOrderOnOneLine(/avoid\b/i, /update/i);
 
 export function detectUnity(context: RepoContext): PromptCiIssue[] {
   const issues: PromptCiIssue[] = [];
@@ -12,7 +19,9 @@ export function detectUnity(context: RepoContext): PromptCiIssue[] {
   const hasProjectVersion = tree.isFile('ProjectSettings/ProjectVersion.txt');
   
   const combinedContent = files.map(f => f.content).join('\n');
-  const hasUnityMentions = /\bunity\b.*\b(lts|editor|hub|engine)\b|\bmonobehaviour\b|\bunityengine\b|\bgameobject\b|\bprefab\b|\bscriptableobject\b/i.test(combinedContent);
+  const hasUnityMentions =
+    /\bmonobehaviour\b|\bunityengine\b|\bgameobject\b|\bprefab\b|\bscriptableobject\b/i.test(combinedContent) ||
+    UNITY_TOOL_MENTION.test(combinedContent);
 
   if (!(hasAssets && hasProjectVersion) && !hasUnityMentions) {
     return [];
@@ -22,7 +31,9 @@ export function detectUnity(context: RepoContext): PromptCiIssue[] {
 
   // 1. MonoBehaviour lifecycle guidance
   const hasMonoBehaviourGuidance =
-    /monobehaviour\s+(?:lifecycle|guidance|rules?)|\blifecycle\s+(?:method|methods|guidance|rules?)|instantiate\b.*monobehaviour|avoid\b.*update|new\s+monobehaviour|awake\(\)|start\(\)|update\(\)/i.test(combinedContent);
+    /monobehaviour\s+(?:lifecycle|guidance|rules?)|\blifecycle\s+(?:method|methods|guidance|rules?)|new\s+monobehaviour|awake\(\)|start\(\)|update\(\)/i.test(combinedContent) ||
+    INSTANTIATE_MONOBEHAVIOUR.test(combinedContent) ||
+    AVOID_UPDATE.test(combinedContent);
   if (!hasMonoBehaviourGuidance) {
     issues.push({
       id: 'unity-missing-monobehaviour-guidance',

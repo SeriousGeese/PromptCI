@@ -29,6 +29,7 @@ import { treeFor } from './repo-tree.js';
 import { collectCiPackageManagers } from './ci-alignment.js';
 import type { RepoTree } from './repo-tree.js';
 import { packageManagerSwapEdits, versionMentionEdits } from './manifest-fix-edits.js';
+import { forwardExec, forwardIndexOf, lineNumberIndex, lineStartIndex } from './linear-text.js';
 import type { PackageManagerHit } from './manifest-fix-edits.js';
 import {
   formatVersion,
@@ -56,6 +57,139 @@ export type ManifestData = {
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+// ── Scoped invocations (pcic-1ik0.26) ─────────────────────────────────────────
+
+/** JavaScript's `\s`. */
+function isSpace(char: string | undefined): boolean {
+  return char !== undefined && /\s/.test(char);
+}
+
+const SCOPE_FLAGS = String.raw`(?:--filter\b|-F\b|--cwd\b|-C\b|--prefix\b|--dir\b|-w\b|--workspaces?\b|-ws\b|-r\b|--recursive\b)`;
+const SCOPE_FLAG_AFTER_SPACE_RE = new RegExp(String.raw`\s` + SCOPE_FLAGS, 'g');
+const SCOPE_FLAG_AT_RE = new RegExp(SCOPE_FLAGS, 'y');
+const SCOPE_SEPARATOR_RE = /&&|\|\||;|\||`|,\s|\.\s|\bthen\b/g;
+
+/** One line's facts for the `cd <dir> &&` question, worked out once (positions relative to the line). */
+type CdChainLine = {
+  start: number;
+  /** `lastNonSpace[x]`: the last non-space position before `x`, or -1. */
+  lastNonSpace: Int32Array;
+  /** `lastBreak[x]`: the last `;` or `|` before `x`, or -1. */
+  lastBreak: Int32Array;
+  /** `runEnd[i]`: for an `&` at `i`, where its run of `&` ends. */
+  runEnd: Int32Array;
+  /** `oddRunsBefore[x]`: how many runs of `&` of odd length start before `x`. */
+  oddRunsBefore: Int32Array;
+  /** Positions of an `&&` that `cd <dir>` (and spaces) comes right before, ascending. */
+  chainStarts: number[];
+};
+
+function cdChainLine(line: string, start: number): CdChainLine {
+  const n = line.length;
+  const space = new Uint8Array(n);
+  for (let i = 0; i < n; i++) space[i] = isSpace(line[i]) ? 1 : 0;
+  const lastNonSpace = new Int32Array(n + 1);
+  const lastBreak = new Int32Array(n + 1);
+  const oddRunsBefore = new Int32Array(n + 1);
+  const runEnd = new Int32Array(n);
+  const tokenStart = new Int32Array(n);
+  const spaceStart = new Int32Array(n);
+  lastNonSpace[0] = -1;
+  lastBreak[0] = -1;
+  for (let i = 0; i < n; i++) {
+    lastNonSpace[i + 1] = space[i] ? lastNonSpace[i]! : i;
+    lastBreak[i + 1] = line[i] === ';' || line[i] === '|' ? i : lastBreak[i]!;
+    tokenStart[i] = !space[i] && i > 0 && !space[i - 1] ? tokenStart[i - 1]! : i;
+    spaceStart[i] = space[i] && i > 0 && space[i - 1] ? spaceStart[i - 1]! : i;
+  }
+  for (let i = n - 1; i >= 0; i--) runEnd[i] = line[i] === '&' ? (line[i + 1] === '&' ? runEnd[i + 1]! : i + 1) : 0;
+  for (let i = 0; i < n; i++) {
+    const opensOddRun = line[i] === '&' && (i === 0 || line[i - 1] !== '&') && (runEnd[i]! - i) % 2 === 1;
+    oddRunsBefore[i + 1] = oddRunsBefore[i]! + (opensOddRun ? 1 : 0);
+  }
+  // \bcd\s+\S+\s* ending at a: the token (\S+) and its trailing spaces, the spaces before it, and "cd".
+  const cdBefore = (a: number): boolean => {
+    const tokenEnd = a > 0 && space[a - 1] ? spaceStart[a - 1]! : a;
+    if (tokenEnd === 0) return false;
+    const token = tokenStart[tokenEnd - 1]!;
+    if (token === 0 || !space[token - 1]) return false;
+    const cd = spaceStart[token - 1]! - 2;
+    return cd >= 0 && line.startsWith('cd', cd) && (cd === 0 || !/\w/.test(line[cd - 1]!));
+  };
+  const chainStarts: number[] = [];
+  for (let a = 0; a + 1 < n; a++) if (line[a] === '&' && line[a + 1] === '&' && cdBefore(a)) chainStarts.push(a);
+  return { start, lastNonSpace, lastBreak, runEnd, oddRunsBefore, chainStarts };
+}
+
+/**
+ * Whether `line.slice(0, end)` matches /\bcd\s+\S+\s*&&\s*(?:[^&;|\n]*&&\s*)*$/ (`end` is where a
+ * word starts): a `cd <dir> &&` chained right before. The tail after that first `&&` is any text
+ * with no `;`, `|` or newline whose `&`s come in pairs, ending in `&&` and spaces. The regex,
+ * run per mention on everything before it on the line, was quadratic (pcic-1ik0.26).
+ */
+function cdChainBefore(facts: CdChainLine, line: string, end: number): boolean {
+  const last = facts.lastNonSpace[end]!;
+  if (last === -1 || line[last] !== '&') return false;
+  const from = facts.lastBreak[end]! + 1;
+  const starts = facts.chainStarts;
+  let lo = 0;
+  let hi = starts.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (starts[mid]! <= end - 2) lo = mid + 1;
+    else hi = mid;
+  }
+  for (let k = lo - 1; k >= 0; k--) {
+    const a = starts[k]!;
+    if (a + 2 < from) return false;
+    if (facts.oddRunsBefore[end]! - facts.oddRunsBefore[a + 2]! > 0) return false;
+    if ((Math.min(facts.runEnd[a]!, end) - (a + 2)) % 2 === 0) return true;
+  }
+  return false;
+}
+
+/**
+ * Whether a script mention at [matchStart, matchEnd) is scoped elsewhere: a `cd <dir> &&` chained
+ * directly before it, or a workspace or directory flag later in the same command (`npm run build
+ * -w web`). Answers what the per-mention regexes over the rest of the line answered, for every
+ * mention of a file in linear time overall (pcic-1ik0.26: 12 s on one long `pnpm run ...` line).
+ */
+export function scopedInvocationTester(content: string): (matchStart: number, matchEnd: number) => boolean {
+  const lineStart = lineStartIndex(content);
+  const nextNewline = forwardIndexOf(content, '\n');
+  const nextSeparator = forwardExec(content, SCOPE_SEPARATOR_RE);
+  const lines = new Map<number, { line: string; facts: CdChainLine }>();
+  let flags: Array<[number, number]> | undefined;
+  return (matchStart: number, matchEnd: number): boolean => {
+    const start = lineStart(matchStart);
+    let known = lines.get(start);
+    if (!known) {
+      const newline = nextNewline(matchStart);
+      const line = content.slice(start, newline === -1 ? content.length : newline);
+      known = { line, facts: cdChainLine(line, start) };
+      lines.set(start, known);
+    }
+    if (cdChainBefore(known.facts, known.line, matchStart - start)) return true;
+
+    const separator = nextSeparator(matchEnd);
+    const afterEnd = nextNewline(matchEnd);
+    const stop = afterEnd === -1 ? content.length : afterEnd;
+    const cut = separator !== null && separator.index + separator[0].length <= stop ? separator.index : stop;
+    SCOPE_FLAG_AT_RE.lastIndex = matchEnd;
+    const atStart = SCOPE_FLAG_AT_RE.exec(content);
+    if (atStart && matchEnd + atStart[0].length <= cut) return true;
+    if (!flags) flags = [...content.matchAll(SCOPE_FLAG_AFTER_SPACE_RE)].map((m) => [m.index, m.index + m[0].length]);
+    let lo = 0;
+    let hi = flags.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (flags[mid]![0] < matchEnd) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo < flags.length && flags[lo]![1] <= cut;
+  };
+}
 
 function issueId(key: string): string {
   const hash = crypto.createHash('sha1').update(key).digest('hex').slice(0, 12);
@@ -661,15 +795,8 @@ function checkMissingScripts(context: RepoContext): PromptCiIssue[] {
   // directly before it, or a workspace/directory flag later in the same command
   // (`npm run build -w web`). A `-r` or `cd` belonging to an earlier command on
   // the line says nothing about this one.
-  const CD_CHAIN_BEFORE_RE = /\bcd\s+\S+\s*&&\s*(?:[^&;|\n]*&&\s*)*$/;
-  const SCOPE_FLAG_RE = /(?:^|\s)(?:--filter\b|-F\b|--cwd\b|-C\b|--prefix\b|--dir\b|-w\b|--workspaces?\b|-ws\b|-r\b|--recursive\b)/;
-  const isScopedInvocation = (content: string, matchStart: number, matchEnd: number): boolean => {
-    const lineStart = content.lastIndexOf('\n', matchStart - 1) + 1;
-    if (CD_CHAIN_BEFORE_RE.test(content.slice(lineStart, matchStart))) return true;
-    const newline = content.indexOf('\n', matchEnd);
-    const after = content.slice(matchEnd, newline === -1 ? undefined : newline);
-    return SCOPE_FLAG_RE.test(after.split(/&&|\|\||;|\||`|,\s|\.\s|\bthen\b/)[0]!);
-  };
+  // That is: /\bcd\s+\S+\s*&&\s*(?:[^&;|\n]*&&\s*)*$/ on the line before the mention, or
+  // /(?:^|\s)(?:--filter\b|-F\b|...)/ on the rest of its command (scopedInvocationTester, linear).
 
   const reported = new Set<string>();
 
@@ -711,6 +838,9 @@ function checkMissingScripts(context: RepoContext): PromptCiIssue[] {
   for (const file of files) {
     const codeMask = buildCodeMask(file.content);
     const evaluatedByCommandValidity = commandAnalysis.evaluatedScripts.get(file.path);
+    // pcic-1ik0.26: line numbers and scope read from indexes built once per file, not per mention.
+    let lineOf: ((offset: number) => number) | undefined;
+    let isScopedInvocation: ((matchStart: number, matchEnd: number) => boolean) | undefined;
     let match: RegExpExecArray | null;
     const re = new RegExp(SCRIPT_RUN_RE.source, SCRIPT_RUN_RE.flags);
     while ((match = re.exec(file.content)) !== null) {
@@ -762,7 +892,8 @@ function checkMissingScripts(context: RepoContext): PromptCiIssue[] {
       if (!availableScripts.has(scriptName)) {
         // This exact occurrence was already judged by command-validity.
         if (evaluatedByCommandValidity?.size) {
-          const line = file.content.slice(0, match.index).split('\n').length;
+          lineOf ??= lineNumberIndex(file.content);
+          const line = lineOf(match.index);
           if (evaluatedByCommandValidity.has(`${line}:${scriptName}`)) continue;
         }
         // A script defined by a workspace package (monorepo) is runnable via
@@ -772,10 +903,10 @@ function checkMissingScripts(context: RepoContext): PromptCiIssue[] {
         // (`npm run` and `pnpm run` accept scripts only.)
         const scriptsOnly = explicitRun && (packageManager === 'npm' || packageManager === 'pnpm');
         if (!scriptsOnly && isKnownBinary(context, scriptName)) continue;
-        if (isScopedInvocation(file.content, match.index, match.index + match[0].length)) continue;
-
         const dedupeKey = `${file.path}:${scriptName}`;
         if (reported.has(dedupeKey)) continue;
+        isScopedInvocation ??= scopedInvocationTester(file.content);
+        if (isScopedInvocation(match.index, match.index + match[0].length)) continue;
         reported.add(dedupeKey);
 
         issues.push({
@@ -979,10 +1110,10 @@ export function detectManifestConsistency(context: RepoContext): PromptCiIssue[]
   const issues: PromptCiIssue[] = [];
 
   if (manifests.packageJson) {
-    issues.push(...checkJsLibraryVersionMismatch(files, manifests.packageJson));
-    issues.push(...checkMissingScripts(context));
-    issues.push(...checkNodeVersionMismatch(context));
-    issues.push(...checkJsToolingMismatch(context));
+    for (const issue of checkJsLibraryVersionMismatch(files, manifests.packageJson)) issues.push(issue);
+    for (const issue of checkMissingScripts(context)) issues.push(issue);
+    for (const issue of checkNodeVersionMismatch(context)) issues.push(issue);
+    for (const issue of checkJsToolingMismatch(context)) issues.push(issue);
   }
 
   const pmIssue = checkPackageManagerMismatch(context);
@@ -992,8 +1123,8 @@ export function detectManifestConsistency(context: RepoContext): PromptCiIssue[]
     const toolingIssue = checkPipVsPoetry(files, manifests.pyproject, treeFor(context));
     if (toolingIssue) issues.push(toolingIssue);
 
-    issues.push(...checkPythonVersionMismatch(files, manifests.pyproject));
-    issues.push(...checkLibraryVersionMismatch(files, manifests.pyproject));
+    for (const issue of checkPythonVersionMismatch(files, manifests.pyproject)) issues.push(issue);
+    for (const issue of checkLibraryVersionMismatch(files, manifests.pyproject)) issues.push(issue);
   }
 
   return issues;

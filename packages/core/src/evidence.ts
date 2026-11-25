@@ -9,6 +9,8 @@
  * `Reads all documentation at once: "read all documentation"` can.
  */
 
+import type { LocatingMatcher } from './linear-text.js';
+
 const INVISIBLE_CATEGORY_RE = /[\p{Cc}\p{Cf}\p{Cs}\p{Co}]/u;
 
 /** Code point label used wherever an invisible character must be shown: `<U+200B>`. */
@@ -81,7 +83,24 @@ export function matchEvidence(
   pattern: RegExp,
   label: string,
   maxLen = 120,
+  locate?: LocatingMatcher,
 ): string {
-  const matched = firstMatch(content, pattern, maxLen);
+  const matched = locate ? firstMatchAt(content, pattern, locate.firstIndex(content), maxLen) : firstMatch(content, pattern, maxLen);
   return matched ? `${label}: "${matched}"` : label;
+}
+
+/** How much text after a located match start the pattern itself is run on (pcic-1ik0.25). */
+const EVIDENCE_WINDOW = 2000;
+
+/**
+ * `firstMatch` for a pattern too slow to search a hostile file with (`/read\s+.*report.*\s+before/`
+ * tries every "read" against the rest of its line): a linear matcher finds where the first match
+ * starts, and the pattern only runs there, over a bounded window. A match longer than the window
+ * is clipped to it, which the snippet would clip anyway.
+ */
+export function firstMatchAt(content: string, pattern: RegExp, start: number, maxLen = 120): string | undefined {
+  if (start < 0) return undefined;
+  const re = new RegExp(pattern.source, pattern.flags.replace(/[gy]/g, '') + 'y');
+  const m = re.exec(content.slice(start, start + EVIDENCE_WINDOW));
+  return m ? snippet(m[0], maxLen) : undefined;
 }

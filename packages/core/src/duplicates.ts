@@ -793,8 +793,21 @@ export function detectDuplicateHeadings(files: InstructionFile[]): PromptCiIssue
     const headingKeys = [...headingMap.keys()];
     const prefixReported = new Set<string>();
 
-    for (let i = 0; i < headingKeys.length; i++) {
-      for (let j = i + 1; j < headingKeys.length; j++) {
+    // pcic-1ik0.25: a key is a prefix of another only where the longer one has a space, so each key's
+    // prefixes are looked up at its spaces instead of comparing every pair of headings (quadratic: 7 s
+    // on 20,000 headings). The pairs are then visited in the old (i, j) order.
+    const keyIndex = new Map(headingKeys.map((key, index) => [key, index]));
+    const prefixPairs: Array<[number, number]> = [];
+    headingKeys.forEach((key, index) => {
+      for (let at = key.indexOf(' '); at !== -1; at = key.indexOf(' ', at + 1)) {
+        const other = keyIndex.get(key.slice(0, at));
+        if (other !== undefined) prefixPairs.push(other < index ? [other, index] : [index, other]);
+      }
+    });
+    prefixPairs.sort((x, y) => x[0] - y[0] || x[1] - y[1]);
+
+    for (const [i, j] of prefixPairs) {
+      {
         const keyA = headingKeys[i]!;
         const keyB = headingKeys[j]!;
 
