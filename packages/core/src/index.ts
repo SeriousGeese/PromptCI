@@ -101,6 +101,9 @@ export {
 } from './promptci-gitignore.js';
 
 export { selectScanPaths } from './discovery.js';
+// pcic-k1t3.10: when a tool loads a rule file (every request, or only for some files, modes or requests).
+export { ruleActivation } from './rule-activation.js';
+export type { RuleActivation } from './rule-activation.js';
 export type { ScanPathEntry, SelectScanPathsOptions, SelectScanPathsResult } from './discovery.js';
 
 // pcic-kvv3.1: provenance of every check family (kind, claim, sources, appliesTo, lastVerified).

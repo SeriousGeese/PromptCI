@@ -148,6 +148,10 @@ export function detectCanonicalOwner(files: InstructionFile[]): PromptCiIssue[] 
         file.fileType === 'copilot' ||
         file.fileType === 'gemini' ||
         file.fileType === 'cline' ||
+        file.fileType === 'kiro' ||
+        file.fileType === 'roo' ||
+        file.fileType === 'amazonq' ||
+        file.fileType === 'junie' ||
         baseName === 'claude.md' ||
         baseName === '.cursorrules' ||
         baseName === '.windsurfrules';

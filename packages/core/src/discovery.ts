@@ -34,8 +34,42 @@ export const DEFAULT_INSTRUCTION_PATTERNS: readonly string[] = [
   // Core AI instruction files
   'CLAUDE.md',
   'AGENTS.md',
+  // Codex reads AGENTS.override.md before AGENTS.md in each directory (one file
+  // per directory); Devin Local (Windsurf) and Roo Code read AGENT.md as an
+  // always-on rules file. Root only, like AGENTS.md.
+  'AGENTS.override.md',
+  'AGENT.md',
   '.cursorrules',
   '.windsurfrules',
+  // Windsurf / Devin Local workspace rules: one rule per file, activation set by
+  // a `trigger:` frontmatter field. `.windsurf/rules/*.md` is the legacy
+  // location Devin Local still imports by default; `.devin/rules/*.md` and
+  // `.devin/global_rules.md` are the current ones. The docs describe no
+  // subdirectories, so only the top level of each rules directory is read.
+  '.windsurf/rules/*.md',
+  '.devin/rules/*.md',
+  '.devin/global_rules.md',
+  // Kiro steering files: `inclusion:` frontmatter (always by default,
+  // fileMatch, manual, auto).
+  '.kiro/steering/*.md',
+  // Roo Code: `.roo/rules/` (read recursively) with `.roorules` as its
+  // fallback, plus mode-specific `.roo/rules-<mode>/` and `.roorules-<mode>`.
+  '.roo/rules/**/*.{md,mdc,txt}',
+  '.roo/rules-*/**/*.{md,mdc,txt}',
+  '.roorules',
+  // `.roorules-<mode>` is NOT a glob here: a dynamic pattern at the repository
+  // root makes fast-glob walk the whole tree from the root for every pattern
+  // (and changes how a bare `exclude` name prunes). The names that exist are
+  // added as literal paths instead: see `rootModeRuleFiles`.
+  // Amazon Q Developer project rules, used as context in every chat.
+  '.amazonq/rules/*.md',
+  // JetBrains Junie: `.junie/AGENTS.md`, the playbook and rule files read with
+  // the root AGENTS.md, and the legacy `.junie/guidelines.md` file or folder.
+  '.junie/AGENTS.md',
+  '.junie/playbook.md',
+  '.junie/rules/*.md',
+  '.junie/guidelines.md',
+  '.junie/guidelines/**/*.md',
   // Gemini CLI. Root only, like CLAUDE.md/AGENTS.md above.
   'GEMINI.md',
   // Cline: a single `.clinerules` file OR a `.clinerules/` directory of
@@ -76,11 +110,25 @@ const CLINE_DIR_PATTERNS: ReadonlySet<string> = new Set([
   '!.clinerules/workflows/**',
 ]);
 
-/** `DEFAULT_INSTRUCTION_PATTERNS`, minus the `.clinerules/` directory globs when it is a file. */
-export function defaultInstructionPatterns(clineIsDir: boolean): readonly string[] {
-  return clineIsDir
+/** A Roo Code mode-specific rules file at the root (`.roorules-code`); plain slug characters only, so it is a literal glob. */
+const ROO_MODE_FILE_RE = /^\.roorules-[A-Za-z0-9_-]+$/;
+
+/** The root entry names that are Roo Code `.roorules-<mode>` files, sorted, to add as literal patterns. */
+export function rootModeRuleFiles(rootNames: Iterable<string>): string[] {
+  return [...new Set([...rootNames].filter((name) => ROO_MODE_FILE_RE.test(name)))].sort();
+}
+
+/**
+ * `DEFAULT_INSTRUCTION_PATTERNS`, minus the `.clinerules/` directory globs when it
+ * is a file, plus any `.roorules-<mode>` file among `rootNames` (the names at
+ * the repository root) as a literal path.
+ */
+export function defaultInstructionPatterns(clineIsDir: boolean, rootNames: Iterable<string> = []): readonly string[] {
+  const base = clineIsDir
     ? DEFAULT_INSTRUCTION_PATTERNS
     : DEFAULT_INSTRUCTION_PATTERNS.filter((p) => !CLINE_DIR_PATTERNS.has(p));
+  const modeFiles = rootModeRuleFiles(rootNames);
+  return modeFiles.length === 0 ? base : [...base, ...modeFiles];
 }
 
 /** Directory names scanner.ts's default scan ignores at any depth. */
@@ -671,7 +719,7 @@ export function selectScanPaths(
   const exclude = options?.exclude ? [...options.exclude] : [];
 
   const clineIsDir = allPaths.some((p) => p.startsWith('.clinerules/'));
-  const instrPatterns = include ?? defaultInstructionPatterns(clineIsDir);
+  const instrPatterns = include ?? defaultInstructionPatterns(clineIsDir, allPaths.filter((p) => !p.includes('/')));
 
   const instructionFiles = globMatch(allPaths, instrPatterns, [...instructionIgnoreGlobs, ...exclude])
     .filter((p) => underSize(sizeOf.get(p)))

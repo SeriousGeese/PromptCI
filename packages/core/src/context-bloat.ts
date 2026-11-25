@@ -16,6 +16,7 @@ import type { InstructionFile, PromptCiIssue } from './types.js';
 import { fileIdPath } from './finding-id.js';
 import { UNSCORED_TAG } from './health-score.js';
 import { aliasesWithNewType } from './alias-files.js';
+import { ruleActivation } from './rule-activation.js';
 
 export type ContextBloatThresholds = {
   fileWarning: number;
@@ -115,6 +116,16 @@ function aliasesOfType(files: InstructionFile[], aliases: InstructionFile[], fil
   return aliasesWithNewType(files, aliases, (type) => type === fileType);
 }
 
+/**
+ * The legacy `.windsurfrules` file, the one the Windsurf size limit is about. A
+ * `.windsurf/rules/*.md` or `.devin/` rule file is also typed 'windsurf'
+ * (pcic-k1t3.10), but no limit is documented for those, so they get the
+ * generic thresholds.
+ */
+function isLegacyWindsurfRules(file: InstructionFile): boolean {
+  return file.fileType === 'windsurf' && fileIdPath(file).split('/').pop()?.toLowerCase() === '.windsurfrules';
+}
+
 export function detectContextBloat(
   files: InstructionFile[],
   thresholds?: Partial<ContextBloatThresholds>,
@@ -123,8 +134,9 @@ export function detectContextBloat(
   const t: ContextBloatThresholds = mergeThresholds(DEFAULTS, thresholds);
   const issues: PromptCiIssue[] = [];
 
-  for (const file of [...files, ...aliasesOfType(files, aliases, 'windsurf')]) {
+  for (const file of [...files, ...aliasesOfType(files, aliases, 'windsurf').filter(isLegacyWindsurfRules)]) {
     const { charCount, estimatedTokens, path: filePath, fileType } = file;
+    const isWindsurf = isLegacyWindsurfRules(file);
 
     // Per-file-type thresholds: READMEs are project docs consumed for context
     // (relaxed), while `.windsurfrules` is truncated by Windsurf past a low
@@ -134,12 +146,11 @@ export function detectContextBloat(
     if (fileType === 'readme') {
       warnThreshold = t.readmeFileWarning;
       highThreshold = t.readmeFileHigh;
-    } else if (fileType === 'windsurf') {
+    } else if (isWindsurf) {
       warnThreshold = t.windsurfFileWarning;
       highThreshold = t.windsurfFileHigh;
     }
 
-    const isWindsurf = fileType === 'windsurf';
     // Windsurf silently drops rules past its truncation limit, so the guidance
     // is about staying under the limit, not just "trim/split for cost".
     const windsurfRecommendation =
@@ -214,9 +225,15 @@ export function detectContextBloat(
     }
   }
 
-  const totalChars = files.reduce((sum, f) => sum + f.charCount, 0);
-  const totalTokens = files.reduce((sum, f) => sum + f.estimatedTokens, 0);
-  const allPaths = files.map((f) => f.path);
+  // The total is what is loaded on every request: a rule file its tool loads only
+  // for some files, one mode or on request (rule-activation.ts: a Cursor rule
+  // without alwaysApply, a Copilot applyTo, a Kiro fileMatch, a Windsurf glob
+  // trigger, a Roo Code mode directory) still gets the per-file checks above,
+  // but is not added to every turn's cost (pcic-k1t3.10).
+  const alwaysLoaded = files.filter((f) => ruleActivation(f) === 'always');
+  const totalChars = alwaysLoaded.reduce((sum, f) => sum + f.charCount, 0);
+  const totalTokens = alwaysLoaded.reduce((sum, f) => sum + f.estimatedTokens, 0);
+  const allPaths = alwaysLoaded.map((f) => f.path);
 
   if (totalChars >= t.totalHigh) {
     issues.push({

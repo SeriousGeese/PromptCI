@@ -23,7 +23,22 @@
 export type ProvenanceKind = 'repo-fact' | 'tool-fact' | 'opinion';
 
 /** The tools a claim can be about. A `repo-fact` applies to `all`. */
-export const PROVENANCE_TOOLS = ['claude-code', 'codex', 'cursor', 'copilot', 'gemini-cli', 'windsurf'] as const;
+export const PROVENANCE_TOOLS = [
+  'claude-code',
+  'codex',
+  'cursor',
+  'copilot',
+  'gemini-cli',
+  'windsurf',
+  // pcic-k1t3.10: the tools whose rule files core discovers since then. 'devin-local' is the
+  // product docs.windsurf.com now redirects to, kept apart from 'windsurf' so a claim sourced
+  // only from its docs does not read as a Windsurf fact.
+  'devin-local',
+  'kiro',
+  'roo-code',
+  'amazon-q',
+  'junie',
+] as const;
 export type ProvenanceTool = (typeof PROVENANCE_TOOLS)[number];
 
 /**

@@ -27,8 +27,9 @@
  *     package's CLAUDE.md may differ. A tool directory (.cursor/, .github/ ...)
  *     belongs to the directory that holds it. `.claude/commands/` and
  *     `.claude/agents/` hold task prompts, not the rulebook, and are skipped, as
- *     are Cursor `.mdc` rules without `alwaysApply: true` and any rule file with
- *     `globs:` / `applyTo:`.
+ *     are Cursor `.mdc` rules without `alwaysApply: true`, any rule file with
+ *     `globs:` / `applyTo:`, a Windsurf `trigger` or Kiro `inclusion` other than
+ *     always, and Roo Code mode rules (rule-activation.ts).
  *   - Negation is read against the whole line ("Avoid npm", "instead of `npm
  *     install`"), and a fenced block introduced as wrong or bad is not usage.
  *   - A command that is directory-scoped (`cd docs && npm install`, "standalone",
@@ -54,10 +55,11 @@ import { scanFencedLines } from './markdown-fences.js';
 import { fileIdPath } from './finding-id.js';
 import { snippet } from './evidence.js';
 import { UNSCORED_TAG } from './health-score.js';
+import { ruleActivation } from './rule-activation.js';
 
 /** The file types that are one tool's own instruction file. */
 const TOOL_TYPES: ReadonlySet<FileType> = new Set<FileType>([
-  'claude', 'agents', 'cursor', 'windsurf', 'copilot', 'gemini', 'cline',
+  'claude', 'agents', 'cursor', 'windsurf', 'copilot', 'gemini', 'cline', 'kiro', 'roo', 'amazonq', 'junie',
 ]);
 
 /**
@@ -65,7 +67,9 @@ const TOOL_TYPES: ReadonlySet<FileType> = new Set<FileType>([
  * above them. Any other hidden directory (`.config/`, `.devcontainer/`) is a
  * scope of its own: stripping it would compare unrelated files.
  */
-const TOOL_DIRS: ReadonlySet<string> = new Set(['.github', '.cursor', '.windsurf', '.clinerules', '.claude', '.gemini', '.codex']);
+const TOOL_DIRS: ReadonlySet<string> = new Set([
+  '.github', '.cursor', '.windsurf', '.devin', '.clinerules', '.claude', '.gemini', '.codex', '.kiro', '.roo', '.amazonq', '.junie',
+]);
 
 /** Near-identical files: at least this share of their distinct lines in common. */
 const MIRROR_SIMILARITY = 0.9;
@@ -94,14 +98,9 @@ function isTaskPromptFile(file: InstructionFile): boolean {
   return /(?:^|\/)\.claude\/(?:commands|agents)\//.test(fileIdPath(file));
 }
 
-/** Rule files that apply to part of the tree or only when asked for. */
+/** Rule files that apply to part of the tree, one mode, or only when asked for (rule-activation.ts). */
 function isScopedRuleFile(file: InstructionFile): boolean {
-  const frontmatter = /^---\r?\n([\s\S]*?)\r?\n---/.exec(file.content)?.[1] ?? '';
-  const alwaysApply = /^\s*alwaysApply\s*:\s*true\s*$/im.test(frontmatter);
-  // Cursor project rules (.mdc) are attached by description or glob unless they say alwaysApply.
-  if (/\.mdc$/i.test(fileIdPath(file))) return !alwaysApply;
-  if (alwaysApply) return false;
-  return /^\s*(?:globs|applyTo)\s*:\s*\S/im.test(frontmatter);
+  return ruleActivation(file) === 'scoped';
 }
 
 /** The directory whose rules a tool file sets: its own, with a tool directory stripped. */
