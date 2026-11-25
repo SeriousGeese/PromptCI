@@ -22,6 +22,7 @@ import type { FileType, InstructionFile, PromptCiIssue } from './types.js';
 import { shortHash } from './ai-config.js';
 import { fileIdPath } from './finding-id.js';
 import { aliasesWithNewType, groupAliasesByTarget } from './alias-files.js';
+import { ruleActivation } from './rule-activation.js';
 
 /**
  * Language / framework signals that, when they appear as SECTION HEADINGS in an
@@ -60,10 +61,14 @@ export function detectWindsurfRules(context: RepoContext): PromptCiIssue[] {
   // `.windsurfrules -> AGENTS.md`: Windsurf loads that content always-on under the alias's name, so the
   // check runs for the alias (against the real content) unless the real file is already a Windsurf file.
   // Several links to one file are one finding listing every link, not one per link.
+  // Only always-on files: a Windsurf rule file whose `trigger` is glob,
+  // model_decision or manual (pcic-k1t3.10, rule-activation.ts) already loads
+  // only when relevant.
   const isWindsurf = (type: FileType) => type === 'windsurf';
+  const alwaysOn = (file: InstructionFile) => ruleActivation(file) === 'always';
   const groups: InstructionFile[][] = [
-    ...context.files.filter((file) => file.fileType === 'windsurf').map((file) => [file]),
-    ...groupAliasesByTarget(aliasesWithNewType(context.files, context.aliasFiles ?? [], isWindsurf)),
+    ...context.files.filter((file) => file.fileType === 'windsurf' && alwaysOn(file)).map((file) => [file]),
+    ...groupAliasesByTarget(aliasesWithNewType(context.files, context.aliasFiles ?? [], isWindsurf).filter(alwaysOn)),
   ];
 
   for (const group of groups) {

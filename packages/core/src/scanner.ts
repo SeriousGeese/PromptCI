@@ -8,7 +8,7 @@ import { isWithinRoot, realPath, realPathWithinRoot } from './path-containment.j
 import { createGitSymlinkOracle } from './git-symlinks.js';
 import { RepoTree } from './repo-tree.js';
 import type { GitSymlinkOracle } from './git-symlinks.js';
-import { SCAN_IGNORE_DIRS, defaultInstructionPatterns, MAX_FILE_SIZE, BINARY_CHECK_BYTES } from './discovery.js';
+import { SCAN_IGNORE_DIRS, defaultInstructionPatterns, MAX_FILE_SIZE, BINARY_CHECK_BYTES, ROO_MODE_SLUG } from './discovery.js';
 
 // 'worktrees'/'.worktrees' covers git worktree checkouts nested anywhere in the
 // tree (e.g. Claude Code's .claude/worktrees/<name>/, or a top-level worktrees/
@@ -31,6 +31,8 @@ const IGNORE_DIRS = SCAN_IGNORE_DIRS;
 export { MAX_FILE_SIZE, BINARY_CHECK_BYTES };
 
 const PERSONA_ROOT_PATHS: ReadonlySet<string> = new Set(['/SOUL.md', '/USER.md', '/TOOLS.md']);
+/** Roo Code rule files: `.roo/rules/`, `.roo/rules-<mode>/`, `.roorules` and `.roorules-<mode>`, at the root. */
+const ROO_RULES_RE = new RegExp(`^/(?:\\.roo/rules(?:-[^/]+)?/|\\.roorules(?:-${ROO_MODE_SLUG})?$)`);
 
 // Takes the repo-root-relative path (not the absolute path): classification must
 // depend only on where a file sits INSIDE the scanned repo. Using the absolute
@@ -45,7 +47,23 @@ function deriveFileType(relPath: string): FileType {
   const norm = '/' + relPath.replace(/\\/g, '/').replace(/^\/+/, '');
   const base = norm.slice(norm.lastIndexOf('/') + 1);
 
-  if (base === 'AGENTS.md') return 'agents';
+  // pcic-k1t3.10: one tool's rule directories, anchored at the root like they
+  // are discovered, and typed before the AGENTS.md basename rule below: Junie's
+  // `.junie/AGENTS.md` is Junie's own guidelines file (read instead of the root
+  // AGENTS.md), and an AGENTS.md inside `.roo/rules-<mode>/` is a Roo Code mode
+  // rule, not a directory's AGENTS.md. None of these paths was discovered by
+  // default before, so no file an earlier release scanned changes type.
+  if (norm.startsWith('/.junie/')) return 'junie';
+  if (norm.startsWith('/.kiro/steering/')) return 'kiro';
+  if (ROO_RULES_RE.test(norm)) return 'roo';
+  if (norm.startsWith('/.amazonq/rules/')) return 'amazonq';
+  // Devin Local (Windsurf) rule files.
+  if (norm.startsWith('/.windsurf/rules/') || norm.startsWith('/.devin/rules/') || norm === '/.devin/global_rules.md') {
+    return 'windsurf';
+  }
+  // Codex reads AGENTS.override.md in place of AGENTS.md in the same directory;
+  // a root AGENT.md is read as always-on rules by Devin Local and Roo Code.
+  if (base === 'AGENTS.md' || base === 'AGENTS.override.md' || norm === '/AGENT.md') return 'agents';
   if (base === '.cursorrules' || norm.includes('/.cursor/rules/')) return 'cursor';
   // BUG-19: `.windsurfrules` is in DEFAULT_PATTERNS above, so it was always read
   // and counted toward context-bloat totals — but with no branch here it fell
@@ -186,7 +204,11 @@ function defaultPatterns(tree: RepoTree): string[] {
   // DIRECTORY changes what the scan reads — so it is asked through the tree,
   // which never follows a link out of the root and lets a caller's inventory
   // answer when the repository is not on disk (pcic-csf).
-  return [...defaultInstructionPatterns(tree.isDir('.clinerules'))];
+  // pcic-k1t3.10: `.roorules-<mode>` files are added by name from the root
+  // listing rather than as a root-level glob (see discovery.ts).
+  const root = tree.entries('.');
+  const rootNames = typeof root === 'string' ? [] : [...root.keys()];
+  return [...defaultInstructionPatterns(tree.isDir('.clinerules'), rootNames)];
 }
 
 /**

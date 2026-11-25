@@ -439,7 +439,9 @@ function checkCopilotTopicSilences(files: InstructionFile[]): PromptCiIssue[] {
   // Copilot reads AGENTS.md anywhere in the tree and a single CLAUDE.md / GEMINI.md at the repo root.
   const repoRoot = normalizedPath(copilotFile).slice(0, -'.github/copilot-instructions.md'.length);
   const copilotAlsoReads = files.some((f) => {
-    if (f.fileType === 'agents') return true;
+    // Only a file named AGENTS.md: Copilot does not read AGENT.md or Codex's
+    // AGENTS.override.md, which are also typed 'agents' (pcic-k1t3.10).
+    if (normalizedPath(f).split('/').pop() === 'agents.md') return true;
     const p = normalizedPath(f);
     return p === `${repoRoot}claude.md` || p === `${repoRoot}gemini.md`;
   });

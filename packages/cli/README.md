@@ -1,8 +1,8 @@
 # @promptci/cli
 
 Instruction health for AI coding workflows. Scans AI coding instruction files
-(`CLAUDE.md`, `AGENTS.md`, `.cursorrules`, Copilot instructions, `GEMINI.md`, Cline rules, and
-more) and produces
+(`CLAUDE.md`, `AGENTS.md`, `.cursorrules`, Copilot instructions, `GEMINI.md`, Cline, Windsurf,
+Kiro, Roo Code, Amazon Q and Junie rules, and more) and produces
 actionable health reports: duplicates, conflicting directives, stale guidance, context bloat,
 broken references, and vague instructions.
 

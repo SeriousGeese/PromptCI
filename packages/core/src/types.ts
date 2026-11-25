@@ -8,6 +8,13 @@
 // 'gemini' (Gemini CLI's GEMINI.md), 'cline' (Cline's `.clinerules` file or
 // `.clinerules/` rule directory) and 'persona' (repo-root SOUL.md, USER.md,
 // TOOLS.md) are always-loaded instruction prose, handled like 'claude'.
+//
+// 'kiro' (`.kiro/steering/*.md`), 'roo' (Roo Code's `.roo/rules*/` and
+// `.roorules*`), 'amazonq' (`.amazonq/rules/*.md`) and 'junie' (`.junie/`
+// guidelines) are one tool's rule files, handled like 'cline'. 'windsurf' also
+// covers Devin Local's `.windsurf/rules/*.md` and `.devin/` rules. Whether a
+// rule file is loaded on every request or only for some files, modes or
+// requests is read from its frontmatter: see rule-activation.ts.
 export type FileType =
   | 'claude'
   | 'agents'
@@ -16,6 +23,10 @@ export type FileType =
   | 'copilot'
   | 'gemini'
   | 'cline'
+  | 'kiro'
+  | 'roo'
+  | 'amazonq'
+  | 'junie'
   | 'persona'
   | 'readme'
   | 'docs'
@@ -43,6 +54,10 @@ export const INSTRUCTION_FILE_TYPES: ReadonlySet<FileType> = new Set<FileType>([
   'copilot',
   'gemini',
   'cline',
+  'kiro',
+  'roo',
+  'amazonq',
+  'junie',
   'persona',
   'prompt',
 ]);
