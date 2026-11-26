@@ -445,9 +445,11 @@ export function pipToPoetryEdits(
     const token = /(\S+)\s*$/.exec(before.replace(/`$/, ''))?.[1];
     if (token !== undefined && PIP_WRAPPER_TOKEN.test(token)) return undefined;
     if (!BARE_INSTALL_END.test(after)) return undefined;
-    // In a fenced block the command starts its line, after at most a prompt: anything else is a
-    // file the block shows (a workflow's \`- run:\`, a CI \`script:\` list), not a command to type.
-    if (fenceLine?.inFence && !/^\s*(?:(?:\$|>|PS>)\s+)?$/.test(before)) return undefined;
+    // In a fenced block the command starts its line: anything else is a file the block shows (a
+    // workflow's \`- run:\`, a CI \`script:\` list), not a command to type.
+    if (fenceLine?.inFence && !/^\s*$/.test(before)) return undefined;
+    // A prompt marks a transcript, whose output lines a rewrite would contradict.
+    if (/(?:^|\s)(?:\$|>|PS>)\s+$/.test(before)) return undefined;
 
     const framing = facts.index.framing(lineNo);
     for (const frame of [framing.heading, framing.lead]) {

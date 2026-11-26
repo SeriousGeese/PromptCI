@@ -99,7 +99,7 @@ describe('pip-vs-poetry recipe', () => {
   });
 
   it('rewrites a prompt, a numbered step and a label, and keeps CRLF line endings', async () => {
-    const before = ['# Demo', '', '1. ' + PIP, '', '    $ ' + PIP, '', 'Install: ' + PIP + ' && pytest', ''].join('\r\n');
+    const before = ['# Demo', '', '1. ' + PIP, '', '    ' + PIP, '', 'Install: ' + PIP + ' && pytest', ''].join('\r\n');
     const repo = poetryRepo(before);
     const issue = await pipFinding(repo);
     expect(await applied(repo, issue, 'CLAUDE.md')).toBe(before.split(PIP).join('poetry install'));
@@ -151,6 +151,10 @@ describe('pip-vs-poetry recipe', () => {
     ['a setup script in the repository', 'Install: `' + PIP + '`.', { 'setup.py': 'from setuptools import setup\n' }],
     ['a workflow step in an unlabelled fence', '```\n- run: ' + PIP + '\n```'],
     ['a console transcript', '```console\n$ ' + PIP + '\nCollecting fastapi\n```'],
+    ['a prompt in an unlabelled fence (a transcript)', '```\n$ ' + PIP + '\nCollecting fastapi\n```'],
+    ['a text-fence transcript', '```text\n' + PIP + '\nCollecting fastapi\n```'],
+    ['a prompt before the command', 'Then: $ ' + PIP],
+    ['a dev-requirements file at the root', 'Install: `' + PIP + '`.', { 'dev-requirements.txt': 'pytest\n' }],
     ['a Nix shell', 'Inside the nix develop shell, run `' + PIP + '`.'],
     ['the system interpreter', 'With the system Python, run `' + PIP + '`.'],
     ['a Pipfile in the repository', 'Run `' + PIP + '`.', { Pipfile: '[packages]\n' }],
@@ -309,6 +313,19 @@ describe('hidden-unicode recipe', () => {
     ['a paragraph with a double tick', 'Use ``a`b`` and c' + ZWSP + 'd.'],
     ['a removal that would make a heading', '#' + ZWSP + ' not a heading'],
     ['a removal that would open an HTML comment', '<' + ZWSP + '!-- shown -->'],
+    ['a removal that would make a list item', '-' + ZWSP + ' item'],
+    ['a removal that would make a numbered item', '1.' + ZWSP + ' item'],
+    ['a removal that would make a setext heading', 'Title\n=' + ZWSP + '=='],
+    ['a removal that would make a rule', '---' + ZWSP],
+    ['a removal that would make a task box', '- [ ' + ZWSP + '] x'],
+    ['a removal that would make a link reference definition', '[x]' + ZWSP + ': ./local.md'],
+    ['an escaped tick in the paragraph', 'Use \\` to escape, then `a' + ZWSP + 'b` x'],
+    ['a removal that would form a bare URL', 'ww' + ZWSP + 'w.example.com'],
+    ['a removal that would form an address', 'a@b' + ZWSP + '.com'],
+    ['a dot inside a word', 'file' + ZWSP + '.name here'],
+    ['a <script> body', '<script>\nvar a = "x' + ZWSP + 'y";\n</script>'],
+    ['a <kbd> element', 'Press <kbd>Ctrl' + ZWSP + 'C</kbd>.'],
+    ['math', 'The sum $a' + ZWSP + 'b$ holds.'],
     ['a removal that would join emoji', '\u{1F469}' + ZWSP + '\u200d\u{1F4BB}'],
   ];
   for (const [label, line] of refusals) {
@@ -364,5 +381,8 @@ describe('hidden-unicode recipe', () => {
     plan('see ' + ZWSP + ' ' + '://'.repeat(665));
     plan(Array.from({ length: 49 }, () => 'a' + ZWSP + ' ' + '](x'.repeat(600)).join('\n'));
     plan(Array.from({ length: 200_000 }, () => '`').join('\n') + '\n' + ZWSP);
+    // A long marker run and a gap after each character of a line.
+    plan('-'.repeat(1990) + ZWSP + 'x');
+    plan(Array.from({ length: 50 }, () => ('a' + ZWSP).repeat(1000)).join('\n'));
   });
 });

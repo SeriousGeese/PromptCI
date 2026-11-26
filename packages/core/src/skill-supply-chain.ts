@@ -2490,6 +2490,27 @@ function addressSpans(lineText: string): Array<[number, number]> {
  */
 const MARKUP_NEIGHBOURS: ReadonlySet<string> = new Set(['<', '>', '!', '#', '*', '_', '~', '|', '`', '&', '\\']);
 
+/** A letter, digit or space: text that reads the same with or without an invisible character beside it. */
+function plainText(ch: string): boolean {
+  return /^[\p{L}\p{N}\p{M} \t]$/u.test(ch) && !joinsGlyphs(ch);
+}
+
+/**
+ * Whether a gap left by a removal, between `before` and `after` (`next` is the character after
+ * `after`), joins only plain text: a letter, digit or space on each side, sentence punctuation
+ * after a word when a space or the line end follows it (`app.`, never `www.example`), sentence
+ * punctuation before a space or the line end, or the empty text of a link (`[` and `]`, a scraped heading's anchor). Anything else, a markup character
+ * included ({@link MARKUP_NEIGHBOURS}), may read differently once joined.
+ */
+function gapIsPlain(before: string, after: string | undefined, next: string | undefined): boolean {
+  if (before === '[' && after === ']') return true;
+  // Sentence punctuation before a space or the line end: `done. Next`.
+  if (/^[.,;?!'")]$/.test(before) && (after === undefined || after === ' ' || after === '\t')) return true;
+  if (!plainText(before) || MARKUP_NEIGHBOURS.has(before)) return false;
+  if (after === undefined || plainText(after)) return true;
+  return /^[.,;?!'")]$/.test(after) && before !== ' ' && (next === undefined || next === ' ' || next === '\t');
+}
+
 /** A neighbour that a removal could join into one glyph: an emoji, an emoji component, a joiner or a selector. */
 function joinsGlyphs(ch: string | undefined): boolean {
   if (ch === undefined) return false;
@@ -2550,9 +2571,9 @@ export type InvisibleEditInput = {
   fenced: ArrayLike<number>;
 };
 
-/** Where an HTML element whose text is quoted exactly (`<pre>`, `<code>`) opens or closes. */
-const PRE_OPEN_RE = /<(?:pre|code)\b/gi;
-const PRE_CLOSE_RE = /<\/(?:pre|code)\s*>/gi;
+/** Where an HTML element whose text is quoted or is code (`<pre>`, `<code>`, `<script>`, `<kbd>`, ...) opens or closes. */
+const PRE_OPEN_RE = /<(?:pre|code|script|style|kbd|samp|var|tt|textarea)\b/gi;
+const PRE_CLOSE_RE = /<\/(?:pre|code|script|style|kbd|samp|var|tt|textarea)\s*>/gi;
 
 /**
  * Line edits that remove every invisible character the hidden-unicode rule flags in one Markdown
@@ -2594,7 +2615,8 @@ export function hiddenUnicodeEdits(input: InvisibleEditInput): FixEdit[] | undef
     const lineText = lines[i]!;
     const ownBlock = lineText.trim() === '' || fenced[i] === 1 || /^\s{0,3}#{1,6}(?:\s|$)/.test(lineText);
     const ticksBefore = ownBlock ? 0 : ticks;
-    const paragraphDoubleTick: boolean = (!ownBlock && doubleTick) || lineText.includes('``');
+    // A double tick or an escaped tick: the plain tick count no longer says where spans are.
+    const paragraphDoubleTick: boolean = (!ownBlock && doubleTick) || lineText.includes('``') || lineText.includes('\\`');
     if (ownBlock) {
       ticks = 0;
       doubleTick = false;
@@ -2611,6 +2633,8 @@ export function hiddenUnicodeEdits(input: InvisibleEditInput): FixEdit[] | undef
     if (hidden.length === 0) continue;
     if (edits.length >= MAX_INVISIBLE_EDITS || lineText.length > MAX_INVISIBLE_EDIT_LINE) return undefined;
     if (fenced[i] || i < frontmatterEnd || inPre || paragraphDoubleTick || RTL_SCRIPT_RE.test(lineText)) return undefined;
+    // `$` may open math (or be a shell prompt): text quoted as it is.
+    if (lineText.includes('$')) return undefined;
     // An indented code block (or a line that may be one): sample text, quoted exactly.
     if (/^(?: {4}|\t)/.test(lineText)) return undefined;
     const ranges = removableRanges(lineText, hidden, ticksBefore);
@@ -2624,11 +2648,26 @@ export function hiddenUnicodeEdits(input: InvisibleEditInput): FixEdit[] | undef
       at = end;
     }
     cleaned += lineText.slice(at);
+    // Removing a character joins its neighbours: refuse when the joined text could read as markup,
+    // a link or an address it did not read as before.
+    if (/:\/\/|www\.|@/i.test(cleaned)) return undefined;
+    const contentStart = cleaned.length - cleaned.trimStart().length;
+    // The end of what could be a block marker at the start of the content (`1.`, `-`, `===`), found
+    // in one scan so each gap below is one comparison.
+    let markerEnd = contentStart;
+    if (/[0-9]/.test(cleaned[markerEnd] ?? '')) {
+      while (/[0-9]/.test(cleaned[markerEnd] ?? '')) markerEnd++;
+      if (cleaned[markerEnd] === '.' || cleaned[markerEnd] === ')') markerEnd++;
+    } else {
+      while (/[-+*>#=_~:|]/.test(cleaned[markerEnd] ?? '')) markerEnd++;
+    }
     for (const j of joins) {
-      const before = j > 0 ? String.fromCodePoint(cpBefore(cleaned, j)!) : undefined;
+      if (j <= contentStart) return undefined; // a gap at the start of the content: `<ZWSP>- x` would become a list
+      // A gap inside or right after what could be a block marker: `1.<ZWSP> x`, `-<ZWSP> x`, `=<ZWSP>==`.
+      if (j <= markerEnd) return undefined;
+      const before = String.fromCodePoint(cpBefore(cleaned, j)!);
       const after = j < cleaned.length ? String.fromCodePoint(cleaned.codePointAt(j)!) : undefined;
-      if ((before !== undefined && MARKUP_NEIGHBOURS.has(before)) || (after !== undefined && MARKUP_NEIGHBOURS.has(after))) return undefined;
-      if (joinsGlyphs(before) || joinsGlyphs(after)) return undefined;
+      if (!gapIsPlain(before, after, cleaned[j + 1])) return undefined;
     }
     if (hiddenCharsOn(cleaned, i === 0).length > 0) return undefined;
     edits.push({ filePath, line: i + 1, find: lineText, replace: cleaned });
