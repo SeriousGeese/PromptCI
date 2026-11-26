@@ -376,7 +376,10 @@ export type PipRequirementsHit = {
  * the command reads).
  */
 const PYTHON_ENV_WORDING =
-  /\b(?:poetry|uvx?|pipenv|pipx|conda|mamba|micromamba|hatch|pdm|rye|tox|nox|venv|virtualenvs?|activate|docker(?:file)?|sudo|export|pip\d(?:\.\d+)?|--user|--target|--prefix|--system)\b/i;
+  /\b(?:poetry|uvx?|pipenv|pipx|conda|mamba|micromamba|hatch|pdm|rye|tox|nox|nix|venv|virtualenvs?|activate|docker(?:file)?|sudo|export|system|global(?:ly)?|pip\d(?:\.\d+)?|--user|--target|--prefix|--system)\b/i;
+
+/** Fenced blocks a pip command is rewritten in: a script to type, never a transcript of its output. */
+const PIP_FENCE_LANGS: ReadonlySet<string> = new Set(['', 'sh', 'bash', 'shell', 'zsh', 'fish', 'powershell', 'ps1', 'pwsh', 'cmd', 'bat', 'batch']);
 
 /** A negation on the line: "Don't run `pip install -r requirements.txt`" must not become "don't run `poetry install`". */
 const NEGATION_WORDING = /\b(?:do\s+not|don'?t|never|avoid|instead\s+of|not\s+use|rather\s+than)\b/i;
@@ -423,7 +426,8 @@ export function pipToPoetryEdits(
     if (inRanges(facts.comments, index)) return undefined;
     const lineNo = facts.index.lineOf(index);
     const fenceLine = facts.fence[lineNo - 1];
-    if (fenceLine?.inFence && !SHELL_FENCE_LANGS.has(fenceLine.lang)) return undefined;
+    // A transcript (\`console\`, \`text\`) shows the command's output too, which a rewrite would contradict.
+    if (fenceLine?.inFence && !PIP_FENCE_LANGS.has(fenceLine.lang)) return undefined;
 
     const { start, text: lineText } = lineAround(file.content, index);
     if (lineText.length > MAX_EDIT_LINE_LENGTH) return undefined;
@@ -441,6 +445,9 @@ export function pipToPoetryEdits(
     const token = /(\S+)\s*$/.exec(before.replace(/`$/, ''))?.[1];
     if (token !== undefined && PIP_WRAPPER_TOKEN.test(token)) return undefined;
     if (!BARE_INSTALL_END.test(after)) return undefined;
+    // In a fenced block the command starts its line, after at most a prompt: anything else is a
+    // file the block shows (a workflow's \`- run:\`, a CI \`script:\` list), not a command to type.
+    if (fenceLine?.inFence && !/^\s*(?:(?:\$|>|PS>)\s+)?$/.test(before)) return undefined;
 
     const framing = facts.index.framing(lineNo);
     for (const frame of [framing.heading, framing.lead]) {

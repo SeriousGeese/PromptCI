@@ -963,7 +963,7 @@ const SUFFIX_SEARCH_IGNORE = [
  * Runs one repository walk. `complete` is false when any directory could not
  * be listed: what the walk did not find may still exist (pcic-xhzb).
  */
-function walk(tree: RepoTree, patterns: string[], onlyFiles: boolean): { entries: string[]; complete: boolean } {
+export function walk(tree: RepoTree, patterns: string[], onlyFiles: boolean): { entries: string[]; complete: boolean } {
   let complete = true;
   let entries: string[] = [];
   try {

@@ -26,6 +26,7 @@ import { fileIdPath } from './finding-id.js';
 import { BUILTINS_BY_TOOL, BUN_BUILTINS, analyzeCommands } from './command-validity.js';
 import { anyWorkspaceHasScript, isKnownBinary } from './workspace-manifests.js';
 import { treeFor } from './repo-tree.js';
+import { walk } from './dead-references.js';
 import { collectCiPackageManagers } from './ci-alignment.js';
 import type { RepoTree } from './repo-tree.js';
 import { MAX_RECIPE_EDITS, packageManagerSwapEdits, pipToPoetryEdits, versionMentionEdits } from './manifest-fix-edits.js';
@@ -263,6 +264,7 @@ function checkPipVsPoetry(
  * not plainly the replacement (the check's own recommendation names `uv sync` as the other one).
  */
 const OTHER_PYTHON_TOOL_FILES = ['uv.lock', 'pdm.lock', 'Pipfile', 'Pipfile.lock', 'environment.yml', 'environment.yaml'];
+const OTHER_REQUIREMENT_PATTERNS = ['**/requirements*.txt', '**/requirements/**/*.txt', '**/setup.py', '**/setup.cfg'];
 const OTHER_PYTHON_TOOL_TABLE = /^\s*\[\s*tool\s*\.\s*(?:uv|pdm|hatch|rye|pixi)\b/m;
 
 /**
@@ -270,7 +272,8 @@ const OTHER_PYTHON_TOOL_TABLE = /^\s*\[\s*tool\s*\.\s*(?:uv|pdm|hatch|rye|pixi)\
  * project another Python tool also manages, and for an instruction file below the repository root
  * other than in a root dot-directory (`.github/`, `.claude/`): the check looks for the root
  * `requirements.txt`, while a command in `backend/AGENTS.md` reads `backend/requirements.txt`.
- * Each match is collected in one pass; past the edit limit the recipe refuses anyway.
+ * So is a project holding another requirements file or a setup script anywhere in the tree. Each
+ * match is collected in one pass; past the edit limit the recipe refuses anyway.
  */
 function pipVsPoetryEdits(
   offendingFiles: InstructionFile[],
@@ -280,6 +283,11 @@ function pipVsPoetryEdits(
 ): FixEdit[] | undefined {
   if (OTHER_PYTHON_TOOL_TABLE.test(pyprojectContent)) return undefined;
   if (OTHER_PYTHON_TOOL_FILES.some((name) => tree.exists(name))) return undefined;
+  // A requirements file or setup script anywhere else (`services/api/requirements.txt`) may be the
+  // one the command means, run from there; a heading such as "## API" says so no plainer than that.
+  // One walk, only for a finding that may get edits; a walk that could not list everything refuses.
+  const others = walk(tree, OTHER_REQUIREMENT_PATTERNS, true);
+  if (!others.complete || others.entries.length > 0) return undefined;
   const hits: PipRequirementsHit[] = [];
   for (const file of offendingFiles) {
     const rel = tree.relative(file.path);

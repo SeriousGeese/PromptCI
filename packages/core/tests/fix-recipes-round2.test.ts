@@ -147,6 +147,12 @@ describe('pip-vs-poetry recipe', () => {
     ['poetry export', '`poetry export -f requirements.txt && ' + PIP + '`'],
     ['a second pip on the line', 'Run `' + PIP + '` with pip 23 or newer.'],
     ['uv.lock in the repository', 'Run `' + PIP + '`.', { 'uv.lock': 'version = 1\n' }],
+    ['another requirements file below the root', 'Install: `' + PIP + '`.', { 'services/api/requirements.txt': 'fastapi\n' }],
+    ['a setup script in the repository', 'Install: `' + PIP + '`.', { 'setup.py': 'from setuptools import setup\n' }],
+    ['a workflow step in an unlabelled fence', '```\n- run: ' + PIP + '\n```'],
+    ['a console transcript', '```console\n$ ' + PIP + '\nCollecting fastapi\n```'],
+    ['a Nix shell', 'Inside the nix develop shell, run `' + PIP + '`.'],
+    ['the system interpreter', 'With the system Python, run `' + PIP + '`.'],
     ['a Pipfile in the repository', 'Run `' + PIP + '`.', { Pipfile: '[packages]\n' }],
     ['a [tool.uv] table', 'Run `' + PIP + '`.', { 'pyproject.toml': POETRY_PYPROJECT + '\n[tool.uv]\ndev-dependencies = []\n' }],
   ];
@@ -291,6 +297,19 @@ describe('hidden-unicode recipe', () => {
     ['a removal that would expose another character', 'a' + ZWSP + '\ufe0f'],
     ['bytes that are not UTF-8', 'Use the' + ZWSP + ' app �.'],
     ['a line past the length limit', 'x'.repeat(2001) + ZWSP],
+    ['a link destination', 'See [the site](https://exa' + ZWSP + 'mple.com/a).'],
+    ['an autolink', 'See <https://exa' + ZWSP + 'mple.com>.'],
+    ['an HTML attribute', '<a href="https://exa' + ZWSP + 'mple.com">site</a>'],
+    ['a JSX prop', '<Callout title="a' + ZWSP + 'b" />'],
+    ['a bare URL', 'See https://exa' + ZWSP + 'mple.com for more.'],
+    ['a link reference definition', '[site]: https://example.com "a' + ZWSP + 'b"'],
+    ['an indented code block', '    a' + ZWSP + 'b = 1'],
+    ['a <pre> block', '<pre>\na' + ZWSP + 'b\n</pre>'],
+    ['a code span across lines', 'Run `foo\nb' + ZWSP + 'ar` now.'],
+    ['a paragraph with a double tick', 'Use ``a`b`` and c' + ZWSP + 'd.'],
+    ['a removal that would make a heading', '#' + ZWSP + ' not a heading'],
+    ['a removal that would open an HTML comment', '<' + ZWSP + '!-- shown -->'],
+    ['a removal that would join emoji', '\u{1F469}' + ZWSP + '\u200d\u{1F4BB}'],
   ];
   for (const [label, line] of refusals) {
     it(`stays advisory: ${label}`, async () => {
@@ -306,6 +325,17 @@ describe('hidden-unicode recipe', () => {
     expectAdvisory(await hiddenFinding(repo));
   });
 
+  it('stays advisory for a reference document frontmatter', async () => {
+    expectAdvisory(await hiddenFinding(skillRepo(['---', 'title: a' + ZWSP + 'b', '---', '', '# Guide', ''].join('\n'))));
+  });
+
+  for (const ext of ['txt', 'mdx']) {
+    it(`stays advisory for a .${ext} document`, async () => {
+      const repo = skillRepo('# Guide\n', { [`.claude/skills/demo/references/notes.${ext}`]: 'Use the' + ZWSP + ' app.\n' });
+      expectAdvisory(await hiddenFinding(repo));
+    });
+  }
+
   it('stays advisory for a script (a zero-width character in code may be data)', async () => {
     const repo = skillRepo('# Guide\n', { '.claude/skills/demo/scripts/split.py': 'print("a' + ZWSP + 'b".split("' + ZWSP + '"))\n' });
     expectAdvisory(await hiddenFinding(repo));
@@ -320,7 +350,7 @@ describe('hidden-unicode recipe', () => {
     const plan = (content: string) => {
       const lines = content.split(/\r?\n/);
       const started = performance.now();
-      hiddenUnicodeEdits({ filePath: 'guide.md', content, lines, fenced: new Uint8Array(lines.length), frontmatterEnd: 0 });
+      hiddenUnicodeEdits({ filePath: 'guide.md', content, lines, fenced: new Uint8Array(lines.length) });
       expect(performance.now() - started).toBeLessThan(1500);
     };
     plan(ZWSP.repeat(120_000));
@@ -328,5 +358,11 @@ describe('hidden-unicode recipe', () => {
     plan(MOJIBAKE_ZWSP.repeat(40_000));
     plan(Array.from({ length: 300_000 }, () => 'a' + ZWSP).join('\n'));
     plan(Array.from({ length: 300_000 }, () => 'plain line').join('\n') + '\n' + ZWSP);
+    // Openers and URL markers with no closer or space, on a line of the longest edited length.
+    plan('see ' + ZWSP + ' ' + ']('.repeat(998));
+    plan('see ' + ZWSP + ' ' + '<'.repeat(1996));
+    plan('see ' + ZWSP + ' ' + '://'.repeat(665));
+    plan(Array.from({ length: 49 }, () => 'a' + ZWSP + ' ' + '](x'.repeat(600)).join('\n'));
+    plan(Array.from({ length: 200_000 }, () => '`').join('\n') + '\n' + ZWSP);
   });
 });
