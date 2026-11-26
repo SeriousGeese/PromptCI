@@ -28,9 +28,9 @@ import { anyWorkspaceHasScript, isKnownBinary } from './workspace-manifests.js';
 import { treeFor } from './repo-tree.js';
 import { collectCiPackageManagers } from './ci-alignment.js';
 import type { RepoTree } from './repo-tree.js';
-import { packageManagerSwapEdits, versionMentionEdits } from './manifest-fix-edits.js';
+import { MAX_RECIPE_EDITS, packageManagerSwapEdits, pipToPoetryEdits, versionMentionEdits } from './manifest-fix-edits.js';
 import { forwardExec, forwardIndexOf, lineNumberIndex, lineStartIndex } from './linear-text.js';
-import type { PackageManagerHit } from './manifest-fix-edits.js';
+import type { PackageManagerHit, PipRequirementsHit } from './manifest-fix-edits.js';
 import {
   formatVersion,
   isBelowFloor,
@@ -227,6 +227,12 @@ function checkPipVsPoetry(
   const offendingFiles = files.filter((f) => PIP_INSTALL_REQUIREMENTS_RE.test(f.content));
   if (offendingFiles.length === 0) return null;
 
+  // pcic-k1t3.13: when every counted command is a plain `pip install -r requirements.txt`, the
+  // finding carries the edits that make it `poetry install`.
+  const fixEdits = pipVsPoetryEdits(offendingFiles, pyprojectContent, tree, (content) =>
+    PIP_INSTALL_REQUIREMENTS_RE.test(content),
+  );
+
   return {
     id: issueId('pip-vs-poetry'),
     severity: 'high',
@@ -247,8 +253,44 @@ function checkPipVsPoetry(
       'Update the instruction files to use Poetry commands instead: ' +
       '`poetry install` (or `uv sync` if the project has migrated to uv). ' +
       'Remove the `pip install -r requirements.txt` reference.',
+    ...(fixEdits ? { autoApplySafe: true, fixEdits } : {}),
     confidence: 0.9,
   };
+}
+
+/**
+ * Another tool that manages a Python environment or lock: with any of these, `poetry install` is
+ * not plainly the replacement (the check's own recommendation names `uv sync` as the other one).
+ */
+const OTHER_PYTHON_TOOL_FILES = ['uv.lock', 'pdm.lock', 'Pipfile', 'Pipfile.lock', 'environment.yml', 'environment.yaml'];
+const OTHER_PYTHON_TOOL_TABLE = /^\s*\[\s*tool\s*\.\s*(?:uv|pdm|hatch|rye|pixi)\b/m;
+
+/**
+ * The pip-vs-poetry recipe's edits ({@link pipToPoetryEdits}), or undefined. Refused up front for a
+ * project another Python tool also manages, and for an instruction file below the repository root
+ * other than in a root dot-directory (`.github/`, `.claude/`): the check looks for the root
+ * `requirements.txt`, while a command in `backend/AGENTS.md` reads `backend/requirements.txt`.
+ * Each match is collected in one pass; past the edit limit the recipe refuses anyway.
+ */
+function pipVsPoetryEdits(
+  offendingFiles: InstructionFile[],
+  pyprojectContent: string,
+  tree: RepoTree,
+  offends: (content: string) => boolean,
+): FixEdit[] | undefined {
+  if (OTHER_PYTHON_TOOL_TABLE.test(pyprojectContent)) return undefined;
+  if (OTHER_PYTHON_TOOL_FILES.some((name) => tree.exists(name))) return undefined;
+  const hits: PipRequirementsHit[] = [];
+  for (const file of offendingFiles) {
+    const rel = tree.relative(file.path);
+    if (rel.includes('/') && !rel.startsWith('.')) return undefined;
+    const re = /pip\s+install\s+-r\s+requirements\.txt/gi;
+    for (let m = re.exec(file.content); m !== null; m = re.exec(file.content)) {
+      hits.push({ file, index: m.index, text: m[0] });
+      if (hits.length > MAX_RECIPE_EDITS) return undefined;
+    }
+  }
+  return pipToPoetryEdits(offendingFiles, hits, (_file, next) => offends(next));
 }
 
 // ── BUG-002: Python version mismatch ─────────────────────────────────────────

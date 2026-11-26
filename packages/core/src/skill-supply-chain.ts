@@ -115,7 +115,8 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { RepoContext } from './repo-context.js';
-import type { IssueCategory, IssueSeverity, PromptCiIssue } from './types.js';
+import type { FixEdit, IssueCategory, IssueSeverity, PromptCiIssue } from './types.js';
+import { applyLineEditsToText } from './line-edits.js';
 import type { SkillBundleSkip } from './ai-config.js';
 import {
   isFileWithinRoot,
@@ -1879,6 +1880,18 @@ function outranks(a: Hit, b: Hit): boolean {
 
 class HitCollector {
   private readonly groups = new Map<string, { rule: SkillSupplyChainRule; file: string; hits: Hit[]; total: number }>();
+  /** Fix edits for a rule's finding on a file (only hidden-unicode has a recipe), keyed like {@link groups}. */
+  private readonly fixes = new Map<string, FixEdit[]>();
+
+  /** Was any hit of this rule recorded on this file? */
+  has(rule: SkillSupplyChainRule, file: string): boolean {
+    return this.groups.has(`${rule}|${file}`);
+  }
+
+  /** Attach the edits that repair every hit of this rule on this file. */
+  setEdits(rule: SkillSupplyChainRule, file: string, edits: FixEdit[]): void {
+    this.fixes.set(`${rule}|${file}`, edits);
+  }
 
   /** Would a hit of this strength be kept? (Full groups keep only their strongest hits.) */
   accepts(rule: SkillSupplyChainRule, file: string, severity: IssueSeverity, confidence: number): boolean {
@@ -1917,11 +1930,18 @@ class HitCollector {
     return [...this.groups.values()]
       .filter((g) => g.hits.length > 0)
       .sort((a, b) => a.rule.localeCompare(b.rule) || a.file.localeCompare(b.file))
-      .map(({ rule, file, hits, total }) => buildIssue(skillMd, rule, file, hits, total));
+      .map(({ rule, file, hits, total }) => buildIssue(skillMd, rule, file, hits, total, this.fixes.get(`${rule}|${file}`)));
   }
 }
 
-function buildIssue(skillMd: string, rule: SkillSupplyChainRule, file: string, hits: Hit[], total: number): PromptCiIssue {
+function buildIssue(
+  skillMd: string,
+  rule: SkillSupplyChainRule,
+  file: string,
+  hits: Hit[],
+  total: number,
+  fixEdits: FixEdit[] | undefined,
+): PromptCiIssue {
   const spec = RULES[rule];
   // Evidence: the strongest hits (the maximum severity is always shown), displayed in file order.
   const byStrength = hits
@@ -1952,6 +1972,8 @@ function buildIssue(skillMd: string, rule: SkillSupplyChainRule, file: string, h
       : { filePath: file, startLine: h.line, endLine: h.line })),
     evidence,
     recommendation: spec.recommendation,
+    // pcic-k1t3.13: only a finding with no high-severity hit carries edits (see hiddenUnicodeEdits).
+    ...(fixEdits !== undefined && top.severity !== 'high' ? { autoApplySafe: true, fixEdits } : {}),
     confidence: top.confidence,
     tags: [SKILL_SUPPLY_CHAIN_TAG, rule],
   };
@@ -2341,44 +2363,49 @@ function hiddenClass(
   return undefined;
 }
 
+/** One character {@link hiddenClass} flags on a line: where it is, what it is, and how bad. */
+type HiddenChar = { idx: number; cp: number; cls: 'severe' | 'mild' };
+
+/**
+ * Every character of `lineText` that {@link hiddenClass} flags, in order. One pass: a global regex
+ * jumps straight to each candidate character, so a line without any costs one scan.
+ */
+function hiddenCharsOn(lineText: string, firstLine: boolean): HiddenChar[] {
+  const out: HiddenChar[] = [];
+  HIDDEN_CANDIDATE_RE.lastIndex = 0;
+  let m = HIDDEN_CANDIDATE_RE.exec(lineText);
+  if (m === null) return out; // fast path: nothing here can hide anything
+  let rtl: boolean | undefined;
+  const hasRtl = () => (rtl ??= RTL_SCRIPT_RE.test(lineText));
+  let tagRunPrev: number | undefined;
+  while (m !== null) {
+    const idx = m.index;
+    const cp = lineText.codePointAt(idx)!;
+    if (cp >= 0xe0000 && cp <= 0xe007f) {
+      const prev = cpBefore(lineText, idx);
+      if (prev === undefined || prev < 0xe0000 || prev > 0xe007f) tagRunPrev = prev; // a new run of tag characters
+    }
+    const cls = hiddenClass(lineText, idx, cp, firstLine, tagRunPrev, hasRtl);
+    if (cls) out.push({ idx, cp, cls });
+    m = HIDDEN_CANDIDATE_RE.exec(lineText);
+  }
+  return out;
+}
+
 /**
  * hidden-unicode — every file kind. Every line is examined: a severe payload
- * after many mild lines still counts. One pass: a global regex jumps straight
- * to each candidate character, so a line without any costs one scan, and the
- * evidence text is only rendered for hits the collector keeps.
+ * after many mild lines still counts, and the evidence text is only rendered
+ * for hits the collector keeps.
  */
 function checkHiddenUnicode(doc: SkillDoc, add: Add): void {
   for (const i of doc.active) {
     const lineText = doc.lines[i]!;
-    HIDDEN_CANDIDATE_RE.lastIndex = 0;
-    let m = HIDDEN_CANDIDATE_RE.exec(lineText);
-    if (m === null) continue; // fast path: nothing here can hide anything
-    let rtl: boolean | undefined;
-    const hasRtl = () => (rtl ??= RTL_SCRIPT_RE.test(lineText));
+    const hidden = hiddenCharsOn(lineText, i === 0);
+    if (hidden.length === 0) continue;
     const found = new Map<number, number>();
-    let severe = false;
-    let firstOffset = -1;
-    let severeOffset = -1;
-    let tagRunPrev: number | undefined;
-    while (m !== null) {
-      const idx = m.index;
-      const cp = lineText.codePointAt(idx)!;
-      if (cp >= 0xe0000 && cp <= 0xe007f) {
-        const prev = cpBefore(lineText, idx);
-        if (prev === undefined || prev < 0xe0000 || prev > 0xe007f) tagRunPrev = prev; // a new run of tag characters
-      }
-      const cls = hiddenClass(lineText, idx, cp, i === 0, tagRunPrev, hasRtl);
-      if (cls) {
-        if (cls === 'severe') {
-          severe = true;
-          if (severeOffset < 0) severeOffset = idx;
-        }
-        found.set(cp, (found.get(cp) ?? 0) + 1);
-        if (firstOffset < 0) firstOffset = idx;
-      }
-      m = HIDDEN_CANDIDATE_RE.exec(lineText);
-    }
-    if (found.size === 0) continue;
+    for (const h of hidden) found.set(h.cp, (found.get(h.cp) ?? 0) + 1);
+    const firstSevere = hidden.find((h) => h.cls === 'severe');
+    const severe = firstSevere !== undefined;
     add('hidden-unicode', i + 1, () => {
       const counts = [...found.entries()]
         .sort((a, b) => a[0] - b[0])
@@ -2386,9 +2413,123 @@ function checkHiddenUnicode(doc: SkillDoc, add: Add): void {
         .map(([cp, n]) => `${codepointLabel(cp)}×${n}`)
         .join(' ');
       const more = found.size > 4 ? ` (+${found.size - 4} more kinds)` : '';
-      return `${counts}${more} in: ${excerpt(lineText, severe ? severeOffset : firstOffset, 1)}`;
+      return `${counts}${more} in: ${excerpt(lineText, (firstSevere ?? hidden[0]!).idx, 1)}`;
     }, severe ? 'high' : 'warning', severe ? 0.9 : 0.7);
   }
+}
+
+// ── hidden-unicode fix edits (pcic-k1t3.13) ──────────────────────────────────
+
+/**
+ * Invisible characters whose removal changes nothing a reader sees: zero-width space, zero-width
+ * non-joiner and joiner (flagged only away from letters and emoji, where they join nothing), word
+ * joiner, a zero-width no-break space past the start of the file, and the soft hyphen.
+ */
+const REMOVABLE_INVISIBLES: ReadonlySet<number> = new Set([0x200b, 0x200c, 0x200d, 0x2060, 0xfeff, 0x00ad]);
+
+/**
+ * The same characters after their UTF-8 bytes were read as Latin-1 and saved again (`â` and two C1
+ * controls for a zero-width space): what a page scraped into a skill often holds. The whole
+ * sequence goes; the `â` is debris of the same invisible character.
+ */
+const MOJIBAKE_INVISIBLES: readonly string[] = ['\u00e2\u0080\u008b', '\u00e2\u0080\u008c', '\u00e2\u0080\u008d', '\u00e2\u0081\u00a0'];
+
+/** Longest line the recipe rewrites; a longer one (a minified blob) keeps the finding advisory. */
+const MAX_INVISIBLE_EDIT_LINE = 2000;
+
+/** Most edits one finding may carry (the hosted service drops a longer list, as for the manifest recipes). */
+const MAX_INVISIBLE_EDITS = 50;
+
+/** Where the edit would remove characters on a line: `[start, end)` ranges, or undefined on any doubt. */
+function removableRanges(lineText: string, hidden: readonly HiddenChar[]): Array<[number, number]> | undefined {
+  const ranges: Array<[number, number]> = [];
+  // Backticks before each position, so "inside a code span" is one lookup.
+  let ticks = 0;
+  let scanned = 0;
+  const inCodeSpan = (idx: number): boolean => {
+    for (; scanned < idx; scanned++) if (lineText.charCodeAt(scanned) === 0x60) ticks++;
+    return ticks % 2 === 1;
+  };
+  for (const h of hidden) {
+    if (h.cls === 'severe') return undefined;
+    let range: [number, number] | undefined;
+    if (REMOVABLE_INVISIBLES.has(h.cp)) range = [h.idx, h.idx + 1];
+    else {
+      for (const seq of MOJIBAKE_INVISIBLES) {
+        for (const start of [h.idx - 1, h.idx - 2]) {
+          if (start >= 0 && lineText.startsWith(seq, start)) range = [start, start + seq.length];
+        }
+      }
+    }
+    if (range === undefined) return undefined;
+    // Sample code is quoted exactly: a character inside a code span may be the point of the sample.
+    if (inCodeSpan(range[0])) return undefined;
+    const last = ranges[ranges.length - 1];
+    if (last !== undefined && range[0] < last[1]) {
+      if (range[0] !== last[0]) return undefined; // overlapping, differently: no plain reading
+      continue; // the second flagged character of the same mojibake sequence
+    }
+    ranges.push(range);
+  }
+  return ranges;
+}
+
+/** What {@link hiddenUnicodeEdits} reads about one complete skill document. */
+export type InvisibleEditInput = {
+  /** The path the edits name. */
+  filePath: string;
+  /** The whole file, exactly as read. */
+  content: string;
+  /** Lines of `content` split on `\r?\n`. */
+  lines: readonly string[];
+  /** Per line: inside a fenced code block. */
+  fenced: ArrayLike<number>;
+  /** Last line of a SKILL.md frontmatter block, 0 when none. */
+  frontmatterEnd: number;
+};
+
+/**
+ * Line edits that remove every invisible character the hidden-unicode rule flags in one Markdown
+ * skill document, or undefined when any of them needs a judgement call. All or nothing, and
+ * leaning toward no edit:
+ *
+ * - every flagged character on every line must be {@link REMOVABLE_INVISIBLES} or one of the
+ *   {@link MOJIBAKE_INVISIBLES} sequences; a tag character or bidi control (a possible smuggled
+ *   instruction, which a person must read), a control character, a variation selector run, a
+ *   filler or a line separator refuses the whole file;
+ * - no flagged character may sit in a fenced block, a code span, the SKILL.md frontmatter, or on
+ *   a line holding right-to-left script, and no line may be longer than
+ *   {@link MAX_INVISIBLE_EDIT_LINE};
+ * - a file holding U+FFFD (bytes that are not UTF-8, which a rewrite would replace) refuses;
+ * - each edit replaces its whole line with the line minus those characters, the rewritten line
+ *   must flag nothing, and the edits must apply cleanly to the file as the fix engine applies
+ *   them ({@link applyLineEditsToText}).
+ */
+export function hiddenUnicodeEdits(input: InvisibleEditInput): FixEdit[] | undefined {
+  const { filePath, content, lines, fenced, frontmatterEnd } = input;
+  if (content.includes('\ufffd')) return undefined;
+  const edits: FixEdit[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const lineText = lines[i]!;
+    const hidden = hiddenCharsOn(lineText, i === 0);
+    if (hidden.length === 0) continue;
+    if (edits.length >= MAX_INVISIBLE_EDITS || lineText.length > MAX_INVISIBLE_EDIT_LINE) return undefined;
+    if (fenced[i] || (frontmatterEnd > 0 && i + 1 <= frontmatterEnd) || RTL_SCRIPT_RE.test(lineText)) return undefined;
+    const ranges = removableRanges(lineText, hidden);
+    if (ranges === undefined) return undefined;
+    let cleaned = '';
+    let at = 0;
+    for (const [start, end] of ranges) {
+      cleaned += lineText.slice(at, start);
+      at = end;
+    }
+    cleaned += lineText.slice(at);
+    if (hiddenCharsOn(cleaned, i === 0).length > 0) return undefined;
+    edits.push({ filePath, line: i + 1, find: lineText, replace: cleaned });
+  }
+  if (edits.length === 0) return undefined;
+  const next = applyLineEditsToText(content, edits);
+  return next === undefined || next === content ? undefined : edits;
 }
 
 // ── hidden markup ─────────────────────────────────────────────────────────────
@@ -3026,6 +3167,18 @@ export function detectSkillSupplyChain(context: RepoContext, limits: SkillScanLi
       noteReferences(state, doc);
       extra.push(...scanDoc(tree, state.dir, doc, isSkillMd, state.alreadyReported, state.collector, state.unscanned));
     }
+    // pcic-k1t3.13: invisible characters in a Markdown document read whole get removal edits.
+    const whole = loaded.docs.length === 1 && loaded.unscanned.length === 0 ? loaded.docs[0]! : undefined;
+    if (whole && whole.kind === 'instructions' && !whole.tail && state.collector.has('hidden-unicode', whole.path)) {
+      const edits = hiddenUnicodeEdits({
+        filePath: whole.path,
+        content: whole.content,
+        lines: whole.lines,
+        fenced: whole.fenced,
+        frontmatterEnd: whole.frontmatterEnd,
+      });
+      if (edits) state.collector.setEdits('hidden-unicode', whole.path, edits);
+    }
     // A dependency package's `bin` targets are what `npx`/install runs: scan them as scripts.
     for (const target of extra) if (owner(target) >= 0) scanFile(state, target, false, true);
     return loaded;
@@ -3055,6 +3208,11 @@ export function detectSkillSupplyChain(context: RepoContext, limits: SkillScanLi
     }
     issues.push(...state.collector.toIssues(state.skillMd));
   }
-  // Scanner-form paths so inline suppressions can match (see withScannerPaths).
-  return withScannerPaths(context.repoRoot, issues);
+  // Scanner-form paths so inline suppressions can match (see withScannerPaths); fix edits name the
+  // same absolute paths as the finding's files.
+  return withScannerPaths(context.repoRoot, issues).map((issue) =>
+    issue.fixEdits === undefined
+      ? issue
+      : { ...issue, fixEdits: issue.fixEdits.map((e) => ({ ...e, filePath: path.resolve(context.repoRoot, e.filePath) })) },
+  );
 }

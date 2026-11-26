@@ -351,6 +351,112 @@ export function packageManagerSwapEdits(
   return checkedEdits(files, edits, (file, next) => !stillOffends(file, next));
 }
 
+
+// ── pip against Poetry ──────────────────────────────────────────────────────
+
+/** The command the pip-vs-poetry check reports, in the one spelling the recipe rewrites. */
+export const PIP_REQUIREMENTS_COMMAND = 'pip install -r requirements.txt';
+
+/** What {@link PIP_REQUIREMENTS_COMMAND} becomes. */
+export const POETRY_INSTALL_COMMAND = 'poetry install';
+
+/** One mention of {@link PIP_REQUIREMENTS_COMMAND} that the pip-vs-poetry check counted. */
+export type PipRequirementsHit = {
+  file: InstructionFile;
+  /** Offset of the match in `file.content`. */
+  index: number;
+  /** The matched text, any spacing or case the check accepts. */
+  text: string;
+};
+
+/**
+ * Another Python environment or install tool, or a setting that changes where the install goes:
+ * with any of them on the line or around it, `poetry install` is not plainly what was meant (an
+ * activated virtualenv, a uv or Conda project, a Docker image, `poetry export` writing the file
+ * the command reads).
+ */
+const PYTHON_ENV_WORDING =
+  /\b(?:poetry|uvx?|pipenv|pipx|conda|mamba|micromamba|hatch|pdm|rye|tox|nox|venv|virtualenvs?|activate|docker(?:file)?|sudo|export|pip\d(?:\.\d+)?|--user|--target|--prefix|--system)\b/i;
+
+/** A negation on the line: "Don't run `pip install -r requirements.txt`" must not become "don't run `poetry install`". */
+const NEGATION_WORDING = /\b(?:do\s+not|don'?t|never|avoid|instead\s+of|not\s+use|rather\s+than)\b/i;
+
+/** Directory wording that a {@link runsInOtherDirectory} path check cannot see ("in the backend directory"). */
+const DIRECTORY_WORDING = /\b(?:director(?:y|ies)|folders?|sub-?projects?|sub-?packages?|workspaces?)\b/i;
+
+/**
+ * The token right before the command on its line, when it runs the command through something else
+ * (`python -m pip`, `sudo pip`, `uv pip`, a Dockerfile `RUN`, `.venv/bin/pip`): the rewrite
+ * would land after it.
+ */
+const PIP_WRAPPER_TOKEN = /^(?:-m|exec|xargs|env|time|nohup|RUN|\S*[/\\=<>|]\S*)$/;
+
+/**
+ * The edits that turn every counted `pip install -r requirements.txt` into `poetry install`, or
+ * undefined when any one of them needs a judgement call. The pip-vs-poetry check only fires when
+ * the project is a Poetry project and has no `requirements.txt`, so the command fails as written;
+ * the caller also refuses a project that another Python tool manages (uv, PDM, Pipenv, Hatch).
+ *
+ * A mention refuses unless it is spelled exactly {@link PIP_REQUIREMENTS_COMMAND} (no other spacing
+ * or case), is outside HTML comments and any fenced block that is not a shell session, is the
+ * command itself (nothing but a code span, a prompt, a list marker, a label, `&&`, `;` or prose
+ * before it, never `python -m`, `sudo`, `RUN` or a path), ends there (no flag, no second file),
+ * and its line holds no other `pip` or `requirements.txt`, no link, no negation, no other Python
+ * tool or virtualenv wording ({@link PYTHON_ENV_WORDING}), no other directory and no fallback,
+ * legacy or consumer wording. The lines that introduce it and every heading above it are read the
+ * same way. `stillOffends` re-runs the check on the rewritten text.
+ */
+export function pipToPoetryEdits(
+  files: readonly InstructionFile[],
+  hits: readonly PipRequirementsHit[],
+  stillOffends: (file: InstructionFile, newContent: string) => boolean,
+): FixEdit[] | undefined {
+  if (hits.length > MAX_RECIPE_EDITS) return undefined;
+  const edits: FixEdit[] = [];
+  const ordered = [...hits].sort((a, b) =>
+    a.file.path === b.file.path ? a.index - b.index : a.file.path < b.file.path ? -1 : 1,
+  );
+  for (const hit of ordered) {
+    const { file, index, text } = hit;
+    if (text !== PIP_REQUIREMENTS_COMMAND) return undefined;
+    const facts = factsOf(file);
+    if (inRanges(facts.comments, index)) return undefined;
+    const lineNo = facts.index.lineOf(index);
+    const fenceLine = facts.fence[lineNo - 1];
+    if (fenceLine?.inFence && !SHELL_FENCE_LANGS.has(fenceLine.lang)) return undefined;
+
+    const { start, text: lineText } = lineAround(file.content, index);
+    if (lineText.length > MAX_EDIT_LINE_LENGTH) return undefined;
+    if (NEGATION_WORDING.test(lineText) || PYTHON_ENV_WORDING.test(lineText) || DIRECTORY_WORDING.test(lineText)) return undefined;
+    if (ALTERNATIVE_WORDING.test(lineText) || LEGACY_WORDING.test(lineText) || CONSUMER_WORDING.test(lineText)) return undefined;
+    if (runsInOtherDirectory(lineText) || LINK_OR_URL.test(lineText)) return undefined;
+    // The command is the only pip and the only requirements file the line names.
+    if ((lineText.match(/\bpip\b/gi) ?? []).length !== 1) return undefined;
+    if ((lineText.match(/requirements\.txt/gi) ?? []).length !== 1) return undefined;
+
+    const before = lineText.slice(0, index - start);
+    const after = lineText.slice(index - start + text.length);
+    // `pip` starts a word: not `.venv/bin/pip`, `my-pip` or `xpip`.
+    if (before !== '' && !/[\s`(]$/.test(before)) return undefined;
+    const token = /(\S+)\s*$/.exec(before.replace(/`$/, ''))?.[1];
+    if (token !== undefined && PIP_WRAPPER_TOKEN.test(token)) return undefined;
+    if (!BARE_INSTALL_END.test(after)) return undefined;
+
+    const framing = facts.index.framing(lineNo);
+    for (const frame of [framing.heading, framing.lead]) {
+      if (frame.length > MAX_FRAME_LENGTH) return undefined;
+      // A frame that names pip or requirements.txt itself, or another tool, means it on purpose. The
+      // command itself on a lead line (a step above this one) is a hit too, checked on its own line.
+      const words = frame.split(PIP_REQUIREMENTS_COMMAND).join('');
+      if (/\bpip\d?\b|requirements\.txt/i.test(words) || PYTHON_ENV_WORDING.test(frame) || DIRECTORY_WORDING.test(frame)) return undefined;
+      if (ALTERNATIVE_WORDING.test(frame) || LEGACY_WORDING.test(frame) || CONSUMER_WORDING.test(frame)) return undefined;
+      if (runsInOtherDirectory(frame)) return undefined;
+    }
+    edits.push({ filePath: file.path, line: lineNo, find: PIP_REQUIREMENTS_COMMAND, replace: POETRY_INSTALL_COMMAND });
+  }
+  return checkedEdits(files, edits, (file, next) => !stillOffends(file, next));
+}
+
 // ── Stale version mentions ──────────────────────────────────────────────────
 
 /** One mention of a version the manifest has moved past, and what it should read. */
