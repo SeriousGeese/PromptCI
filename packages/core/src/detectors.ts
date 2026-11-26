@@ -28,6 +28,9 @@ import { detectNegativeInstructionOverload } from './negative-instructions.js';
 import { detectBuriedCriticalInstructions } from './buried-critical.js';
 import { detectWithinSectionDedup } from './within-section-dedup.js';
 import { runCustomRules } from './custom-rules.js';
+import { detectInlineSecrets } from './inline-secrets.js';
+import { detectAgentPermissions } from './agent-permissions.js';
+import { detectRuleActivation } from './rule-activation-detector.js';
 import { withTypeAliases } from './alias-files.js';
 import { INSTRUCTION_FILE_TYPES } from './types.js';
 import type { FileType, PromptCiIssue } from './types.js';
@@ -173,6 +176,18 @@ export const DETECTORS: DetectorDefinition[] = [
   {
     id: 'ai-config-windsurf-rules',
     run: (context) => detectWindsurfRules(context),
+  },
+  {
+    id: 'ai-config-rule-activation',
+    run: (context) => detectRuleActivation(context),
+  },
+  {
+    id: 'inline-secrets',
+    run: (context) => detectInlineSecrets(context),
+  },
+  {
+    id: 'agent-permissions',
+    run: (context) => detectAgentPermissions(context),
   },
   {
     id: 'negative-instructions',

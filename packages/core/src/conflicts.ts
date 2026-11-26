@@ -455,10 +455,67 @@ function execAll(pattern: RegExp, line: string): Array<{ index: number; text: st
   return matches;
 }
 
+/**
+ * pcic-k1t3.10: the spans of a line inside double quotes (straight or curly). A
+ * directive word inside one is quoted, not directed: `Is a "the repo always does X"
+ * claim actually checked?` names a kind of claim, it does not tell the agent to do
+ * X. A straight quote opens only at the start of a word and closes at the end of
+ * one, so an inch mark or a stray quote does not swallow the rest of the line; an
+ * unclosed quote quotes nothing. One pass over the line.
+ */
+function quotedSpans(line: string): Array<[number, number]> {
+  const spans: Array<[number, number]> = [];
+  let open = -1;
+  let closer = '';
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i]!;
+    if (open === -1) {
+      if (c === '\u201C') {
+        open = i;
+        closer = '\u201D';
+      } else if (c === '"' && (i === 0 || !/[\w"]/.test(line[i - 1]!)) && /\S/.test(line[i + 1] ?? '')) {
+        open = i;
+        closer = '"';
+      }
+    } else if (c === closer && (closer !== '"' || /\S/.test(line[i - 1]!))) {
+      if (!wrapsWholeLine(line, open, i)) spans.push([open, i]);
+      open = -1;
+    }
+  }
+  return spans;
+}
+
+/**
+ * A quote around the whole line, apart from a list marker before it and punctuation after
+ * it, is the rule itself written in quotes (`- "Always use semicolons"`), not a mention of
+ * one inside a sentence (PR #251 review).
+ */
+function wrapsWholeLine(line: string, open: number, close: number): boolean {
+  return /^\s*(?:[-*+>]\s*|\d+[.)]\s*)?$/.test(line.slice(0, open)) && /^[\s.!?,;:]*$/.test(line.slice(close + 1));
+}
+
+/** True when `index` lies inside one of the ascending `spans`. */
+function insideSpan(spans: Array<[number, number]>, index: number): boolean {
+  let lo = 0;
+  let hi = spans.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (spans[mid]![1] < index) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo < spans.length && spans[lo]![0] < index && index < spans[lo]![1];
+}
+
 /** Extract all directive matches from a section (over its logical lines). */
 function extractDirectives(section: InstructionSection): DirectiveMatch[] {
   const results: DirectiveMatch[] = [];
   const lines = buildLogicalLines({ ...section, text: stripCodeBlocks(section.text) });
+  const quoted = new Map<string, Array<[number, number]>>();
+  const quotedIn = (line: string): Array<[number, number]> => {
+    let spans = quoted.get(line);
+    if (!spans) quoted.set(line, (spans = quotedSpans(line)));
+    return spans;
+  };
 
   for (let pi = 0; pi < DIRECTIVE_PAIRS.length; pi++) {
     const pair = DIRECTIVE_PAIRS[pi];
@@ -484,6 +541,10 @@ function extractDirectives(section: InstructionSection): DirectiveMatch[] {
       let maskedUpTo = 0;
       for (const negMatch of negMatches) {
         const anchorEnd = negMatch.index + negMatch.text.length;
+        maskedPieces.push(line.slice(maskedUpTo, negMatch.index), ' '.repeat(negMatch.text.length));
+        maskedUpTo = anchorEnd;
+        // pcic-k1t3.10: a directive inside quotes is mentioned, not given.
+        if (insideSpan(quotedIn(line), negMatch.index)) continue;
         // Negatives always extract AFTER the anchor unless the pair is fully symmetric
         const negBefore = beforeBoth;
         const subject = negBefore
@@ -494,13 +555,12 @@ function extractDirectives(section: InstructionSection): DirectiveMatch[] {
           const hasQualifier = !negBefore && detectQualifierAfterSubject(line, anchorEnd, subject, skip);
           results.push({ section, pairIndex: pi, polarity: 'negative', subject, matchedLine: line, hasQualifier });
         }
-        maskedPieces.push(line.slice(maskedUpTo, negMatch.index), ' '.repeat(negMatch.text.length));
-        maskedUpTo = anchorEnd;
       }
       const lineForPositiveSearch = negMatches.length === 0 ? line : maskedPieces.join('') + line.slice(maskedUpTo);
 
       const posMatches = execAll(pair.positivePattern, lineForPositiveSearch);
       for (const posMatch of posMatches) {
+        if (insideSpan(quotedIn(line), posMatch.index)) continue;
         // BUG-002: extractPositiveSubjectBefore allows copula patterns like "X is acceptable"
         // (positive extracts before) paired with verb negatives like "Never use X" (extracts after).
         const posBefore = beforeBoth || (pair.extractPositiveSubjectBefore ?? false);
