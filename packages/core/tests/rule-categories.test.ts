@@ -130,6 +130,53 @@ describe('inline-secrets', () => {
     expect(await run({ 'CLAUDE.md': '# Notes\n\n' + text + '\n' }, detectInlineSecrets)).toEqual([]);
   });
 
+  it('reports at least 95% of 200 random AWS access key IDs', () => {
+    let seed = 0x5eed;
+    const next = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff);
+    const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+    let reported = 0;
+    for (let n = 0; n < 200; n++) {
+      let key = 'AK' + 'IA';
+      // The high bits: an LCG's low bits cycle with a short period.
+      for (let i = 0; i < 16; i++) key += alphabet[(next() >>> 16) % 32];
+      if (findSecrets('AWS_ACCESS_KEY_ID=' + key + '\n').length === 1) reported++;
+    }
+    expect(reported).toBeGreaterThanOrEqual(190);
+  });
+
+  it('shows the whole Anthropic admin prefix and four characters, never more', () => {
+    const token = 'sk-' + 'ant-admin01-' + body(93) + 'AA';
+    const [hit] = findSecrets('KEY=' + token);
+    expect(hit!.shown).toBe(token.slice(0, 19) + '\u2026 (' + token.length + ' characters)');
+  });
+
+  it('needs a Slack token tail of 20 characters or more', () => {
+    expect(findSecrets('xo' + 'xb-73029485613-48261937052-' + body(24))).toHaveLength(1);
+    expect(findSecrets('xo' + 'xb-73029485613-48261937052-' + body(12))).toEqual([]);
+  });
+
+  it('finds a private key inside a minified or pretty-printed service-account JSON', () => {
+    const lines = ['-----BEGIN ' + 'PRIVATE KEY-----', body(64), body(64), body(20) + '==', '-----END PRIVATE KEY-----', ''];
+    const account = { type: 'service_account', project_id: 'p', private_key_id: 'k', private_key: lines.join('\n'), client_email: 'a@p.iam.gserviceaccount.com' };
+    expect(findSecrets(JSON.stringify(account)).map((h) => h.kind)).toEqual(['private key']);
+    const pretty = JSON.stringify(account, null, 2);
+    const hits = findSecrets(pretty);
+    expect(hits.map((h) => h.kind)).toEqual(['private key']);
+    expect(hits[0]!.line).toBe(5);
+  });
+
+  it('finds an encrypted PEM key with Proc-Type and DEK-Info headers', () => {
+    const pem = ['-----BEGIN ' + 'RSA PRIVATE KEY-----', 'Proc-Type: 4,ENCRYPTED', 'DEK-Info: AES-128-CBC,0A1B2C3D', '', body(64), body(32), '-----END RSA PRIVATE KEY-----'];
+    expect(findSecrets(pem.join('\n')).map((h) => h.kind)).toEqual(['private key']);
+  });
+
+  it('does not report a PEM block whose body is prose or a placeholder', () => {
+    const prose = ['-----BEGIN ' + 'PRIVATE KEY-----', 'Paste the contents of your service account key file here, the long base64 text you downloaded', 'from the console when you created the key for this project and environment.', '-----END PRIVATE KEY-----'];
+    expect(findSecrets(prose.join('\n'))).toEqual([]);
+    const elided = ['-----BEGIN ' + 'PRIVATE KEY-----', body(64), 'MIIEvQIBADANBg...', body(64), '-----END PRIVATE KEY-----'];
+    expect(findSecrets(elided.join('\n'))).toEqual([]);
+  });
+
   it('treats few distinct characters as made up', () => {
     expect(looksMadeUp('gh' + 'p_' + 'abab'.repeat(9), 4)).toBe(true);
     expect(looksMadeUp('gh' + 'p_' + body(36), 4)).toBe(false);
@@ -143,6 +190,20 @@ describe('agent-permissions', () => {
     expect(issues.map((i) => i.tags?.[1])).toEqual(['claude-bypass-mode', 'claude-allow-all-shell']);
     expect(issues.every((i) => i.severity === 'warning' && i.category === 'security')).toBe(true);
     expect(issues[0]!.locations[0]!.startLine).toBe(3);
+  });
+
+  it.each([['Bash(**)'], ['Bash(:*)'], ['Bash']])('reads %s as allowing every shell command', async (rule) => {
+    const issues = await run({ '.claude/settings.json': JSON.stringify({ permissions: { allow: [rule] } }) }, detectAgentPermissions);
+    expect(issues.map((i) => i.tags?.[1])).toEqual(['claude-allow-all-shell']);
+  });
+
+  it('reads settings with a byte-order mark', async () => {
+    const settings = '\uFEFF' + JSON.stringify({ permissions: { defaultMode: 'bypassPermissions' } });
+    expect((await run({ '.claude/settings.json': settings }, detectAgentPermissions)).map((i) => i.tags?.[1])).toEqual(['claude-bypass-mode']);
+  });
+
+  it.each([['Bash( * )'], ['Bash(npm *)'], ['Bash(git:* push)'], ['*']])('does not read %s as allowing every shell command', async (rule) => {
+    expect(await run({ '.claude/settings.json': JSON.stringify({ permissions: { allow: [rule] } }) }, detectAgentPermissions)).toEqual([]);
   });
 
   it('reports a bare Bash allow rule', async () => {
@@ -182,14 +243,7 @@ describe('ai-config-rule-activation', () => {
         '.windsurf/rules/b.md': '---\ntrigger: always\n---\n# Rules\n',
         '.devin/rules/c.md': '---\ntrigger: model_decision\n---\n# API\n',
       });
-    expect(found).toHaveLength(3);
-    expect(
-      await kinds({
-        '.windsurf/rules/a.md': '---\ntrigger: glob\n---\n# Tests\n',
-        '.windsurf/rules/b.md': '---\ntrigger: always\n---\n# Rules\n',
-        '.devin/rules/c.md': '---\ntrigger: model_decision\n---\n# API\n',
-      }),
-    ).toEqual(expect.arrayContaining(['windsurf-glob-without-globs', 'windsurf-unknown-trigger', 'windsurf-model-decision-without-description']));
+    expect(found.sort()).toEqual(['windsurf-glob-without-globs', 'windsurf-model-decision-without-description', 'windsurf-unknown-trigger']);
   });
 
   it('accepts well-formed Windsurf and Kiro rules', async () => {
@@ -232,6 +286,22 @@ describe('ai-config-rule-activation', () => {
     expect(issues[0]!.locations[0]!.startLine).toBe(3);
   });
 
+  it('skips Kiro file references written in a code fence or span', async () => {
+    const fence = '\u0060'.repeat(3);
+    const text = '# Syntax\n\nWrite \u0060#[[file:docs/gone.md]]\u0060 to include a file.\n\n' + fence + 'md\n#[[file:docs/also-gone.md]]\n' + fence + '\n';
+    expect(await run({ '.kiro/steering/a.md': text }, detectRuleActivation)).toEqual([]);
+  });
+
+  it('reads an unclosed frontmatter block as no frontmatter', async () => {
+    expect(
+      await kinds({
+        '.windsurf/rules/a.md': '---\ntrigger: glob\n# Tests with no closing fence\n',
+        '.kiro/steering/a.md': '---\ninclusion: fileMatch\n# UI with no closing fence\n',
+        '.kiro/steering/b.md': '\n\n---\ninclusion: manual\n# never closed\n',
+      }),
+    ).toEqual([]);
+  });
+
   it('leaves other tools\' files alone', async () => {
     expect(await kinds({ 'AGENTS.md': '---\ntrigger: glob\ninclusion: fileMatch\n---\n#[[file:gone.md]]\n' })).toEqual([]);
   });
@@ -271,6 +341,11 @@ describe('false positives part 1 found on the new rule files', () => {
 
   it('still reports a conflict whose directives are not quoted', () => {
     const text = ['# Rules', '', 'Always use pnpm for installs.', '', '## Later', '', 'Never use pnpm for installs.'].join('\n');
+    expect(detectConflicts([instructionFile('/repo/AGENTS.md', text)]).length).toBeGreaterThan(0);
+  });
+
+  it('a quote around the whole directive is the rule itself', () => {
+    const text = ['# Rules', '', '- "Always use semicolons"', '', '## Later', '', '- Never use semicolons'].join('\n');
     expect(detectConflicts([instructionFile('/repo/AGENTS.md', text)]).length).toBeGreaterThan(0);
   });
 

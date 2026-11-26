@@ -69,6 +69,7 @@ export const RULE_CATEGORIES_PROVENANCE: readonly CheckProvenance[] = [
     ],
     thresholds: [
       unverified('MIN_DISTINCT_CHARS', 12, 'inline-secrets.ts:MIN_DISTINCT_CHARS', 'distinct characters in the random part'),
+      unverified('MIN_DISTINCT_CHARS_AWS', 8, 'inline-secrets.ts:MIN_DISTINCT_CHARS_AWS', 'distinct characters in an AWS key ID random part'),
       {
         name: 'MIN_PRIVATE_KEY_BODY',
         value: 64,
@@ -91,7 +92,7 @@ export const RULE_CATEGORIES_PROVENANCE: readonly CheckProvenance[] = [
       cite(
         PAGES.ccPermissions,
         'supports',
-        'Says bypassPermissions skips permission prompts and to use it only in isolated environments such as containers or VMs, and that Bash, like Bash(*), matches all Bash commands.',
+        'Says bypassPermissions skips permission prompts and to use it only in isolated environments such as containers or VMs, that Bash, like Bash(*), matches all Bash commands, that a * in a Bash rule matches any text, and that the :* suffix is an equivalent trailing wildcard.',
       ),
       cite(
         PAGES.ccSettings,

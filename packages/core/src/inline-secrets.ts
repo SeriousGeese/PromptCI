@@ -57,6 +57,8 @@ const MAX_EVIDENCE = 10;
  * base62 token has about 25; a hand-typed stand-in (`ghp_aaaabbbbcccc...`) has a handful.
  */
 export const MIN_DISTINCT_CHARS = 12;
+/** The same floor for an AWS access key ID's 16-character random part. */
+export const MIN_DISTINCT_CHARS_AWS = 8;
 /** Base64 characters a private-key block must hold between its BEGIN and END lines. */
 export const MIN_PRIVATE_KEY_BODY = 64;
 /** How far past a BEGIN line the END line is looked for. */
@@ -66,20 +68,26 @@ type SecretShape = {
   kind: string;
   /** A global regex starting with a fixed prefix; every quantifier is bounded. */
   re: RegExp;
-  /** Characters of the fixed prefix, excluded from the made-up check. */
-  prefix: number;
+  /** Characters of the fixed prefix, excluded from the made-up check (a function where the prefix varies). */
+  prefix: number | ((token: string) => number);
+  /**
+   * The fewest distinct characters the random part must hold; {@link MIN_DISTINCT_CHARS}
+   * unless set. An AWS key ID has 16 characters from a 32-letter alphabet, so about one
+   * real key in six has fewer than 12 distinct ones (PR #251 review).
+   */
+  minDistinct?: number;
 };
 
 /** Shapes from gitleaks' default config (config/gitleaks.toml), narrowed to live credentials. */
 export const SECRET_SHAPES: readonly SecretShape[] = [
-  { kind: 'AWS access key ID', re: /\b(?:AKIA|ASIA)[A-Z2-7]{16}\b/g, prefix: 4 },
+  { kind: 'AWS access key ID', re: /\b(?:AKIA|ASIA)[A-Z2-7]{16}\b/g, prefix: 4, minDistinct: MIN_DISTINCT_CHARS_AWS },
   { kind: 'GitHub token', re: /\bgh[pousr]_[A-Za-z0-9]{36}\b/g, prefix: 4 },
   { kind: 'GitHub fine-grained token', re: /\bgithub_pat_\w{82}\b/g, prefix: 11 },
   { kind: 'GitLab personal access token', re: /\bglpat-[\w-]{20}\b/g, prefix: 6 },
-  { kind: 'Slack token', re: /\bxox[bpae]-\d{10,13}-\d{10,13}[A-Za-z0-9-]{0,80}/g, prefix: 5 },
+  { kind: 'Slack token', re: /\bxox[bpae]-\d{10,13}-\d{10,13}[A-Za-z0-9-]{20,80}/g, prefix: 5 },
   { kind: 'Stripe live key', re: /\b(?:sk|rk)_live_[A-Za-z0-9]{20,99}\b/g, prefix: 8 },
-  { kind: 'Anthropic API key', re: /\bsk-ant-(?:api03|admin01)-[\w-]{93}AA(?![\w-])/g, prefix: 14 },
-  { kind: 'OpenAI API key', re: /\bsk-(?:(?:proj|svcacct|admin)-)?[\w-]{20,200}T3BlbkFJ[\w-]{20,200}/g, prefix: 3 },
+  { kind: 'Anthropic API key', re: /\bsk-ant-(?:api03|admin01)-[\w-]{93}AA(?![\w-])/g, prefix: (t) => (t.startsWith('sk-ant-admin01-') ? 15 : 13) },
+  { kind: 'OpenAI API key', re: /\bsk-(?:(?:proj|svcacct|admin)-)?[\w-]{20,200}T3BlbkFJ[\w-]{20,200}/g, prefix: (t) => /^sk-(?:(?:proj|svcacct|admin)-)?/.exec(t)![0].length },
   { kind: 'Google API key', re: /\bAIza[\w-]{35}(?![\w-])/g, prefix: 4 },
   { kind: 'npm access token', re: /\bnpm_[A-Za-z0-9]{36}\b/g, prefix: 4 },
   { kind: 'Hugging Face token', re: /\bhf_[A-Za-z]{34}\b/g, prefix: 3 },
@@ -90,10 +98,10 @@ export const SECRET_SHAPES: readonly SecretShape[] = [
 const MADE_UP_RE = /example|x{4}|your|dummy|fake|sample|placeholder|redacted|0123456|123456789|abcdefgh|(.)\1{5}/i;
 
 /** True when `token`'s random part reads as typed by hand rather than issued. */
-export function looksMadeUp(token: string, prefix: number): boolean {
+export function looksMadeUp(token: string, prefix: number, minDistinct = MIN_DISTINCT_CHARS): boolean {
   const body = token.slice(prefix);
   if (MADE_UP_RE.test(body)) return true;
-  return new Set(body).size < MIN_DISTINCT_CHARS;
+  return new Set(body).size < minDistinct;
 }
 
 export type SecretHit = { kind: string; line: number; shown: string };
@@ -106,7 +114,28 @@ function redact(token: string, prefix: number): string {
 const PRIVATE_KEY_HEADER_RE = /-----BEGIN [A-Z0-9 ]{0,40}PRIVATE KEY(?: BLOCK)?-----/;
 /** Characters before "PRIVATE KEY" a header can hold: "-----BEGIN " plus up to 40 of type. */
 const PRIVATE_KEY_HEADER_LEAD = 52;
-const BASE64_CHAR_RE = /[A-Za-z0-9+/=]/;
+/** A PEM body line: base64 only. */
+const PEM_BODY_LINE_RE = /^[A-Za-z0-9+/=]+$/;
+/** RFC 1421 encapsulated headers an encrypted key carries before its body. */
+const PEM_HEADER_LINE_RE = /^(?:Proc-Type|DEK-Info):/;
+
+/**
+ * Base64 characters in a PEM body, or -1 when the body is not one. Literal `\n` and
+ * `\r` escapes count as line breaks, so a key inside a JSON string (a Google
+ * service-account `private_key`) reads like one in a .pem file. Every other line must
+ * be base64 only: prose, an elision (`MIIEv...`) or a placeholder between the BEGIN
+ * and END lines is not a key.
+ */
+function pemBodyLength(body: string): number {
+  let base64 = 0;
+  for (const raw of body.replace(/\\+[nr]/g, '\n').split(/\r?\n/)) {
+    const line = raw.trim();
+    if (line === '' || PEM_HEADER_LINE_RE.test(line)) continue;
+    if (!PEM_BODY_LINE_RE.test(line)) return -1;
+    base64 += line.length;
+  }
+  return base64;
+}
 
 /** Every credential-shaped string in `content`, in order of appearance per kind. */
 export function findSecrets(content: string): SecretHit[] {
@@ -115,30 +144,30 @@ export function findSecrets(content: string): SecretHit[] {
   for (const shape of SECRET_SHAPES) {
     const re = new RegExp(shape.re.source, shape.re.flags);
     for (const m of content.matchAll(re)) {
-      if (looksMadeUp(m[0], shape.prefix)) continue;
-      hits.push({ kind: shape.kind, line: lineOf(m.index), shown: redact(m[0], shape.prefix) });
+      const prefix = typeof shape.prefix === 'number' ? shape.prefix : shape.prefix(m[0]);
+      if (looksMadeUp(m[0], prefix, shape.minDistinct)) continue;
+      hits.push({ kind: shape.kind, line: lineOf(m.index), shown: redact(m[0], prefix) });
     }
   }
-  // PEM private keys: a BEGIN line, a base64 body and an END line. The header is
+  // PEM private keys: a BEGIN header, a base64 body and an END line. The header is
   // read from a short window around each "PRIVATE KEY" (it is at most about 70
-  // characters), and the next line break and END marker are found by forward
-  // searches that are reused while the scan moves on, so a line of thousands of
-  // "PRIVATE KEY" is still read once.
-  const nextBreak = forwardIndexOf(content, '\n');
+  // characters), and the END marker is searched from the header itself, so a key
+  // on one line (inside a JSON string) is found too. The next END and BEGIN are
+  // found by forward searches reused while the scan moves on, and a body holding
+  // another BEGIN is skipped (that header is read on its own), so the bodies read
+  // never overlap and a file is read in linear time.
   const nextEnd = forwardIndexOf(content, '-----END');
+  const nextBegin = forwardIndexOf(content, '-----BEGIN');
   for (let at = content.indexOf('PRIVATE KEY'); at !== -1; at = content.indexOf('PRIVATE KEY', at + 11)) {
-    const header = PRIVATE_KEY_HEADER_RE.exec(content.slice(Math.max(0, at - PRIVATE_KEY_HEADER_LEAD), at + 22));
+    const windowStart = Math.max(0, at - PRIVATE_KEY_HEADER_LEAD);
+    const header = PRIVATE_KEY_HEADER_RE.exec(content.slice(windowStart, at + 22));
     if (!header) continue;
-    const lineEndRaw = nextBreak(at);
-    const lineEnd = lineEndRaw === -1 ? content.length : lineEndRaw;
-    const windowEnd = Math.min(content.length, lineEnd + PRIVATE_KEY_LOOKAHEAD);
-    const end = nextEnd(lineEnd);
-    if (end === -1 || end > windowEnd) continue;
-    const body = content.slice(lineEnd, end);
-    if (body.includes('...') || body.includes('\u2026') || body.includes('<')) continue;
-    let base64 = 0;
-    for (const ch of body) if (BASE64_CHAR_RE.test(ch)) base64++;
-    if (base64 < MIN_PRIVATE_KEY_BODY) continue;
+    const headerEnd = windowStart + header.index + header[0].length;
+    const end = nextEnd(headerEnd);
+    if (end === -1 || end > headerEnd + PRIVATE_KEY_LOOKAHEAD) continue;
+    const begin = nextBegin(headerEnd);
+    if (begin !== -1 && begin < end) continue;
+    if (pemBodyLength(content.slice(headerEnd, end)) < MIN_PRIVATE_KEY_BODY) continue;
     hits.push({ kind: 'private key', line: lineOf(at), shown: header[0] });
     // The block is one finding; continue after it.
     at = end;

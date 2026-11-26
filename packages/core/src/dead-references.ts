@@ -186,6 +186,13 @@ const BACKTICK_PATH_RE =
   /`([^\s`\n]+\.(?:md|sh|py|ts|js|tsx|jsx|mjs|cjs|json|yml|yaml|toml|cs|go|rs|txt|lock|env|png|jpg|jpeg|gif|svg|webp|pdf))(?::\d+(?::\d+)?)?`/g;
 
 /**
+ * pcic-k1t3.10: a code span naming a runtime's environment object (`process.env`,
+ * `import.meta.env`, `Deno.env`, `Bun.env`) ends in `.env` but is code, not a
+ * dotenv file, so it is never a file reference.
+ */
+const RUNTIME_ENV_ACCESSOR_RE = /^(?:process|import\.meta|Deno|Bun)\.env$/;
+
+/**
  * pcic-2b6.8: code spans holding a directory or extension-less repo path —
  * `src/payments/`, `apps/admin`, `./src/api/`. Path characters only (Next.js
  * route segments like `(auth)` and `[id]` included); anything with a space,
@@ -193,13 +200,6 @@ const BACKTICK_PATH_RE =
  * placeholder and never matches. At least two segments are required: a lone
  * `docs/` or `./scripts` names no location specific enough to call stale.
  */
-/**
- * pcic-k1t3.10: a code span naming a runtime's environment object (`process.env`,
- * `import.meta.env`, `Deno.env`, `Bun.env`) ends in `.env` but is code, not a
- * dotenv file, so it is never a file reference.
- */
-const RUNTIME_ENV_ACCESSOR_RE = /^(?:process|import\.meta|Deno|Bun)\.env$/;
-
 const BACKTICK_DIR_RE = /`((?:\.\/)?[\w@.()[\]-]+(?:\/[\w@.()[\]-]+)+\/?)`/g;
 
 /**

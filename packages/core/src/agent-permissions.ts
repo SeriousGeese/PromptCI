@@ -38,8 +38,21 @@ const CLAUDE_SETTINGS = '.claude/settings.json';
 const CODEX_CONFIG = '.codex/config.toml';
 const MAX_CONFIG_BYTES = 1_000_000;
 
-/** `permissions.allow` rules that match every shell command (Claude Code permissions docs). */
-const ALLOW_ALL_SHELL: ReadonlySet<string> = new Set(['Bash', 'Bash(*)']);
+/**
+ * True for a `permissions.allow` rule that matches every shell command, as the Claude Code
+ * permissions docs define the syntax: `Bash` and `Bash(*)` match all Bash commands; a `*`
+ * matches any text, so a specifier of only `*` characters (`Bash(**)`) matches any command;
+ * and `:*` is an equivalent trailing wildcard, so `Bash(:*)` is a wildcard with nothing
+ * before it. Spaces inside the parentheses are part of the rule (the docs say the space
+ * before a trailing `*` is), so `Bash( * )` is not read as allow-all. An unanchored `*`
+ * allow rule is skipped by Claude Code and not reported.
+ */
+export function allowsEveryShellCommand(rule: string): boolean {
+  const m = /^Bash(?:\((.*)\))?$/s.exec(rule.trim());
+  if (!m) return false;
+  const spec = m[1];
+  return spec === undefined || /^\*+$/.test(spec) || spec === ':*';
+}
 
 function finding(
   repoRoot: string,
@@ -67,7 +80,7 @@ function finding(
 function claudeIssues(repoRoot: string, raw: string): PromptCiIssue[] {
   let parsed: unknown;
   try {
-    parsed = JSON.parse(raw);
+    parsed = JSON.parse(raw.replace(/^\u{FEFF}/u, ''));
   } catch {
     return []; // ai-config-hooks-settings reports invalid JSON
   }
@@ -90,7 +103,7 @@ function claudeIssues(repoRoot: string, raw: string): PromptCiIssue[] {
       }),
     );
   }
-  const broad = Array.isArray(allow) ? allow.filter((rule): rule is string => typeof rule === 'string' && ALLOW_ALL_SHELL.has(rule.trim())) : [];
+  const broad = Array.isArray(allow) ? allow.filter((rule): rule is string => typeof rule === 'string' && allowsEveryShellCommand(rule)) : [];
   if (broad.length > 0) {
     issues.push(
       finding(repoRoot, CLAUDE_SETTINGS, 'claude-allow-all-shell', lineOf(raw, `"${broad[0]!}"`), {

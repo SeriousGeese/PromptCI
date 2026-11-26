@@ -29,6 +29,7 @@ import { parseFrontmatter, shortHash, aiConfigIssue } from './ai-config.js';
 import type { FrontmatterValue } from './ai-config.js';
 import { fileIdPath } from './finding-id.js';
 import { lineNumberIndex } from './linear-text.js';
+import { buildCodeMask } from './markdown-fences.js';
 import { isAbsoluteAnywhere, treeFor } from './repo-tree.js';
 
 const WINDSURF_TRIGGERS: ReadonlySet<string> = new Set(['always_on', 'manual', 'model_decision', 'glob']);
@@ -68,7 +69,8 @@ function issue(
 
 function windsurfIssues(file: InstructionFile): PromptCiIssue[] {
   const fm = parseFrontmatter(file.content);
-  if (!fm.present) return [];
+  // An unclosed block is not frontmatter: its "keys" may be the whole file.
+  if (!fm.present || !fm.closed) return [];
   const trigger = textValue(fm.data.trigger);
   const line = (key: string) => fm.keyLines[key] ?? 1;
   if (trigger === undefined) return [];
@@ -117,7 +119,7 @@ function kiroFrontmatterIssues(file: InstructionFile): PromptCiIssue[] {
     const firstContent = /^(?:[ \t]*\r?\n)+---[ \t]*\r?\n/.exec(content);
     if (firstContent) {
       const rest = content.slice(firstContent[0].length, firstContent[0].length + 2000);
-      if (/^inclusion[ \t]*:/m.test(rest)) {
+      if (/^inclusion[ \t]*:/m.test(rest) && /^---[ \t]*\r?$/m.test(rest)) {
         const line = content.slice(0, firstContent[0].length).split('\n').length - 1;
         return [
           issue(file, 'kiro-frontmatter-not-first', line, {
@@ -131,6 +133,7 @@ function kiroFrontmatterIssues(file: InstructionFile): PromptCiIssue[] {
     }
     return [];
   }
+  if (!fm.closed) return [];
   const inclusion = textValue(fm.data.inclusion);
   if (inclusion === undefined) return [];
   const line = (key: string) => fm.keyLines[key] ?? 1;
@@ -176,7 +179,11 @@ function kiroFileRefIssues(file: InstructionFile, tree: ReturnType<typeof treeFo
   const lineOf = lineNumberIndex(content);
   const missing: Array<{ ref: string; line: number }> = [];
   const seen = new Set<string>();
+  // A reference written in a code fence or span documents the syntax; Kiro does not resolve it.
+  let code: boolean[] | undefined;
   for (let at = content.indexOf('#[[file:'); at !== -1 && missing.length < MAX_REFS_PER_FILE; at = content.indexOf('#[[file:', at + 8)) {
+    code ??= buildCodeMask(content);
+    if (code[at]) continue;
     const m = KIRO_FILE_REF_RE.exec(content.slice(at + 8, at + 8 + 320));
     if (!m) continue;
     const ref = m[1]!.trim().replace(/\\/g, '/').replace(/^\.\//, '');

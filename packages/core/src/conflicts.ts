@@ -478,11 +478,20 @@ function quotedSpans(line: string): Array<[number, number]> {
         closer = '"';
       }
     } else if (c === closer && (closer !== '"' || /\S/.test(line[i - 1]!))) {
-      spans.push([open, i]);
+      if (!wrapsWholeLine(line, open, i)) spans.push([open, i]);
       open = -1;
     }
   }
   return spans;
+}
+
+/**
+ * A quote around the whole line, apart from a list marker before it and punctuation after
+ * it, is the rule itself written in quotes (`- "Always use semicolons"`), not a mention of
+ * one inside a sentence (PR #251 review).
+ */
+function wrapsWholeLine(line: string, open: number, close: number): boolean {
+  return /^\s*(?:[-*+>]\s*|\d+[.)]\s*)?$/.test(line.slice(0, open)) && /^[\s.!?,;:]*$/.test(line.slice(close + 1));
 }
 
 /** True when `index` lies inside one of the ascending `spans`. */
