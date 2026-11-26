@@ -108,8 +108,14 @@
  * `filePaths`, with `locations` at the exact line. Inline `promptci-ignore`
  * annotations inside a skill directory never suppress these findings
  * (scan.ts). Evidence quotes the matched text with every invisible or control
- * character shown as `<U+XXXX>` and tag-character payloads decoded. No finding
- * is auto-fixable: repairing a skill needs a human-reviewed diff.
+ * character shown as `<U+XXXX>` and tag-character payloads decoded. One finding
+ * kind carries a fix (pcic-k1t3.13): a hidden-unicode finding with no
+ * high-severity hit, in a Markdown document read whole, gets edits that remove
+ * zero-width characters, only when no judgement call is left
+ * (`hiddenUnicodeEdits`) and the cleaned document raises no skill finding the
+ * original did not (an invisible character can hide a payload from the rules,
+ * and removing it must never un-hide one into an auto-applied edit). Every
+ * other finding needs a human-reviewed diff.
  */
 
 import * as fs from 'node:fs';
@@ -1926,6 +1932,17 @@ class HitCollector {
     if (outranks(hit, group.hits[weakest]!)) group.hits[weakest] = hit;
   }
 
+  /** Every rule and line recorded (`rule:line`), and each rule's hit count, kept or not: what a scan of one document found. */
+  signature(): { lines: Set<string>; totals: Map<SkillSupplyChainRule, number> } {
+    const lines = new Set<string>();
+    const totals = new Map<SkillSupplyChainRule, number>();
+    for (const g of this.groups.values()) {
+      totals.set(g.rule, (totals.get(g.rule) ?? 0) + g.total);
+      for (const h of g.hits) lines.add(`${g.rule}:${h.line ?? ''}`);
+    }
+    return { lines, totals };
+  }
+
   toIssues(skillMd: string): PromptCiIssue[] {
     return [...this.groups.values()]
       .filter((g) => g.hits.length > 0)
@@ -2432,7 +2449,9 @@ const REMOVABLE_INVISIBLES: ReadonlySet<number> = new Set([0x200b, 0x200c, 0x200
  * controls for a zero-width space): what a page scraped into a skill often holds. The whole
  * sequence goes; the `â` is debris of the same invisible character.
  */
-const MOJIBAKE_INVISIBLES: readonly string[] = ['\u00e2\u0080\u008b', '\u00e2\u0080\u008c', '\u00e2\u0080\u008d', '\u00e2\u0081\u00a0'];
+const MOJIBAKE_INVISIBLES: readonly string[] = [
+  '\u00e2\u0080\u008b', '\u00e2\u0080\u008c', '\u00e2\u0080\u008d', '\u00e2\u0081\u00a0', '\u00c2\u00ad',
+];
 
 /** Longest line the recipe rewrites; a longer one (a minified blob) keeps the finding advisory. */
 const MAX_INVISIBLE_EDIT_LINE = 2000;
@@ -2535,15 +2554,15 @@ function removableRanges(lineText: string, hidden: readonly HiddenChar[], ticksB
   };
   for (const h of hidden) {
     if (h.cls === 'severe') return undefined;
+    // A mojibake sequence first: its last character may itself be removable (the soft hyphen in
+    // `Â` + U+00AD), and the debris before it goes with it.
     let range: [number, number] | undefined;
-    if (REMOVABLE_INVISIBLES.has(h.cp)) range = [h.idx, h.idx + 1];
-    else {
-      for (const seq of MOJIBAKE_INVISIBLES) {
-        for (const start of [h.idx - 1, h.idx - 2]) {
-          if (start >= 0 && lineText.startsWith(seq, start)) range = [start, start + seq.length];
-        }
+    for (const seq of MOJIBAKE_INVISIBLES) {
+      for (const start of [h.idx - 1, h.idx - 2]) {
+        if (start >= 0 && lineText.startsWith(seq, start)) range = [start, start + seq.length];
       }
     }
+    if (range === undefined && REMOVABLE_INVISIBLES.has(h.cp)) range = [h.idx, h.idx + 1];
     if (range === undefined) return undefined;
     const last = ranges[ranges.length - 1];
     if (last !== undefined && range[0] < last[1]) {
@@ -3316,7 +3335,24 @@ export function detectSkillSupplyChain(context: RepoContext, limits: SkillScanLi
     const whole = loaded.docs.length === 1 && loaded.unscanned.length === 0 ? loaded.docs[0]! : undefined;
     if (whole && whole.kind === 'instructions' && !whole.tail && state.collector.has('hidden-unicode', whole.path)) {
       const edits = hiddenUnicodeEdits({ filePath: whole.path, content: whole.content, lines: whole.lines, fenced: whole.fenced });
-      if (edits) state.collector.setEdits('hidden-unicode', whole.path, edits);
+      const cleaned = edits === undefined ? undefined : applyLineEditsToText(whole.content, edits);
+      // An invisible character can be what keeps "ig<ZWSP>nore all previous instructions" or
+      // "cu<ZWSP>rl ... | sh" from the rules: removing it must not un-hide a payload into an
+      // auto-applied edit. Both versions are scanned with every rule; any hit the cleaned one adds
+      // (a rule, a line, or one more match) keeps the finding advisory.
+      if (edits && cleaned !== undefined) {
+        const signatureOf = (doc: SkillDoc) => {
+          const probe = new HitCollector();
+          scanDoc(tree, state.dir, doc, isSkillMd, state.alreadyReported, probe, []);
+          return probe.signature();
+        };
+        const before = signatureOf(whole);
+        const after = signatureOf(makeDoc(whole.path, { kind: whole.kind, lang: whole.lang }, cleaned, isSkillMd, false));
+        const unmasks =
+          [...after.lines].some((key) => !key.startsWith('hidden-unicode:') && !before.lines.has(key)) ||
+          [...after.totals].some(([rule, n]) => rule !== 'hidden-unicode' && n > (before.totals.get(rule) ?? 0));
+        if (!unmasks) state.collector.setEdits('hidden-unicode', whole.path, edits);
+      }
     }
     // A dependency package's `bin` targets are what `npx`/install runs: scan them as scripts.
     for (const target of extra) if (owner(target) >= 0) scanFile(state, target, false, true);

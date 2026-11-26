@@ -264,8 +264,8 @@ function checkPipVsPoetry(
  * not plainly the replacement (the check's own recommendation names `uv sync` as the other one).
  */
 const OTHER_PYTHON_TOOL_FILES = ['uv.lock', 'pdm.lock', 'Pipfile', 'Pipfile.lock', 'environment.yml', 'environment.yaml'];
-const OTHER_REQUIREMENT_PATTERNS = ['**/*requirements*.txt', '**/requirements/**/*.txt', '**/setup.py', '**/setup.cfg'];
-const OTHER_PYTHON_TOOL_TABLE = /^\s*\[\s*tool\s*\.\s*(?:uv|pdm|hatch|rye|pixi)\b/m;
+const OTHER_REQUIREMENT_PATTERNS = ['**/*requirements*.txt', '**/*requirements*.in', '**/*constraints*.txt', '**/requirements/**/*.txt', '**/setup.py', '**/setup.cfg'];
+const OTHER_PYTHON_TOOL_TABLE = /^\s*\[\s*tool\s*\.\s*(?:uv|pdm|hatch|rye|pixi|pip-tools)\b/m;
 
 /**
  * The pip-vs-poetry recipe's edits ({@link pipToPoetryEdits}), or undefined. Refused up front for a
