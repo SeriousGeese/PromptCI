@@ -1,0 +1,8 @@
+[tool.poetry]
+name = "fixture-fix-recipes-round2"
+version = "0.1.0"
+description = "Round-2 fix recipes: pip against Poetry, and invisible characters in a skill (pcic-k1t3.13)."
+package-mode = false
+
+[tool.poetry.dependencies]
+python = "^3.12"

@@ -108,14 +108,21 @@
  * `filePaths`, with `locations` at the exact line. Inline `promptci-ignore`
  * annotations inside a skill directory never suppress these findings
  * (scan.ts). Evidence quotes the matched text with every invisible or control
- * character shown as `<U+XXXX>` and tag-character payloads decoded. No finding
- * is auto-fixable: repairing a skill needs a human-reviewed diff.
+ * character shown as `<U+XXXX>` and tag-character payloads decoded. One finding
+ * kind carries a fix (pcic-k1t3.13): a hidden-unicode finding with no
+ * high-severity hit, in a Markdown document read whole, gets edits that remove
+ * zero-width characters, only when no judgement call is left
+ * (`hiddenUnicodeEdits`) and the cleaned document raises no skill finding the
+ * original did not (an invisible character can hide a payload from the rules,
+ * and removing it must never un-hide one into an auto-applied edit). Every
+ * other finding needs a human-reviewed diff.
  */
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { RepoContext } from './repo-context.js';
-import type { IssueCategory, IssueSeverity, PromptCiIssue } from './types.js';
+import type { FixEdit, IssueCategory, IssueSeverity, PromptCiIssue } from './types.js';
+import { applyLineEditsToText } from './line-edits.js';
 import type { SkillBundleSkip } from './ai-config.js';
 import {
   isFileWithinRoot,
@@ -1879,6 +1886,18 @@ function outranks(a: Hit, b: Hit): boolean {
 
 class HitCollector {
   private readonly groups = new Map<string, { rule: SkillSupplyChainRule; file: string; hits: Hit[]; total: number }>();
+  /** Fix edits for a rule's finding on a file (only hidden-unicode has a recipe), keyed like {@link groups}. */
+  private readonly fixes = new Map<string, FixEdit[]>();
+
+  /** Was any hit of this rule recorded on this file? */
+  has(rule: SkillSupplyChainRule, file: string): boolean {
+    return this.groups.has(`${rule}|${file}`);
+  }
+
+  /** Attach the edits that repair every hit of this rule on this file. */
+  setEdits(rule: SkillSupplyChainRule, file: string, edits: FixEdit[]): void {
+    this.fixes.set(`${rule}|${file}`, edits);
+  }
 
   /** Would a hit of this strength be kept? (Full groups keep only their strongest hits.) */
   accepts(rule: SkillSupplyChainRule, file: string, severity: IssueSeverity, confidence: number): boolean {
@@ -1913,15 +1932,33 @@ class HitCollector {
     if (outranks(hit, group.hits[weakest]!)) group.hits[weakest] = hit;
   }
 
+  /** Every rule and line recorded (`rule:line`), and each rule's hit count, kept or not: what a scan of one document found. */
+  signature(): { lines: Set<string>; totals: Map<SkillSupplyChainRule, number> } {
+    const lines = new Set<string>();
+    const totals = new Map<SkillSupplyChainRule, number>();
+    for (const g of this.groups.values()) {
+      totals.set(g.rule, (totals.get(g.rule) ?? 0) + g.total);
+      for (const h of g.hits) lines.add(`${g.rule}:${h.line ?? ''}`);
+    }
+    return { lines, totals };
+  }
+
   toIssues(skillMd: string): PromptCiIssue[] {
     return [...this.groups.values()]
       .filter((g) => g.hits.length > 0)
       .sort((a, b) => a.rule.localeCompare(b.rule) || a.file.localeCompare(b.file))
-      .map(({ rule, file, hits, total }) => buildIssue(skillMd, rule, file, hits, total));
+      .map(({ rule, file, hits, total }) => buildIssue(skillMd, rule, file, hits, total, this.fixes.get(`${rule}|${file}`)));
   }
 }
 
-function buildIssue(skillMd: string, rule: SkillSupplyChainRule, file: string, hits: Hit[], total: number): PromptCiIssue {
+function buildIssue(
+  skillMd: string,
+  rule: SkillSupplyChainRule,
+  file: string,
+  hits: Hit[],
+  total: number,
+  fixEdits: FixEdit[] | undefined,
+): PromptCiIssue {
   const spec = RULES[rule];
   // Evidence: the strongest hits (the maximum severity is always shown), displayed in file order.
   const byStrength = hits
@@ -1952,6 +1989,8 @@ function buildIssue(skillMd: string, rule: SkillSupplyChainRule, file: string, h
       : { filePath: file, startLine: h.line, endLine: h.line })),
     evidence,
     recommendation: spec.recommendation,
+    // pcic-k1t3.13: only a finding with no high-severity hit carries edits (see hiddenUnicodeEdits).
+    ...(fixEdits !== undefined && top.severity !== 'high' ? { autoApplySafe: true, fixEdits } : {}),
     confidence: top.confidence,
     tags: [SKILL_SUPPLY_CHAIN_TAG, rule],
   };
@@ -2341,44 +2380,49 @@ function hiddenClass(
   return undefined;
 }
 
+/** One character {@link hiddenClass} flags on a line: where it is, what it is, and how bad. */
+type HiddenChar = { idx: number; cp: number; cls: 'severe' | 'mild' };
+
+/**
+ * Every character of `lineText` that {@link hiddenClass} flags, in order. One pass: a global regex
+ * jumps straight to each candidate character, so a line without any costs one scan.
+ */
+function hiddenCharsOn(lineText: string, firstLine: boolean): HiddenChar[] {
+  const out: HiddenChar[] = [];
+  HIDDEN_CANDIDATE_RE.lastIndex = 0;
+  let m = HIDDEN_CANDIDATE_RE.exec(lineText);
+  if (m === null) return out; // fast path: nothing here can hide anything
+  let rtl: boolean | undefined;
+  const hasRtl = () => (rtl ??= RTL_SCRIPT_RE.test(lineText));
+  let tagRunPrev: number | undefined;
+  while (m !== null) {
+    const idx = m.index;
+    const cp = lineText.codePointAt(idx)!;
+    if (cp >= 0xe0000 && cp <= 0xe007f) {
+      const prev = cpBefore(lineText, idx);
+      if (prev === undefined || prev < 0xe0000 || prev > 0xe007f) tagRunPrev = prev; // a new run of tag characters
+    }
+    const cls = hiddenClass(lineText, idx, cp, firstLine, tagRunPrev, hasRtl);
+    if (cls) out.push({ idx, cp, cls });
+    m = HIDDEN_CANDIDATE_RE.exec(lineText);
+  }
+  return out;
+}
+
 /**
  * hidden-unicode — every file kind. Every line is examined: a severe payload
- * after many mild lines still counts. One pass: a global regex jumps straight
- * to each candidate character, so a line without any costs one scan, and the
- * evidence text is only rendered for hits the collector keeps.
+ * after many mild lines still counts, and the evidence text is only rendered
+ * for hits the collector keeps.
  */
 function checkHiddenUnicode(doc: SkillDoc, add: Add): void {
   for (const i of doc.active) {
     const lineText = doc.lines[i]!;
-    HIDDEN_CANDIDATE_RE.lastIndex = 0;
-    let m = HIDDEN_CANDIDATE_RE.exec(lineText);
-    if (m === null) continue; // fast path: nothing here can hide anything
-    let rtl: boolean | undefined;
-    const hasRtl = () => (rtl ??= RTL_SCRIPT_RE.test(lineText));
+    const hidden = hiddenCharsOn(lineText, i === 0);
+    if (hidden.length === 0) continue;
     const found = new Map<number, number>();
-    let severe = false;
-    let firstOffset = -1;
-    let severeOffset = -1;
-    let tagRunPrev: number | undefined;
-    while (m !== null) {
-      const idx = m.index;
-      const cp = lineText.codePointAt(idx)!;
-      if (cp >= 0xe0000 && cp <= 0xe007f) {
-        const prev = cpBefore(lineText, idx);
-        if (prev === undefined || prev < 0xe0000 || prev > 0xe007f) tagRunPrev = prev; // a new run of tag characters
-      }
-      const cls = hiddenClass(lineText, idx, cp, i === 0, tagRunPrev, hasRtl);
-      if (cls) {
-        if (cls === 'severe') {
-          severe = true;
-          if (severeOffset < 0) severeOffset = idx;
-        }
-        found.set(cp, (found.get(cp) ?? 0) + 1);
-        if (firstOffset < 0) firstOffset = idx;
-      }
-      m = HIDDEN_CANDIDATE_RE.exec(lineText);
-    }
-    if (found.size === 0) continue;
+    for (const h of hidden) found.set(h.cp, (found.get(h.cp) ?? 0) + 1);
+    const firstSevere = hidden.find((h) => h.cls === 'severe');
+    const severe = firstSevere !== undefined;
     add('hidden-unicode', i + 1, () => {
       const counts = [...found.entries()]
         .sort((a, b) => a[0] - b[0])
@@ -2386,9 +2430,270 @@ function checkHiddenUnicode(doc: SkillDoc, add: Add): void {
         .map(([cp, n]) => `${codepointLabel(cp)}×${n}`)
         .join(' ');
       const more = found.size > 4 ? ` (+${found.size - 4} more kinds)` : '';
-      return `${counts}${more} in: ${excerpt(lineText, severe ? severeOffset : firstOffset, 1)}`;
+      return `${counts}${more} in: ${excerpt(lineText, (firstSevere ?? hidden[0]!).idx, 1)}`;
     }, severe ? 'high' : 'warning', severe ? 0.9 : 0.7);
   }
+}
+
+// ── hidden-unicode fix edits (pcic-k1t3.13) ──────────────────────────────────
+
+/**
+ * Invisible characters whose removal changes nothing a reader sees: zero-width space, zero-width
+ * non-joiner and joiner (flagged only away from letters and emoji, where they join nothing), word
+ * joiner, a zero-width no-break space past the start of the file, and the soft hyphen.
+ */
+const REMOVABLE_INVISIBLES: ReadonlySet<number> = new Set([0x200b, 0x200c, 0x200d, 0x2060, 0xfeff, 0x00ad]);
+
+/**
+ * The same characters after their UTF-8 bytes were read as Latin-1 and saved again (`â` and two C1
+ * controls for a zero-width space): what a page scraped into a skill often holds. The whole
+ * sequence goes; the `â` is debris of the same invisible character.
+ */
+const MOJIBAKE_INVISIBLES: readonly string[] = [
+  '\u00e2\u0080\u008b', '\u00e2\u0080\u008c', '\u00e2\u0080\u008d', '\u00e2\u0081\u00a0', '\u00c2\u00ad',
+];
+
+/** Longest line the recipe rewrites; a longer one (a minified blob) keeps the finding advisory. */
+const MAX_INVISIBLE_EDIT_LINE = 2000;
+
+/** Most edits one finding may carry (the hosted service drops a longer list, as for the manifest recipes). */
+const MAX_INVISIBLE_EDITS = 50;
+
+/**
+ * Spans of a line whose text is an address, not prose: a Markdown link destination (`](...)`), an
+ * autolink, HTML tag or MDX/JSX element (`<...>`), a bare URL, and the whole of a link reference
+ * definition. A hidden character there is the classic way to disguise where a link goes, and
+ * removing it would change the destination, so the recipe refuses rather than edits. Each search
+ * moves forward only: linear in the line.
+ */
+function addressSpans(lineText: string): Array<[number, number]> {
+  if (/^\s{0,3}\[[^\]]*\]:/.test(lineText)) return [[0, lineText.length]];
+  const spans: Array<[number, number]> = [];
+  // From each opener to the next closer, or to the end of the line. Openers before a closer already
+  // found share it, so the closer search never re-reads the line.
+  const delimited = (open: string, close: string): void => {
+    let closeAt = -1;
+    for (let at = lineText.indexOf(open); at !== -1; at = lineText.indexOf(open, at + open.length)) {
+      if (closeAt < at) closeAt = lineText.indexOf(close, at + open.length);
+      if (closeAt === -1) {
+        spans.push([at, lineText.length]);
+        return;
+      }
+      spans.push([at, closeAt + 1]);
+    }
+  };
+  delimited('](', ')');
+  delimited('<', '>');
+  // A bare URL: the whole run of non-space characters around `://` or `www.`. A marker inside a
+  // run already covered is skipped, so each character is read at most twice.
+  const isSpace = (ch: string | undefined): boolean => ch === undefined || ch === ' ' || ch === '\t';
+  for (const marker of ['://', 'www.']) {
+    let covered = -1;
+    for (let at = lineText.indexOf(marker); at !== -1; at = lineText.indexOf(marker, at + marker.length)) {
+      if (at < covered) continue;
+      let start = at;
+      while (start > 0 && !isSpace(lineText[start - 1])) start--;
+      let end = at + marker.length;
+      while (end < lineText.length && !isSpace(lineText[end])) end++;
+      spans.push([start, end]);
+      covered = end;
+    }
+  }
+  return spans;
+}
+
+/**
+ * Characters that, next to a removed character, could make the removal change the markup: an
+ * emphasis or strikethrough run, a heading or HTML comment opener, a table pipe, an entity, an
+ * escape or a code tick (`#<ZWSP> text` becomes a heading once the space-like character goes).
+ */
+const MARKUP_NEIGHBOURS: ReadonlySet<string> = new Set(['<', '>', '!', '#', '*', '_', '~', '|', '`', '&', '\\']);
+
+/** A letter, digit or space: text that reads the same with or without an invisible character beside it. */
+function plainText(ch: string): boolean {
+  return /^[\p{L}\p{N}\p{M} \t]$/u.test(ch) && !joinsGlyphs(ch);
+}
+
+/**
+ * Whether a gap left by a removal, between `before` and `after` (`next` is the character after
+ * `after`), joins only plain text: a letter, digit or space on each side, sentence punctuation
+ * after a word when a space or the line end follows it (`app.`, never `www.example`), sentence
+ * punctuation before a space or the line end, or the empty text of a link (`[` and `]`, a scraped heading's anchor). Anything else, a markup character
+ * included ({@link MARKUP_NEIGHBOURS}), may read differently once joined.
+ */
+function gapIsPlain(before: string, after: string | undefined, next: string | undefined): boolean {
+  if (before === '[' && after === ']') return true;
+  // Sentence punctuation before a space or the line end: `done. Next`.
+  if (/^[.,;?!'")]$/.test(before) && (after === undefined || after === ' ' || after === '\t')) return true;
+  if (!plainText(before) || MARKUP_NEIGHBOURS.has(before)) return false;
+  if (after === undefined || plainText(after)) return true;
+  return /^[.,;?!'")]$/.test(after) && before !== ' ' && (next === undefined || next === ' ' || next === '\t');
+}
+
+/** A neighbour that a removal could join into one glyph: an emoji, an emoji component, a joiner or a selector. */
+function joinsGlyphs(ch: string | undefined): boolean {
+  if (ch === undefined) return false;
+  const cp = ch.codePointAt(0)!;
+  return cp > 0x7f && (EMOJI_OR_MARK_RE.test(ch) || cp === 0x200d || isVariationSelector(cp));
+}
+
+/**
+ * Where the edit would remove characters on a line: `[start, end)` ranges, or undefined on any
+ * doubt. `ticksBefore` is the number of code ticks earlier in the same paragraph, so a code span
+ * opened on a line above still counts.
+ */
+function removableRanges(lineText: string, hidden: readonly HiddenChar[], ticksBefore: number): Array<[number, number]> | undefined {
+  const ranges: Array<[number, number]> = [];
+  const addresses = addressSpans(lineText);
+  // Backticks before each position, so "inside a code span" is one lookup.
+  let ticks = ticksBefore;
+  let scanned = 0;
+  const inCodeSpan = (idx: number): boolean => {
+    for (; scanned < idx; scanned++) if (lineText.charCodeAt(scanned) === 0x60) ticks++;
+    return ticks % 2 === 1;
+  };
+  for (const h of hidden) {
+    if (h.cls === 'severe') return undefined;
+    // A mojibake sequence first: its last character may itself be removable (the soft hyphen in
+    // `Â` + U+00AD), and the debris before it goes with it.
+    let range: [number, number] | undefined;
+    for (const seq of MOJIBAKE_INVISIBLES) {
+      for (const start of [h.idx - 1, h.idx - 2]) {
+        if (start >= 0 && lineText.startsWith(seq, start)) range = [start, start + seq.length];
+      }
+    }
+    if (range === undefined && REMOVABLE_INVISIBLES.has(h.cp)) range = [h.idx, h.idx + 1];
+    if (range === undefined) return undefined;
+    const last = ranges[ranges.length - 1];
+    if (last !== undefined && range[0] < last[1]) {
+      if (range[0] !== last[0]) return undefined; // overlapping, differently: no plain reading
+      continue; // the second flagged character of the same mojibake sequence
+    }
+    // Sample code is quoted exactly: a character inside a code span may be the point of the sample.
+    if (inCodeSpan(range[0])) return undefined;
+    const [from, to] = range;
+    if (addresses.some(([s, e]) => from < e && to > s)) return undefined;
+    ranges.push(range);
+  }
+  return ranges;
+}
+
+/** What {@link hiddenUnicodeEdits} reads about one complete skill document. */
+export type InvisibleEditInput = {
+  /** The path the edits name; only a `.md` or `.markdown` document gets edits. */
+  filePath: string;
+  /** The whole file, exactly as read. */
+  content: string;
+  /** Lines of `content` split on `\r?\n`. */
+  lines: readonly string[];
+  /** Per line: inside a fenced code block. */
+  fenced: ArrayLike<number>;
+};
+
+/** Where an HTML element whose text is quoted or is code (`<pre>`, `<code>`, `<script>`, `<kbd>`, ...) opens or closes. */
+const PRE_OPEN_RE = /<(?:pre|code|script|style|kbd|samp|var|tt|textarea)\b/gi;
+const PRE_CLOSE_RE = /<\/(?:pre|code|script|style|kbd|samp|var|tt|textarea)\s*>/gi;
+
+/**
+ * Line edits that remove every invisible character the hidden-unicode rule flags in one Markdown
+ * skill document, or undefined when any of them needs a judgement call. All or nothing, and
+ * leaning toward no edit:
+ *
+ * - every flagged character on every line must be {@link REMOVABLE_INVISIBLES} or one of the
+ *   {@link MOJIBAKE_INVISIBLES} sequences; a tag character or bidi control (a possible smuggled
+ *   instruction, which a person must read), a control character, a variation selector run, a
+ *   filler or a line separator refuses the whole file;
+ * - no flagged character may sit in a fenced or indented code block, a code span (also one opened
+ *   on an earlier line of the paragraph; a paragraph with a double tick refuses), a `<pre>` or
+ *   `<code>` element, a link destination, an autolink, HTML or JSX tag or bare URL
+ *   ({@link addressSpans}), or the document's frontmatter, nor on a line holding right-to-left
+ *   script, and no line may be longer than {@link MAX_INVISIBLE_EDIT_LINE};
+ * - a removal must not bring markup characters, emoji or joiners together
+ *   ({@link MARKUP_NEIGHBOURS}, {@link joinsGlyphs});
+ * - a file holding U+FFFD (bytes that are not UTF-8, which a rewrite would replace) refuses;
+ * - each edit replaces its whole line with the line minus those characters, the rewritten line
+ *   must flag nothing, and the edits must apply cleanly to the file as the fix engine applies
+ *   them ({@link applyLineEditsToText}).
+ */
+export function hiddenUnicodeEdits(input: InvisibleEditInput): FixEdit[] | undefined {
+  const { filePath, content, lines, fenced } = input;
+  if (!/\.(?:md|markdown)$/i.test(filePath) || content.includes('\ufffd')) return undefined;
+  // Frontmatter: a first line of `---` up to the next one.
+  let frontmatterEnd = 0;
+  if (lines[0]?.trim() === '---') {
+    const close = lines.findIndex((l, i) => i > 0 && (l.trim() === '---' || l.trim() === '...'));
+    frontmatterEnd = close === -1 ? lines.length : close + 1;
+  }
+  const edits: FixEdit[] = [];
+  // Code spans can run across the lines of one paragraph, never past a blank line, a fence or a
+  // heading (each its own block): the ticks earlier in the paragraph carry over.
+  let ticks = 0;
+  let doubleTick: boolean = false; // the paragraph so far holds a double tick: no plain reading of its spans
+  let preDepth = 0;
+  for (let i = 0; i < lines.length; i++) {
+    const lineText = lines[i]!;
+    const ownBlock = lineText.trim() === '' || fenced[i] === 1 || /^\s{0,3}#{1,6}(?:\s|$)/.test(lineText);
+    const ticksBefore = ownBlock ? 0 : ticks;
+    // A double tick or an escaped tick: the plain tick count no longer says where spans are.
+    const paragraphDoubleTick: boolean = (!ownBlock && doubleTick) || lineText.includes('``') || lineText.includes('\\`');
+    if (ownBlock) {
+      ticks = 0;
+      doubleTick = false;
+    } else {
+      ticks += (lineText.match(/`/g) ?? []).length;
+      doubleTick = paragraphDoubleTick;
+    }
+    const opens = (lineText.match(PRE_OPEN_RE) ?? []).length;
+    const closes = (lineText.match(PRE_CLOSE_RE) ?? []).length;
+    const inPre = preDepth > 0 || opens > 0;
+    preDepth = Math.max(0, preDepth + opens - closes);
+
+    const hidden = hiddenCharsOn(lineText, i === 0);
+    if (hidden.length === 0) continue;
+    if (edits.length >= MAX_INVISIBLE_EDITS || lineText.length > MAX_INVISIBLE_EDIT_LINE) return undefined;
+    if (fenced[i] || i < frontmatterEnd || inPre || paragraphDoubleTick || RTL_SCRIPT_RE.test(lineText)) return undefined;
+    // `$` may open math (or be a shell prompt): text quoted as it is.
+    if (lineText.includes('$')) return undefined;
+    // An indented code block (or a line that may be one): sample text, quoted exactly.
+    if (/^(?: {4}|\t)/.test(lineText)) return undefined;
+    const ranges = removableRanges(lineText, hidden, ticksBefore);
+    if (ranges === undefined) return undefined;
+    let cleaned = '';
+    let at = 0;
+    const joins: number[] = [];
+    for (const [start, end] of ranges) {
+      cleaned += lineText.slice(at, start);
+      joins.push(cleaned.length);
+      at = end;
+    }
+    cleaned += lineText.slice(at);
+    // Removing a character joins its neighbours: refuse when the joined text could read as markup,
+    // a link or an address it did not read as before.
+    if (/:\/\/|www\.|@/i.test(cleaned)) return undefined;
+    const contentStart = cleaned.length - cleaned.trimStart().length;
+    // The end of what could be a block marker at the start of the content (`1.`, `-`, `===`), found
+    // in one scan so each gap below is one comparison.
+    let markerEnd = contentStart;
+    if (/[0-9]/.test(cleaned[markerEnd] ?? '')) {
+      while (/[0-9]/.test(cleaned[markerEnd] ?? '')) markerEnd++;
+      if (cleaned[markerEnd] === '.' || cleaned[markerEnd] === ')') markerEnd++;
+    } else {
+      while (/[-+*>#=_~:|]/.test(cleaned[markerEnd] ?? '')) markerEnd++;
+    }
+    for (const j of joins) {
+      if (j <= contentStart) return undefined; // a gap at the start of the content: `<ZWSP>- x` would become a list
+      // A gap inside or right after what could be a block marker: `1.<ZWSP> x`, `-<ZWSP> x`, `=<ZWSP>==`.
+      if (j <= markerEnd) return undefined;
+      const before = String.fromCodePoint(cpBefore(cleaned, j)!);
+      const after = j < cleaned.length ? String.fromCodePoint(cleaned.codePointAt(j)!) : undefined;
+      if (!gapIsPlain(before, after, cleaned[j + 1])) return undefined;
+    }
+    if (hiddenCharsOn(cleaned, i === 0).length > 0) return undefined;
+    edits.push({ filePath, line: i + 1, find: lineText, replace: cleaned });
+  }
+  if (edits.length === 0) return undefined;
+  const next = applyLineEditsToText(content, edits);
+  return next === undefined || next === content ? undefined : edits;
 }
 
 // ── hidden markup ─────────────────────────────────────────────────────────────
@@ -3026,6 +3331,29 @@ export function detectSkillSupplyChain(context: RepoContext, limits: SkillScanLi
       noteReferences(state, doc);
       extra.push(...scanDoc(tree, state.dir, doc, isSkillMd, state.alreadyReported, state.collector, state.unscanned));
     }
+    // pcic-k1t3.13: invisible characters in a Markdown document read whole get removal edits.
+    const whole = loaded.docs.length === 1 && loaded.unscanned.length === 0 ? loaded.docs[0]! : undefined;
+    if (whole && whole.kind === 'instructions' && !whole.tail && state.collector.has('hidden-unicode', whole.path)) {
+      const edits = hiddenUnicodeEdits({ filePath: whole.path, content: whole.content, lines: whole.lines, fenced: whole.fenced });
+      const cleaned = edits === undefined ? undefined : applyLineEditsToText(whole.content, edits);
+      // An invisible character can be what keeps "ig<ZWSP>nore all previous instructions" or
+      // "cu<ZWSP>rl ... | sh" from the rules: removing it must not un-hide a payload into an
+      // auto-applied edit. Both versions are scanned with every rule; any hit the cleaned one adds
+      // (a rule, a line, or one more match) keeps the finding advisory.
+      if (edits && cleaned !== undefined) {
+        const signatureOf = (doc: SkillDoc) => {
+          const probe = new HitCollector();
+          scanDoc(tree, state.dir, doc, isSkillMd, state.alreadyReported, probe, []);
+          return probe.signature();
+        };
+        const before = signatureOf(whole);
+        const after = signatureOf(makeDoc(whole.path, { kind: whole.kind, lang: whole.lang }, cleaned, isSkillMd, false));
+        const unmasks =
+          [...after.lines].some((key) => !key.startsWith('hidden-unicode:') && !before.lines.has(key)) ||
+          [...after.totals].some(([rule, n]) => rule !== 'hidden-unicode' && n > (before.totals.get(rule) ?? 0));
+        if (!unmasks) state.collector.setEdits('hidden-unicode', whole.path, edits);
+      }
+    }
     // A dependency package's `bin` targets are what `npx`/install runs: scan them as scripts.
     for (const target of extra) if (owner(target) >= 0) scanFile(state, target, false, true);
     return loaded;
@@ -3055,6 +3383,11 @@ export function detectSkillSupplyChain(context: RepoContext, limits: SkillScanLi
     }
     issues.push(...state.collector.toIssues(state.skillMd));
   }
-  // Scanner-form paths so inline suppressions can match (see withScannerPaths).
-  return withScannerPaths(context.repoRoot, issues);
+  // Scanner-form paths so inline suppressions can match (see withScannerPaths); fix edits name the
+  // same absolute paths as the finding's files.
+  return withScannerPaths(context.repoRoot, issues).map((issue) =>
+    issue.fixEdits === undefined
+      ? issue
+      : { ...issue, fixEdits: issue.fixEdits.map((e) => ({ ...e, filePath: path.resolve(context.repoRoot, e.filePath) })) },
+  );
 }
