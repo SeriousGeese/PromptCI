@@ -186,6 +186,13 @@ const BACKTICK_PATH_RE =
   /`([^\s`\n]+\.(?:md|sh|py|ts|js|tsx|jsx|mjs|cjs|json|yml|yaml|toml|cs|go|rs|txt|lock|env|png|jpg|jpeg|gif|svg|webp|pdf))(?::\d+(?::\d+)?)?`/g;
 
 /**
+ * pcic-k1t3.10: a code span naming a runtime's environment object (`process.env`,
+ * `import.meta.env`, `Deno.env`, `Bun.env`) ends in `.env` but is code, not a
+ * dotenv file, so it is never a file reference.
+ */
+const RUNTIME_ENV_ACCESSOR_RE = /^(?:process|import\.meta|Deno|Bun)\.env$/;
+
+/**
  * pcic-2b6.8: code spans holding a directory or extension-less repo path —
  * `src/payments/`, `apps/admin`, `./src/api/`. Path characters only (Next.js
  * route segments like `(auth)` and `[id]` included); anything with a space,
@@ -863,7 +870,7 @@ function collectRefs(
     // file it names is what exists or not, so the leading `@` is not part of it.
     const written = m[1] ?? '';
     const ref = written.startsWith('@') ? written.slice(1) : written;
-    if (ref && !isExternalRef(ref) && !ref.includes('*') && !ref.includes('?')) {
+    if (ref && !isExternalRef(ref) && !ref.includes('*') && !ref.includes('?') && !RUNTIME_ENV_ACCESSOR_RE.test(ref)) {
       const ext = path.extname(ref).toLowerCase();
       const rooted =
         opts.skipSourceBackticks && BACKTICK_SKIP_SOURCE_EXTENSIONS.has(ext) && !STALE_SOURCE_REF_RE.test(ref);

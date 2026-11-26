@@ -2,6 +2,7 @@ import type { CheckProvenance } from './types.js';
 import { INSTRUCTION_ADVICE_PROVENANCE } from './instruction-advice.js';
 import { REPO_CHECKS_PROVENANCE } from './repo-checks.js';
 import { TOOL_CONFIG_PROVENANCE } from './tool-config.js';
+import { RULE_CATEGORIES_PROVENANCE } from './rule-categories.js';
 
 export * from './types.js';
 export {
@@ -24,6 +25,7 @@ export const CHECK_PROVENANCE: readonly CheckProvenance[] = [
   ...TOOL_CONFIG_PROVENANCE,
   ...INSTRUCTION_ADVICE_PROVENANCE,
   ...REPO_CHECKS_PROVENANCE,
+  ...RULE_CATEGORIES_PROVENANCE,
 ];
 
 /** The records of one detector (`DETECTORS` id), in registry order. */
