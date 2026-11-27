@@ -129,6 +129,13 @@ export type RepoContext = {
    */
   aliasFiles?: InstructionFile[];
   /**
+   * README, CONTRIBUTING and similar files in `files` that no always-loaded
+   * file imports with `@path`: scanned, but no agent loads them, so they are
+   * left out of the always-loaded totals. Optional so hand-built contexts keep
+   * type-checking.
+   */
+  unloadedReferenceDocs?: InstructionFile[];
+  /**
    * Validated rules loaded from `.promptci/custom-rules.json` (empty when the
    * file is absent). Interpreted by the `custom-rules` detector.
    */
@@ -410,12 +417,9 @@ async function readSkillFile(repoRoot: string, relativePath: string, absPath: st
 }
 
 function buildMetrics(
-  scanned: InstructionFile[],
+  { loaded: files, reference: referenceDocs }: { loaded: InstructionFile[]; reference: InstructionFile[] },
   onDemandFiles: InstructionFile[],
-  aliases: InstructionFile[] = [],
 ): ScanMetrics {
-  // A README or CONTRIBUTING no CLAUDE.md imports is scanned but never loaded by an agent (pcic-5rop.110).
-  const { loaded: files, reference: referenceDocs } = splitReferenceDocs(scanned, aliases);
   const metrics: ScanMetrics = {
     estimatedInstructionTokens: files.reduce((sum, file) => sum + file.estimatedTokens, 0),
     instructionFileCount: files.length,
@@ -507,6 +511,9 @@ export async function buildRepoContext(input: ScanInput): Promise<RepoContext> {
   // loader validates the name up front and raises a clear error instead.
   const modelPreset = input.targetModel ? budgetForTargetModel(input.targetModel) : undefined;
 
+  // A README or CONTRIBUTING no always-loaded file imports is scanned but never loaded by an agent (pcic-5rop.110): walked once per scan.
+  const referenceSplit = splitReferenceDocs(files, aliasFiles);
+
   return {
     repoRoot,
     tree,
@@ -520,7 +527,8 @@ export async function buildRepoContext(input: ScanInput): Promise<RepoContext> {
     ...(makefile ? { makefile } : {}),
     aiConfig,
     ...(input.exclude && input.exclude.length > 0 ? { exclude: input.exclude } : {}),
-    metrics: buildMetrics(files, onDemandFiles, aliasFiles),
+    unloadedReferenceDocs: referenceSplit.reference,
+    metrics: buildMetrics(referenceSplit, onDemandFiles),
     // A targetModel preset scales the context-bloat thresholds to that model's
     // window, but an explicit budget (flag or config) always wins over it.
     contextBudget: input.contextBudget ?? modelPreset?.contextBudget,

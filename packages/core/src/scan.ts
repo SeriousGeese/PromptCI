@@ -11,7 +11,6 @@ import { parseSuppressions, buildValidationIssues, applySuppressions } from './s
 import type { SuppressionAnnotation } from './suppression.js';
 import { computeHealthScore, selectTopFixes } from './health-score.js';
 import { filterNewIssues } from './baseline.js';
-import { splitReferenceDocs } from './reference-docs.js';
 import { annotateIssueTokens, computeAddressableTokens } from './token-estimates.js';
 import { SKILL_SUPPLY_CHAIN_TAG } from './skill-supply-chain.js';
 import type { PromptCiIssue, ScanInput, ScanReport } from './types.js';
@@ -84,7 +83,7 @@ export async function scan(input: ScanInput): Promise<ScanReport> {
     healthScore,
     metrics: {
       ...context.metrics,
-      estimatedAddressableTokens: computeAddressableTokens(active, splitReferenceDocs(context.files, context.aliasFiles).loaded, context.aliasFiles),
+      estimatedAddressableTokens: computeAddressableTokens(active, context.files.filter((file) => !(context.unloadedReferenceDocs ?? []).includes(file)), context.aliasFiles),
     },
     // Symlink aliases are inventory only (see RepoContext.aliasFiles): they are
     // not scanned, so they carry no annotations to parse above. Their content and

@@ -72,6 +72,18 @@ describe('formatSummary token lines', () => {
     expect(out).not.toContain('seriousgeese.dev');
   });
 
+  it('still prints the reference-docs line for a README-only repo', () => {
+    const r = report();
+    r.metrics!.instructionFileCount = 0;
+    r.metrics!.estimatedInstructionTokens = 0;
+    r.metrics!.estimatedReferenceDocTokens = 1234;
+    r.metrics!.referenceDocFileCount = 1;
+    const out = formatSummary(r);
+    expect(out).toContain('Reference docs');
+    expect(out).toContain('1234');
+    expect(out).not.toContain('Tokens loaded');
+  });
+
   it('omits the block when the report has no metrics', () => {
     expect(formatSummary(report({ metrics: undefined }))).not.toContain('Tokens loaded');
   });

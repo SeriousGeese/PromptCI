@@ -56,7 +56,7 @@ export { computeFingerprint, createBaseline, filterNewIssues, assertValidBaselin
 export { applyFixRecipe, resolveSafePath, isRepairable, isOptInRecipe, isScriptRenameRecipe, requiresOptIn, planMirrorImport } from './fix-engine.js';
 export type { MirrorImportPlan } from './fix-engine.js';
 export { subsetImportCaveat } from './mirror-import.js';
-export { isReferenceDoc, importedPaths, splitReferenceDocs, MAX_IMPORT_HOPS } from './reference-docs.js';
+export { isReferenceDoc, splitReferenceDocs } from './reference-docs.js';
 export {
   closestUniqueMatch,
   isMechanicalRename,

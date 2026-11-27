@@ -69,13 +69,44 @@ describe('reference docs are not always-loaded context', () => {
   });
 
   it.each([
+    ['prose', '# Claude\n\nSee @README.md for project overview.\n'],
+    ['prose with trailing punctuation', '# Claude\n\nProject overview is in @README.md, read it.\n'],
+    ['a list item', '# Claude\n\n- git workflow @README.md\n'],
+    ['a parenthesis', '# Claude\n\nOverview (see @README.md).\n'],
+  ])('counts a README imported inline in %s', async (_label, claude) => {
+    const { m } = await metricsOf({ 'CLAUDE.md': claude, 'README.md': README });
+    expect(m.estimatedInstructionTokens).toBe(tokens(claude) + tokens(README));
+    expect(m.estimatedReferenceDocTokens).toBeUndefined();
+  });
+
+  it.each([
     ['a backticked @README.md', '# Claude\n\nSee `@README.md` for more.\n'],
-    ['a markdown link', '# Claude\n\nSee [the readme](README.md) for more.\n'],
-    ['a fenced @README.md', '# Claude\n\n```\n@README.md\n```\n'],
+    ['a markdown link beside an inline @', '# Claude\n\nSee [the readme](README.md) for more, not @missing.md.\n'],
+    ['a fenced @README.md', '# Claude\n\n```\nSee @README.md here\n```\n'],
+    ['an HTML comment', '# Claude\n\n<!-- see @README.md -->\n'],
+    ['an e-mail style @', '# Claude\n\nAsk me@README.md about it.\n'],
   ])('does not count a README behind %s', async (_label, claude) => {
     const { m } = await metricsOf({ 'CLAUDE.md': claude, 'README.md': README });
     expect(m.estimatedInstructionTokens).toBe(tokens(claude));
     expect(m.estimatedReferenceDocTokens).toBe(tokens(README));
+  });
+
+  it('does not resolve @README without an extension', async () => {
+    const claude = '# Claude\n\nSee @README for more.\n';
+    const { m } = await metricsOf({ 'CLAUDE.md': claude, 'README.md': README });
+    expect(m.estimatedReferenceDocTokens).toBe(tokens(README));
+  });
+
+  it('starts the walk from the root AGENTS.md and from always-on .claude/rules files', async () => {
+    const agents = '# Agents\n\nSee @README.md.\n';
+    const a = await metricsOf({ 'AGENTS.md': agents, 'README.md': README });
+    expect(a.m.estimatedInstructionTokens).toBe(tokens(agents) + tokens(README));
+    const rule = '# Rule\n\nSee @../../README.md.\n';
+    const b = await metricsOf({ '.claude/rules/r.md': rule, 'README.md': README });
+    expect(b.m.estimatedReferenceDocTokens).toBeUndefined();
+    const scoped = '---\npaths: ["src/**"]\n---\nSee @../../README.md.\n';
+    const c = await metricsOf({ '.claude/rules/r.md': scoped, 'README.md': README });
+    expect(c.m.estimatedReferenceDocTokens).toBe(tokens(README));
   });
 
   it('follows an import chain through other files, up to 4 hops', async () => {

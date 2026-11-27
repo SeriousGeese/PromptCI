@@ -82,7 +82,7 @@ export const DETECTORS: DetectorDefinition[] = [
       totalHigh: context.contextBudget ? context.contextBudget * 2 : undefined,
       fileWarning: context.fileContextBudget,
       fileHigh: context.fileContextBudget ? context.fileContextBudget * 2.5 : undefined,
-    }, context.aliasFiles),
+    }, context.aliasFiles, context.unloadedReferenceDocs),
   },
   {
     id: 'stale-instructions',

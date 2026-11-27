@@ -197,7 +197,7 @@ export const INSTRUCTION_ADVICE_PROVENANCE: readonly CheckProvenance[] = [
       src('ccMemory', 'context', 'Lists the files Claude Code loads at start (CLAUDE.md, AGENTS.md, rules, auto memory) and mentions README only as an @README import example; imports expand up to 4 hops and markdown links are never followed, so a README loads only when imported.'),
     ],
     thresholds: [
-      heuristic('README_DOMINANCE_RATIO', 0.5, 'share of scanned instruction tokens', 'context-bloat.ts:README_DOMINANCE_RATIO'),
+      heuristic('README_DOMINANCE_RATIO', 0.5, 'share of always-loaded instruction tokens', 'context-bloat.ts:README_DOMINANCE_RATIO'),
       heuristic('README_DOMINANCE_MIN_TOKENS', 1000, 'estimated tokens', 'context-bloat.ts:README_DOMINANCE_MIN_TOKENS'),
       heuristic('readmeFileWarning', 15000, 'characters per README', 'context-bloat.ts:DEFAULTS.readmeFileWarning'),
       heuristic('readmeFileHigh', 30000, 'characters per README', 'context-bloat.ts:DEFAULTS.readmeFileHigh'),

@@ -131,6 +131,7 @@ export function detectContextBloat(
   files: InstructionFile[],
   thresholds?: Partial<ContextBloatThresholds>,
   aliases: InstructionFile[] = [],
+  unloadedReferenceDocs: readonly InstructionFile[] = splitReferenceDocs(files, aliases).reference,
 ): PromptCiIssue[] {
   const t: ContextBloatThresholds = mergeThresholds(DEFAULTS, thresholds);
   const issues: PromptCiIssue[] = [];
@@ -238,8 +239,8 @@ export function detectContextBloat(
   );
   // A README or CONTRIBUTING no CLAUDE.md imports is scanned above but never
   // loaded by an agent, so it is no part of the total (pcic-5rop.110).
-  const loadedFiles = new Set(splitReferenceDocs(files, aliases).loaded);
-  const alwaysLoaded = files.filter((f) => ruleActivation(f) === 'always' && !replaced.has(f) && loadedFiles.has(f));
+  const unloaded = new Set(unloadedReferenceDocs);
+  const alwaysLoaded = files.filter((f) => ruleActivation(f) === 'always' && !replaced.has(f) && !unloaded.has(f));
   const totalChars = alwaysLoaded.reduce((sum, f) => sum + f.charCount, 0);
   const totalTokens = alwaysLoaded.reduce((sum, f) => sum + f.estimatedTokens, 0);
   const allPaths = alwaysLoaded.map((f) => f.path);
@@ -298,7 +299,7 @@ export function detectContextBloat(
       category: 'context_bloat',
       title: 'README dominates scanned instruction context',
       summary:
-        `README content accounts for about ${share}% of the always-loaded instruction tokens, because a CLAUDE.md imports it. ` +
+        `README content accounts for about ${share}% of the always-loaded instruction tokens, because an @ import loads it. ` +
         'That may be appropriate, but AI-specific guidance is usually cheaper in a smaller canonical file.',
       filePaths: [readme.path],
       locations: [{ filePath: readme.path }],
