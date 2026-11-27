@@ -100,7 +100,7 @@ const HTML_BLOCK_RE = /^ {0,3}<\/?[A-Za-z][A-Za-z0-9-]*(?=[\s/>]|$)/;
  * comment, so `` `<!--` `` in prose does not open one. Errs on the side of
  * "not live": a line it cannot place for sure is not counted as an import.
  */
-function liveLines(content: string): boolean[] {
+export function liveLines(content: string): boolean[] {
   const lines = content.split(/\r?\n/);
   const fences = scanFencedLines(content);
   const live: boolean[] = [];

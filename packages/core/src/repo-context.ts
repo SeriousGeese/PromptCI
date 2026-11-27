@@ -11,6 +11,7 @@ import type { WorkspaceManifest } from './workspace-manifests.js';
 import { readMakefile } from './makefile.js';
 import type { MakefileFacts } from './makefile.js';
 import { isOnDemandFileType } from './types.js';
+import { splitReferenceDocs } from './reference-docs.js';
 import { realPathWithinRoot } from './path-containment.js';
 import { RepoTree } from './repo-tree.js';
 import type { InstructionFile, ProjectType, ScanInput, ScanMetrics } from './types.js';
@@ -127,6 +128,13 @@ export type RepoContext = {
    * hand-built contexts keep type-checking.
    */
   aliasFiles?: InstructionFile[];
+  /**
+   * README, CONTRIBUTING and similar files in `files` that no always-loaded
+   * file imports with `@path`: scanned, but no agent loads them, so they are
+   * left out of the always-loaded totals. Optional so hand-built contexts keep
+   * type-checking.
+   */
+  unloadedReferenceDocs?: InstructionFile[];
   /**
    * Validated rules loaded from `.promptci/custom-rules.json` (empty when the
    * file is absent). Interpreted by the `custom-rules` detector.
@@ -408,7 +416,10 @@ async function readSkillFile(repoRoot: string, relativePath: string, absPath: st
   };
 }
 
-function buildMetrics(files: InstructionFile[], onDemandFiles: InstructionFile[]): ScanMetrics {
+function buildMetrics(
+  { loaded: files, reference: referenceDocs }: { loaded: InstructionFile[]; reference: InstructionFile[] },
+  onDemandFiles: InstructionFile[],
+): ScanMetrics {
   const metrics: ScanMetrics = {
     estimatedInstructionTokens: files.reduce((sum, file) => sum + file.estimatedTokens, 0),
     instructionFileCount: files.length,
@@ -420,6 +431,10 @@ function buildMetrics(files: InstructionFile[], onDemandFiles: InstructionFile[]
   if (onDemandFiles.length > 0) {
     metrics.onDemandFileCount = onDemandFiles.length;
     metrics.estimatedOnDemandTokens = onDemandFiles.reduce((sum, file) => sum + file.estimatedTokens, 0);
+  }
+  if (referenceDocs.length > 0) {
+    metrics.referenceDocFileCount = referenceDocs.length;
+    metrics.estimatedReferenceDocTokens = referenceDocs.reduce((sum, file) => sum + file.estimatedTokens, 0);
   }
   return metrics;
 }
@@ -496,6 +511,9 @@ export async function buildRepoContext(input: ScanInput): Promise<RepoContext> {
   // loader validates the name up front and raises a clear error instead.
   const modelPreset = input.targetModel ? budgetForTargetModel(input.targetModel) : undefined;
 
+  // A README or CONTRIBUTING no always-loaded file imports is scanned but never loaded by an agent (pcic-5rop.110): walked once per scan.
+  const referenceSplit = splitReferenceDocs(files, aliasFiles);
+
   return {
     repoRoot,
     tree,
@@ -509,7 +527,8 @@ export async function buildRepoContext(input: ScanInput): Promise<RepoContext> {
     ...(makefile ? { makefile } : {}),
     aiConfig,
     ...(input.exclude && input.exclude.length > 0 ? { exclude: input.exclude } : {}),
-    metrics: buildMetrics(files, onDemandFiles),
+    unloadedReferenceDocs: referenceSplit.reference,
+    metrics: buildMetrics(referenceSplit, onDemandFiles),
     // A targetModel preset scales the context-bloat thresholds to that model's
     // window, but an explicit budget (flag or config) always wins over it.
     contextBudget: input.contextBudget ?? modelPreset?.contextBudget,

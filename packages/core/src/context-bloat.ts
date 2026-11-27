@@ -17,6 +17,7 @@ import { fileIdPath } from './finding-id.js';
 import { UNSCORED_TAG } from './health-score.js';
 import { aliasesWithNewType } from './alias-files.js';
 import { agentsOverridePairs, ruleActivation } from './rule-activation.js';
+import { splitReferenceDocs } from './reference-docs.js';
 
 export type ContextBloatThresholds = {
   fileWarning: number;
@@ -130,6 +131,7 @@ export function detectContextBloat(
   files: InstructionFile[],
   thresholds?: Partial<ContextBloatThresholds>,
   aliases: InstructionFile[] = [],
+  unloadedReferenceDocs: readonly InstructionFile[] = splitReferenceDocs(files, aliases).reference,
 ): PromptCiIssue[] {
   const t: ContextBloatThresholds = mergeThresholds(DEFAULTS, thresholds);
   const issues: PromptCiIssue[] = [];
@@ -235,7 +237,10 @@ export function detectContextBloat(
   const replaced = new Set(
     agentsOverridePairs(files).map(([agents, override]) => (override.charCount >= agents.charCount ? agents : override)),
   );
-  const alwaysLoaded = files.filter((f) => ruleActivation(f) === 'always' && !replaced.has(f));
+  // A README or CONTRIBUTING no CLAUDE.md imports is scanned above but never
+  // loaded by an agent, so it is no part of the total (pcic-5rop.110).
+  const unloaded = new Set(unloadedReferenceDocs);
+  const alwaysLoaded = files.filter((f) => ruleActivation(f) === 'always' && !replaced.has(f) && !unloaded.has(f));
   const totalChars = alwaysLoaded.reduce((sum, f) => sum + f.charCount, 0);
   const totalTokens = alwaysLoaded.reduce((sum, f) => sum + f.estimatedTokens, 0);
   const allPaths = alwaysLoaded.map((f) => f.path);
@@ -278,8 +283,9 @@ export function detectContextBloat(
 
   // Which file is the context? A README that accounts for most of it is not
   // necessarily too big — it is in the wrong place, since a README is written
-  // for people and gets carried on every agent turn regardless.
-  const readme = files.find((file) => file.fileType === 'readme');
+  // for people and an `@README.md` import carries it on every agent turn. A
+  // README nothing imports costs no turn anything, so it never fires here.
+  const readme = alwaysLoaded.find((file) => file.fileType === 'readme');
   if (
     totalTokens > 0 &&
     readme &&
@@ -293,13 +299,13 @@ export function detectContextBloat(
       category: 'context_bloat',
       title: 'README dominates scanned instruction context',
       summary:
-        `README content accounts for about ${share}% of scanned instruction tokens. That may be ` +
-        'appropriate, but AI-specific guidance is usually cheaper in a smaller canonical file.',
+        `README content accounts for about ${share}% of the always-loaded instruction tokens, because an @ import loads it. ` +
+        'That may be appropriate, but AI-specific guidance is usually cheaper in a smaller canonical file.',
       filePaths: [readme.path],
       locations: [{ filePath: readme.path }],
-      evidence: [`README: ~${readme.estimatedTokens} of ~${totalTokens} scanned tokens`],
+      evidence: [`README: ~${readme.estimatedTokens} of ~${totalTokens} always-loaded tokens`],
       recommendation:
-        'Consider keeping AI rules in AGENTS.md and leaving README as project documentation linked only when relevant.',
+        'Consider keeping AI rules in AGENTS.md and dropping the `@README.md` import, leaving README as project documentation.',
       confidence: 0.65,
       tags: COST_TAGS,
     });

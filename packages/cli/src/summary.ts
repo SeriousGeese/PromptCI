@@ -105,6 +105,14 @@ export function formatSummary(report: ScanReport, options: SummaryOptions = {}):
     lines.push(`  Estimate savings: ${buildEstimateLink(tokens, addressable)}`);
   }
 
+  // Shown on its own: a README-only repo has no always-loaded files at all.
+  if (report.metrics?.estimatedReferenceDocTokens) {
+    lines.push('');
+    lines.push(
+      `  Reference docs (README, CONTRIBUTING; not loaded unless imported): ${report.metrics.estimatedReferenceDocTokens}`,
+    );
+  }
+
   if (topFixes.length > 0) {
     lines.push('');
     lines.push('  Top fixes:');

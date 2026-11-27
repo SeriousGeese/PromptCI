@@ -83,7 +83,7 @@ export async function scan(input: ScanInput): Promise<ScanReport> {
     healthScore,
     metrics: {
       ...context.metrics,
-      estimatedAddressableTokens: computeAddressableTokens(active, context.files, context.aliasFiles),
+      estimatedAddressableTokens: computeAddressableTokens(active, context.files.filter((file) => !(context.unloadedReferenceDocs ?? []).includes(file)), context.aliasFiles),
     },
     // Symlink aliases are inventory only (see RepoContext.aliasFiles): they are
     // not scanned, so they carry no annotations to parse above. Their content and
