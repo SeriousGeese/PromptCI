@@ -72,6 +72,11 @@ function body(length: number, alphabet = 'Zq8mT3vR7kPx2Lw9NcYb4Hs6Jd5Gf1Ue0QaVrX
   for (let i = 0; out.length < length; i++) out += alphabet[(i * 7 + 3) % alphabet.length];
   return out.slice(0, length);
 }
+/** A signed-looking JWT around `claims`, assembled at run time like every token here. */
+function jwt(claims: Record<string, unknown>): string {
+  const part = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url');
+  return part({ alg: 'HS256', typ: 'JWT' }) + '.' + part(claims) + '.' + body(43);
+}
 const UPPER32 = 'QWERTYUPASDFGHJKLZXCVBNM234567';
 
 const TOKENS: Array<[kind: string, token: string]> = [
@@ -83,6 +88,15 @@ const TOKENS: Array<[kind: string, token: string]> = [
   ['Stripe live key', 'sk' + '_live_' + body(30)],
   ['Anthropic API key', 'sk-' + 'ant-api03-' + body(93) + 'AA'],
   ['OpenAI API key', 'sk-' + 'proj-' + body(58) + 'T3Blbk' + 'FJ' + body(58)],
+  ['OpenAI API key', 'sk-' + 'proj-' + body(156)],
+  ['OpenAI API key', 'sk-' + 'svcacct-' + body(150)],
+  ['OpenRouter API key', 'sk-or-' + 'v1-' + body(64, '3f9a1c7e5b2d804a')],
+  ['Groq API key', 'gs' + 'k_' + body(52)],
+  ['Supabase secret key', 'sb_' + 'secret_' + body(22) + '_' + body(8)],
+  ['Supabase service_role JWT', jwt({ iss: 'https://abcdefghijklmnop.supabase.co/auth/v1', role: 'service_role', exp: 2000000000 })],
+  ['connection string with a password', 'postgres' + '://app_user:' + body(20) + '@db.abcdefghijklmnop.supabase.co:5432/postgres'],
+  ['connection string with a password', 'mongodb' + '+srv://svc:' + body(16) + '@cluster0.ab12c.mongodb.net/app'],
+  ['connection string with a password', 'mysql' + '://root:' + body(14) + '@10.2.3.4:3306/app'],
   ['Google API key', 'AI' + 'za' + body(35)],
   ['npm access token', 'np' + 'm_' + body(36)],
   ['Hugging Face token', 'h' + 'f_' + body(34, 'ZqmTvRkPxLwNcYbHsJdGfUeQaVrXo')],
@@ -98,6 +112,58 @@ describe('inline-secrets', () => {
     expect(issues[0]!.evidence[0]).toContain(kind);
     expect(issues[0]!.locations[0]!.startLine).toBe(3);
     expect(JSON.stringify(issues[0])).not.toContain(token);
+  });
+
+  it('reports one OpenAI key once when it carries the marker', () => {
+    const marked = 'sk-' + 'proj-' + body(58) + 'T3Blbk' + 'FJ' + body(58);
+    expect(findSecrets('K=' + marked).map((h) => h.kind)).toEqual(['OpenAI API key']);
+  });
+
+  it('shows a connection string without its password', () => {
+    const password = body(20);
+    const [hit] = findSecrets('DATABASE_URL=postgres' + '://app_user:' + password + '@db.prod.internal.io:5432/app');
+    expect(hit!.shown).toBe('postgres://app_user:\u2026 (password of 20 characters)');
+    expect(hit!.shown).not.toContain(password);
+  });
+
+  it('shows a JWT by its first seven characters only', () => {
+    const token = jwt({ role: 'service_role' });
+    const [hit] = findSecrets('KEY=' + token);
+    expect(hit!.shown).toBe('eyJhbGc\u2026 (' + token.length + ' characters)');
+  });
+
+  it('reports a JWT only for the service_role claim', () => {
+    expect(findSecrets('K=' + jwt({ iss: 'supabase', role: 'anon' }))).toEqual([]);
+    expect(findSecrets('K=' + jwt({ sub: '1234567890', name: 'John Doe', iat: 1516239022 }))).toEqual([]);
+    expect(findSecrets('K=' + jwt({ iss: 'supabase-demo', role: 'service_role', exp: 1983812996 }))).toEqual([]);
+    expect(findSecrets('K=eyJ' + body(30) + '.eyJ' + body(30) + '.' + body(43))).toEqual([]);
+  });
+
+  it.each([
+    ['a placeholder password', 'postgres' + '://user:password@db.prod.example.io:5432/app'],
+    ['a docs password word', 'postgresql' + '://postgres:postgres@db.internal:5432/app'],
+    ['a bracketed placeholder', 'postgres' + '://postgres:[YOUR-PASSWORD]@db.abcdefghijklmnop.supabase.co:5432/postgres'],
+    ['an angle-bracket placeholder', 'mysql' + '://root:<password>@db.prod.io/app'],
+    ['an environment reference', 'postgres' + '://app:${DB_PASSWORD}@db.prod.io/app'],
+    ['a dollar variable', 'mongodb' + '://app:$DB_PASS_WORD@db.prod.io/app'],
+    ['stars', 'postgres' + '://app:********@db.prod.io/app'],
+    ['a hand-written password', 'postgres' + '://app:s3cretP4ss@db.prod.io:5432/app'],
+    ['a short password', 'mysql' + '://app:s3cr3t@db.prod.io/app'],
+    ['a local host with a real-looking password', 'postgres' + '://app:' + body(20) + '@localhost:5432/app'],
+    ['no password', 'postgres' + '://app@db.prod.io:5432/app'],
+    ['a made-up password', 'postgres' + '://app:' + 'x'.repeat(20) + '@db.prod.io/app'],
+    ['an example host', 'postgres' + '://app:' + body(20) + '@db.example.com/app'],
+    ['an OpenAI prefix alone', 'OPENAI_API_KEY=sk-' + 'proj-...'],
+    ['a short sk-proj value', 'sk-' + 'proj-' + body(40)],
+    ['a made-up OpenAI project key', 'sk-' + 'proj-' + 'abcd'.repeat(40)],
+    ['an OpenRouter prefix alone', 'sk-or-' + 'v1-...'],
+    ['a made-up OpenRouter key', 'sk-or-' + 'v1-' + '0'.repeat(64)],
+    ['a Groq prefix alone', 'GROQ_API_KEY=gs' + 'k_...'],
+    ['a made-up Groq key', 'gs' + 'k_' + 'x'.repeat(52)],
+    ['a Supabase prefix alone', 'sb_' + 'secret_...'],
+    ['a made-up Supabase key', 'sb_' + 'secret_' + 'x'.repeat(30)],
+  ])('stays silent on %s', (_label, text) => {
+    expect(findSecrets('Notes:\n' + text + '\n')).toEqual([]);
   });
 
   it('finds a PEM private key with a body', () => {
@@ -373,6 +439,13 @@ describe('hostile input stays linear', () => {
     ['one line of a token prefix', oneLine('sk-proj-')],
     ['one line of OpenAI-shaped fragments', oneLine('sk-proj-' + 'a'.repeat(150) + 'T3Blbk')],
     ['one line of AKIA', oneLine('AKIA')],
+    ['one line of JWT-shaped segments', oneLine('eyJ' + 'a'.repeat(40) + '.')],
+    ['one line of one huge JWT header', 'eyJ' + 'a'.repeat(120_000)],
+    ['one line of eyJ with no gap', oneLine('eyJ')],
+    ['one line of connection string openings', oneLine('postgres://a:')],
+    ['one line of long connection string userinfo', oneLine('mongodb+srv://' + 'u'.repeat(60) + ':' + 'p'.repeat(120))],
+    ['one line of other key prefixes', oneLine('sk-or-v1- gsk_ sb_secret_ sk-svcacct-')],
+    ['one line of an sk-svcacct- run', 'sk-svcacct-' + 'a'.repeat(120_000)],
     ['lines of private-key headers with no END', manyLines(() => '-----BEGIN ' + 'RSA PRIVATE KEY-----')],
     ['private-key headers and one far END', manyLines(() => '-----BEGIN ' + 'PRIVATE KEY-----') + '-----END PRIVATE KEY-----'],
     ['one line of PRIVATE KEY', oneLine('PRIVATE KEY ')],
