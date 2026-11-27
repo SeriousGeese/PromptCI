@@ -26,10 +26,19 @@ const PAGES = {
   codexApprovals: { url: 'https://learn.chatgpt.com/docs/agent-approvals-security', title: 'Codex: Agent approvals and security' },
   geminiConfig: { url: 'https://geminicli.com/docs/reference/configuration/', title: 'Gemini CLI: Configuration' },
   devinRules: { url: 'https://docs.devin.ai/desktop/devin-local/customizations', title: 'Devin Local (Windsurf): Customizations' },
+  truffleOpenRouter: { url: 'https://raw.githubusercontent.com/trufflesecurity/trufflehog/main/pkg/detectors/openrouter/openrouter.go', title: 'trufflehog OpenRouter detector' },
+  truffleGroq: { url: 'https://raw.githubusercontent.com/trufflesecurity/trufflehog/main/pkg/detectors/groq/groq.go', title: 'trufflehog Groq detector' },
+  supabaseCliDefaults: { url: 'https://raw.githubusercontent.com/supabase/cli/develop/packages/stack/src/Defaults.ts', title: 'Supabase CLI: local stack default keys' },
+  supabaseApiKeys: { url: 'https://supabase.com/docs/guides/getting-started/api-keys', title: 'Supabase: API keys' },
+  neonConnect: { url: 'https://neon.com/docs/connect/connect-from-any-app', title: 'Neon: Connect from any application' },
+  atlasDrivers: { url: 'https://www.mongodb.com/docs/atlas/driver-connection/', title: 'MongoDB Atlas: Connect via drivers' },
   kiroSteering: { url: 'https://kiro.dev/docs/steering/', title: 'Kiro: Steering' },
 } satisfies Record<string, Page>;
 
 const cite = (page: Page, stance: SourceStance, note: string): ProvenanceSource => ({ ...page, readOn: READ_ON, stance, note });
+
+/** A source read on a later date than the rest of this file (pcic-180m, PromptCI#253 review). */
+const citeOn = (page: Page, readOn: string, stance: SourceStance, note: string): ProvenanceSource => ({ ...page, readOn, stance, note });
 
 const unverified = (name: string, value: number, where: string, unit: string): ProvenanceThreshold => ({
   name,
@@ -46,7 +55,7 @@ export const RULE_CATEGORIES_PROVENANCE: readonly CheckProvenance[] = [
     title: 'Credential shapes in instruction and agent config files',
     kind: 'tool-fact',
     claim:
-      'A string with the fixed prefix, alphabet and length a vendor issues (AWS AKIA/ASIA access key IDs, GitHub gh*_ tokens, GitLab glpat-, Slack xox*-, Stripe sk_live_/rk_live_, Anthropic sk-ant-, OpenAI sk-...T3BlbkFJ, Google AIza, npm_, hf_, SendGrid SG.) or a PEM block with a BEGIN-PRIVATE-KEY header line and a base64 body is a credential, not prose about one.',
+      'A string with the fixed prefix, alphabet and length a vendor issues (AWS AKIA/ASIA access key IDs, GitHub gh*_ tokens, GitLab glpat-, Slack xox*-, Stripe sk_live_/rk_live_, Anthropic sk-ant-, OpenAI sk-...T3BlbkFJ, Google AIza, npm_, hf_, SendGrid SG., OpenRouter sk-or-v1-, Groq gsk_, Supabase sb_secret_) or a Supabase service_role JWT (payload role claim service_role) or a database connection string with a non-placeholder password (postgres, mysql, mongodb) or a PEM block with a BEGIN-PRIVATE-KEY header line and a base64 body is a credential, not prose about one.',
     appliesTo: 'n/a',
     sources: [
       cite(
@@ -66,9 +75,40 @@ export const RULE_CATEGORIES_PROVENANCE: readonly CheckProvenance[] = [
         'A competing linter checks the same thing (content-secrets: private-key headers and AWS, GitHub, Anthropic, OpenAI, npm, Slack, Google and Stripe token shapes in context files, shown redacted).',
       ),
       cite(PAGES.agentlint, 'context', 'A competing linter checks for hardcoded sk-, ghp_, AKIA and private-key patterns (S6 No hardcoded secrets).'),
+      citeOn(PAGES.truffleOpenRouter, '2026-11-27', 'supports', 'Matches \\b(sk-or-v1-[0-9a-f]{64})\\b: the OpenRouter shape (gitleaks has no OpenRouter rule).'),
+      citeOn(PAGES.truffleGroq, '2026-11-27', 'supports', 'Matches \\b(gsk_[a-zA-Z0-9]{52})\\b: the Groq shape (gitleaks has no Groq rule).'),
+      citeOn(
+        PAGES.supabaseCliDefaults,
+        '2026-11-27',
+        'context',
+        'DEFAULT_LOCAL_SECRET_KEY is sb_secret_ plus 22 characters, an underscore and 8 more (31 after the prefix): the only length evidence for the Supabase secret key, and a published local key the detector skips.',
+      ),
+      citeOn(
+        PAGES.supabaseApiKeys,
+        '2026-11-27',
+        'context',
+        'Calls service_role a long-lived JWT with elevated privileges and the sb_secret_ key a short string, not a JWT; it gives the sb_secret_ prefix but no length, and does not name the role claim (the JWT check reads it from the payload).',
+      ),
+      citeOn(
+        PAGES.neonConnect,
+        '2026-11-27',
+        'context',
+        'Its example postgresql://alex:AbC123dEf@ep-cool-darkness-a1b2c3d4-pooler... shows that a documented stand-in password is shaped like a real one, so the detector skips placeholder words (abc123, replace, change, todo, ...) and ALL_CAPS_SNAKE values.',
+      ),
+      citeOn(
+        PAGES.atlasDrivers,
+        '2026-11-27',
+        'context',
+        'Shows mongodb+srv://<db_username>:<db_password>@... and mongodb://username:password@host1:port1 as the URI form; both carry stand-ins the detector does not report.',
+      ),
     ],
     thresholds: [
       unverified('MIN_DISTINCT_CHARS', 12, 'inline-secrets.ts:MIN_DISTINCT_CHARS', 'distinct characters in the random part'),
+      unverified('OpenAI marker-less key length', 100, 'inline-secrets.ts:SECRET_SHAPES (sk-proj-/sk-svcacct- body, 100 to 200)', 'base64url characters, lower bound (upper bound 200)'),
+      unverified('Supabase secret key length', 22, 'inline-secrets.ts:SECRET_SHAPES (sb_secret_ body, 22 to 48)', 'base64url characters, lower bound (upper bound 48); the CLI default key has 31'),
+      unverified('Connection string minimum password length', 8, 'inline-secrets.ts:isRealConnectionString', 'characters'),
+      unverified('Connection string minimum distinct password characters', 5, 'inline-secrets.ts:SECRET_SHAPES (connection string minDistinct)', 'distinct characters in the password'),
+      unverified('OpenRouter minimum distinct characters', 10, 'inline-secrets.ts:SECRET_SHAPES (OpenRouter minDistinct)', 'distinct hex characters of 64'),
       unverified('MIN_DISTINCT_CHARS_AWS', 8, 'inline-secrets.ts:MIN_DISTINCT_CHARS_AWS', 'distinct characters in an AWS key ID random part'),
       {
         name: 'MIN_PRIVATE_KEY_BODY',
@@ -78,7 +118,7 @@ export const RULE_CATEGORIES_PROVENANCE: readonly CheckProvenance[] = [
         source: cite(PAGES.gitleaks, 'supports', 'The private-key rule requires at least 64 characters between the BEGIN and END lines.'),
       },
     ],
-    lastVerified: VERIFIED,
+    lastVerified: { date: '2026-11-27', by: 'agent run 2026-11-27 (pcic-180m, PromptCI#253 review), pending human review' },
   },
   {
     id: 'agent-permissions/claude-code',

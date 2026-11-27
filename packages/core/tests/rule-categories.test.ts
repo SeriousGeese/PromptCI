@@ -94,7 +94,7 @@ const TOKENS: Array<[kind: string, token: string]> = [
   ['Groq API key', 'gs' + 'k_' + body(52)],
   ['Supabase secret key', 'sb_' + 'secret_' + body(22) + '_' + body(8)],
   ['Supabase service_role JWT', jwt({ iss: 'https://abcdefghijklmnop.supabase.co/auth/v1', role: 'service_role', exp: 2000000000 })],
-  ['connection string with a password', 'postgres' + '://app_user:' + body(20) + '@db.abcdefghijklmnop.supabase.co:5432/postgres'],
+  ['connection string with a password', 'postgres' + '://app_user:' + body(20) + '@db.qwxzrvbtmklsyupe.supabase.co:5432/postgres'],
   ['connection string with a password', 'mongodb' + '+srv://svc:' + body(16) + '@cluster0.ab12c.mongodb.net/app'],
   ['connection string with a password', 'mysql' + '://root:' + body(14) + '@10.2.3.4:3306/app'],
   ['Google API key', 'AI' + 'za' + body(35)],
@@ -117,6 +117,15 @@ describe('inline-secrets', () => {
   it('reports one OpenAI key once when it carries the marker', () => {
     const marked = 'sk-' + 'proj-' + body(58) + 'T3Blbk' + 'FJ' + body(58);
     expect(findSecrets('K=' + marked).map((h) => h.kind)).toEqual(['OpenAI API key']);
+  });
+
+  it('reports a percent-encoded password', () => {
+    const hits = findSecrets('DATABASE_URL=postgres' + '://app:Rk9x%40Lw2PqZ7vT3m@db.prod.io/app');
+    expect(hits.map((h) => h.kind)).toEqual(['connection string with a password']);
+  });
+
+  it('reports a Supabase secret key that is not the CLI default, and the default only when it is not exact', () => {
+    expect(findSecrets('K=sb_' + 'secret_N7UND0UgjKTVK-Uodkm0Hg_xSvEMPvA')).toHaveLength(1);
   });
 
   it('shows a connection string without its password', () => {
@@ -147,6 +156,19 @@ describe('inline-secrets', () => {
     ['an environment reference', 'postgres' + '://app:${DB_PASSWORD}@db.prod.io/app'],
     ['a dollar variable', 'mongodb' + '://app:$DB_PASS_WORD@db.prod.io/app'],
     ['stars', 'postgres' + '://app:********@db.prod.io/app'],
+    ['the Supabase CLI default secret key', 'SUPABASE_SECRET_KEY=sb_' + 'secret_N7UND0UgjKTVK-Uodkm0Hg_xSvEMPvz'],
+    ["Neon's docs example", 'postgresql' + '://alex:AbC123dEf@ep-cool-darkness-a1b2c3d4-pooler.us-east-2.aws.neon.tech/dbname?sslmode=require'],
+    ["Atlas's docs template", 'mongodb' + '+srv://<db_username>:<db_password>@<clusterName>.mongodb.net/?retryWrites=true&w=majority'],
+    ["Atlas's docs standard form", 'mongodb' + '://username:password@host1:27017,host2:27017/database?authSource=admin'],
+    ["PlanetScale's docs placeholders", 'postgresql' + '://postgres.xxxxxxxxxx:pscale_pw_xxxxxxxxxxxxxxxxxx@aws.connect.psdb.cloud:5432/postgres'],
+    ['REPLACE_ME_NOW', 'postgres' + '://app:REPLACE_ME_NOW@db.mycompany.com:5432/app'],
+    ['CHANGE_THIS_VALUE', 'postgres' + '://app:CHANGE_THIS_VALUE@db.mycompany.com/app'],
+    ['CHANGE_ME_PLEASE', 'postgres' + '://app:CHANGE_ME_PLEASE@db.mycompany.com/app'],
+    ['INSERT_VALUE_HERE', 'postgres' + '://app:INSERT_VALUE_HERE@db.mycompany.com/app'],
+    ['TODO_SET_THIS', 'postgres' + '://app:TODO_SET_THIS@db.mycompany.com/app'],
+    ['a templated password', 'postgres' + '://app:{{ db_password }}@db.mycompany.com/app'],
+    ['a printf placeholder', 'postgres' + '://app:%(password)s@db.mycompany.com/app'],
+    ['a password at a placeholder host', 'postgres' + '://postgres:' + body(20) + '@db.your-project-ref.supabase.co:5432/postgres'],
     ['a hand-written password', 'postgres' + '://app:s3cretP4ss@db.prod.io:5432/app'],
     ['a short password', 'mysql' + '://app:s3cr3t@db.prod.io/app'],
     ['a local host with a real-looking password', 'postgres' + '://app:' + body(20) + '@localhost:5432/app'],

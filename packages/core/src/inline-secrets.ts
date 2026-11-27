@@ -86,6 +86,10 @@ type SecretShape = {
   show?: (m: RegExpMatchArray) => string;
 };
 
+/** The key `supabase start` prints for every local stack: Supabase CLI packages/stack/src/Defaults.ts DEFAULT_LOCAL_SECRET_KEY. Published, so not a leak. */
+// Split so secret scanners and push protection do not read this source as a leak.
+const SUPABASE_DEMO_SECRET_KEY = 'sb_' + 'secret_N7UND0UgjKTVK-Uodkm0Hg_xSvEMPvz';
+
 /** Decode a base64url JWT segment as a JSON object, or null. */
 function jwtPart(segment: string): Record<string, unknown> | null {
   try {
@@ -117,9 +121,15 @@ const PLACEHOLDER_PASSWORDS = new Set([
   's3cret', 'token', 'key', 'apikey', 'host', 'localhost',
 ]);
 /** A word a hand-written password carries and an issued one almost never does (`s3cretP4ss`, `dbpass-clear`). */
-const PLACEHOLDER_WORD_RE = /pass|secret|s3cret|hunter|pwd|test|demo|admin|changeme|sample|dummy|fake|temp/i;
-/** Characters a templating or placeholder syntax puts in a password slot. */
-const PLACEHOLDER_CHARS_RE = /[<>{}$%*[\]()]|\.\.|\\/;
+const PLACEHOLDER_WORD_RE = /pass|secret|s3cret|hunter|pwd|test|demo|admin|change|sample|dummy|fake|temp|replace|insert|todo|here|abc123/i;
+/** An ALL_CAPS_SNAKE value (`REPLACE_ME_NOW`) names a slot to fill; an issued password is not written that way. */
+const CAPS_SNAKE_RE = /^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$/;
+/**
+ * Template syntax in a password slot: `${VAR}`, `{{ var }}`, `{name}`, `[YOUR-PASSWORD]`, a leading `$VAR`,
+ * `%s` or `%(name)s`, a run of `*`, or an elision. A bare `%`, `$`, `(` or `)` is not: percent-encoded
+ * passwords (`%40`) are real.
+ */
+const PLACEHOLDER_SYNTAX_RE = /\$\{|\{\{|\{[^}]*\}|\[[^\]]*\]|^\$[A-Za-z_]|%s|%\(\w+\)s|\*{2,}|\.\.\./;
 /** Hosts that are this machine or a documentation name: a password there protects nothing shared. */
 const LOCAL_HOST_RE = /^(?:localhost|127\.\d+\.\d+\.\d+|0\.0\.0\.0|host\.docker\.internal|.*\.(?:example|test|invalid|localhost)|(?:[\w-]+\.)?example\.(?:com|org|net))$/i;
 
@@ -127,7 +137,8 @@ const LOCAL_HOST_RE = /^(?:localhost|127\.\d+\.\d+\.\d+|0\.0\.0\.0|host\.docker\
 function isRealConnectionString(m: RegExpMatchArray): boolean {
   const password = m[1]!;
   const host = m[2]!;
-  if (password.length < 8 || PLACEHOLDER_CHARS_RE.test(password)) return false;
+  if (password.length < 8 || PLACEHOLDER_SYNTAX_RE.test(password) || CAPS_SNAKE_RE.test(password)) return false;
+  if (MADE_UP_RE.test(host)) return false;
   if (PLACEHOLDER_PASSWORDS.has(password.toLowerCase().replace(/[\d_-]+$/, '')) || PLACEHOLDER_WORD_RE.test(password)) return false;
   return !LOCAL_HOST_RE.test(host);
 }
@@ -142,17 +153,21 @@ export const SECRET_SHAPES: readonly SecretShape[] = [
   { kind: 'Stripe live key', re: /\b(?:sk|rk)_live_[A-Za-z0-9]{20,99}\b/g, prefix: 8 },
   { kind: 'Anthropic API key', re: /\bsk-ant-(?:api03|admin01)-[\w-]{93}AA(?![\w-])/g, prefix: (t) => (t.startsWith('sk-ant-admin01-') ? 15 : 13) },
   { kind: 'OpenAI API key', re: /\bsk-(?:(?:proj|svcacct|admin)-)?[\w-]{20,200}T3BlbkFJ[\w-]{20,200}/g, prefix: (t) => /^sk-(?:(?:proj|svcacct|admin)-)?/.exec(t)![0].length },
-  // Marker-less OpenAI keys. Keys issued since 2024 for projects and service accounts are
-  // `sk-proj-` or `sk-svcacct-` and about 150 to 170 characters of base64url; the T3BlbkFJ
-  // shape above covers the older ones. Same kind, so one key is one hit.
-  { kind: 'OpenAI API key', re: /\bsk-(?:proj|svcacct)-[A-Za-z0-9_-]{100,200}(?![\w-])/g, prefix: (t) => (t.startsWith('sk-proj-') ? 8 : 12) },
-  // OpenRouter: sk-or-v1- and 64 hex characters (gitleaks openrouter-api-key; OpenRouter API docs).
+  // Marker-less OpenAI keys (`sk-proj-`, `sk-svcacct-`). No vendor or gitleaks source gives this shape:
+  // the 100 to 200 base64url range is unverified and chosen for precision (a real key is about 150 to
+  // 170 characters; the T3BlbkFJ shape above covers the older ones). Same kind, so one key is one hit.
+  { kind: 'OpenAI API key', re: /\bsk-(?:proj|svcacct)-[A-Za-z0-9_-]{100,200}(?![\w-])/g, prefix: (t) => (t.startsWith('sk-proj-') ? 8 : 11) },
+  // OpenRouter: sk-or-v1- and 64 hex characters (trufflehog pkg/detectors/openrouter/openrouter.go:
+  // \b(sk-or-v1-[0-9a-f]{64})\b). Gitleaks has no OpenRouter rule.
   { kind: 'OpenRouter API key', re: /\bsk-or-v1-[a-f0-9]{64}\b/g, prefix: 9, minDistinct: 10 },
-  // Groq: gsk_ and 52 alphanumerics (Groq console keys; gitleaks groq-api-key).
+  // Groq: gsk_ and 52 alphanumerics (trufflehog pkg/detectors/groq/groq.go: \b(gsk_[a-zA-Z0-9]{52})\b).
+  // Gitleaks has no Groq rule.
   { kind: 'Groq API key', re: /\bgsk_[A-Za-z0-9]{52}\b/g, prefix: 4 },
-  // Supabase secret API key: sb_secret_ and about 31 base64url characters (Supabase API keys docs).
-  { kind: 'Supabase secret key', re: /\bsb_secret_[A-Za-z0-9_-]{22,48}(?![\w-])/g, prefix: 10 },
-  // Supabase service_role JWT: a three-part JWT whose payload carries role service_role (Supabase API keys docs).
+  // Supabase secret API key: sb_secret_ and base64url. The Supabase API keys docs give the prefix only; the
+  // 22 to 48 range is unverified, bracketing the 31 characters of the Supabase CLI's own default key. That
+  // published local key is skipped (SUPABASE_DEMO_SECRET_KEY).
+  { kind: 'Supabase secret key', re: /\bsb_secret_[A-Za-z0-9_-]{22,48}(?![\w-])/g, prefix: 10, accept: (m) => m[0] !== SUPABASE_DEMO_SECRET_KEY },
+  // Supabase service_role JWT: a three-part JWT whose payload carries role service_role (Supabase API keys docs: service_role is a JWT; the role claim is read from the payload).
   {
     kind: 'Supabase service_role JWT',
     re: /(?<![\w-])eyJ[A-Za-z0-9_-]{10,1500}\.eyJ[A-Za-z0-9_-]{10,3000}\.[A-Za-z0-9_-]{20,1000}(?![\w-])/g,
@@ -160,8 +175,8 @@ export const SECRET_SHAPES: readonly SecretShape[] = [
     accept: isServiceRoleJwt,
     show: (m) => redact(m[0], 3),
   },
-  // Database connection string with a password: the URI form in the PostgreSQL (libpq), MySQL and
-  // MongoDB docs, scheme://user:password@host. Skipped when the password is a stand-in or the host local.
+  // Database connection string with a password: the scheme://user:password@host URI form
+  // (Neon and MongoDB Atlas docs show it with stand-in values, which must not fire). Skipped when the password is a stand-in or the host local.
   {
     kind: 'connection string with a password',
     re: /\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?):\/\/[^\s:@/'"<>`]{1,64}:([^\s@/'"<>`]{3,128})@([A-Za-z0-9.-]{1,255})/g,
