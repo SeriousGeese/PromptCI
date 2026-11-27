@@ -26,19 +26,22 @@
     "url": "git+https://github.com/SeriousGeese/PromptCI.git",
     "directory": "packages/core"
   },
-  "homepage": "https://github.com/SeriousGeese/PromptCI#readme",
+  "homepage": "https://promptci.seriousgeese.dev/docs/checks",
   "bugs": {
     "url": "https://github.com/SeriousGeese/PromptCI/issues"
   },
   "keywords": [
-    "ai",
-    "claude",
-    "copilot",
-    "cursor",
-    "instructions",
-    "lint",
-    "prompt",
-    "scanner"
+    "claude-md",
+    "agents-md",
+    "cursorrules",
+    "copilot-instructions",
+    "claude-code",
+    "ai-coding-agents",
+    "instruction-files",
+    "prompt-lint",
+    "linter",
+    "cli",
+    "ci"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
