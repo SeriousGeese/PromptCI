@@ -11,6 +11,7 @@ import type { WorkspaceManifest } from './workspace-manifests.js';
 import { readMakefile } from './makefile.js';
 import type { MakefileFacts } from './makefile.js';
 import { isOnDemandFileType } from './types.js';
+import { splitReferenceDocs } from './reference-docs.js';
 import { realPathWithinRoot } from './path-containment.js';
 import { RepoTree } from './repo-tree.js';
 import type { InstructionFile, ProjectType, ScanInput, ScanMetrics } from './types.js';
@@ -408,7 +409,13 @@ async function readSkillFile(repoRoot: string, relativePath: string, absPath: st
   };
 }
 
-function buildMetrics(files: InstructionFile[], onDemandFiles: InstructionFile[]): ScanMetrics {
+function buildMetrics(
+  scanned: InstructionFile[],
+  onDemandFiles: InstructionFile[],
+  aliases: InstructionFile[] = [],
+): ScanMetrics {
+  // A README or CONTRIBUTING no CLAUDE.md imports is scanned but never loaded by an agent (pcic-5rop.110).
+  const { loaded: files, reference: referenceDocs } = splitReferenceDocs(scanned, aliases);
   const metrics: ScanMetrics = {
     estimatedInstructionTokens: files.reduce((sum, file) => sum + file.estimatedTokens, 0),
     instructionFileCount: files.length,
@@ -420,6 +427,10 @@ function buildMetrics(files: InstructionFile[], onDemandFiles: InstructionFile[]
   if (onDemandFiles.length > 0) {
     metrics.onDemandFileCount = onDemandFiles.length;
     metrics.estimatedOnDemandTokens = onDemandFiles.reduce((sum, file) => sum + file.estimatedTokens, 0);
+  }
+  if (referenceDocs.length > 0) {
+    metrics.referenceDocFileCount = referenceDocs.length;
+    metrics.estimatedReferenceDocTokens = referenceDocs.reduce((sum, file) => sum + file.estimatedTokens, 0);
   }
   return metrics;
 }
@@ -509,7 +520,7 @@ export async function buildRepoContext(input: ScanInput): Promise<RepoContext> {
     ...(makefile ? { makefile } : {}),
     aiConfig,
     ...(input.exclude && input.exclude.length > 0 ? { exclude: input.exclude } : {}),
-    metrics: buildMetrics(files, onDemandFiles),
+    metrics: buildMetrics(files, onDemandFiles, aliasFiles),
     // A targetModel preset scales the context-bloat thresholds to that model's
     // window, but an explicit budget (flag or config) always wins over it.
     contextBudget: input.contextBudget ?? modelPreset?.contextBudget,

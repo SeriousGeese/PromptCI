@@ -322,6 +322,12 @@ export function generateMarkdownReport(report: ScanReport): string {
         `**In flagged sections:** up to ${report.metrics.estimatedAddressableTokens} tokens (always-loaded, overlaps counted once)`,
       );
     }
+    if (report.metrics.estimatedReferenceDocTokens) {
+      lines.push(
+        `**Reference docs:** ${report.metrics.estimatedReferenceDocTokens} tokens ` +
+          `across ${report.metrics.referenceDocFileCount} file(s) (README, CONTRIBUTING and similar) — scanned, but no agent loads them on its own unless a CLAUDE.md imports them`,
+      );
+    }
     if (report.metrics.estimatedOnDemandTokens) {
       lines.push(
         `**On-demand skill/agent tokens:** ${report.metrics.estimatedOnDemandTokens} ` +

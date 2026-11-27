@@ -279,6 +279,11 @@ export type ScanMetrics = {
   // inflate the always-loaded instruction totals above. Omitted when zero.
   onDemandFileCount?: number;
   estimatedOnDemandTokens?: number;
+  // README, CONTRIBUTING and the other human-facing docs that no CLAUDE.md imports:
+  // scanned, but no agent loads them on its own, so they are left out of the
+  // always-loaded totals above. Omitted when zero.
+  referenceDocFileCount?: number;
+  estimatedReferenceDocTokens?: number;
   /**
    * Upper bound on tokens that removing or condensing flagged text could save:
    * tokens in the lines flagged by duplicate, context_bloat, stale_instruction,

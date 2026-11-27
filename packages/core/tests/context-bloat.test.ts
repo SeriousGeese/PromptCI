@@ -178,16 +178,27 @@ describe('detectContextBloat — context cost', () => {
     expect(issues.every((i) => i.tags?.includes('cost'))).toBe(true);
   });
 
-  it('flags a README that dominates the scanned context', () => {
+  it('flags a README that dominates the always-loaded context', () => {
+    const claude = { ...makeFile('/repo/CLAUDE.md', 'claude', 2000), content: '@README.md\n' + 'x'.repeat(1988) };
     const files = [
       makeFile('/repo/README.md', 'readme', 6000), // ~1500 tokens, 75% of the total
-      makeFile('/repo/CLAUDE.md', 'claude', 2000),
+      claude, // imports the README, so it is carried on every turn
     ];
     const issues = detectContextBloat(files);
     const dominance = issues.find((i) => i.title.includes('README dominates'));
     expect(dominance).toBeDefined();
     expect(dominance!.severity).toBe('info');
     expect(dominance!.summary).toContain('75%');
+  });
+
+  it('does NOT flag README dominance, or count it in the total, when no CLAUDE.md imports the README', () => {
+    const files = [
+      makeFile('/repo/README.md', 'readme', 30000),
+      makeFile('/repo/CLAUDE.md', 'claude', 2000),
+    ];
+    const issues = detectContextBloat(files);
+    expect(issues.find((i) => i.title.includes('README dominates'))).toBeUndefined();
+    expect(issues.find((i) => i.title.includes('Total instruction context'))).toBeUndefined();
   });
 
   it('does NOT flag README dominance below the absolute token floor', () => {

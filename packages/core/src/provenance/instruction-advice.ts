@@ -190,11 +190,11 @@ export const INSTRUCTION_ADVICE_PROVENANCE: readonly CheckProvenance[] = [
     title: 'README carrying most of the agent context',
     kind: 'opinion',
     claim:
-      'A README that makes up most of the scanned instruction text is carried into agent context on every turn although it is written for people, so AI-specific guidance is cheaper in a smaller canonical file such as AGENTS.md.',
+      'A README that a CLAUDE.md imports with @README.md and that makes up most of the always-loaded instruction text is carried into agent context on every turn although it is written for people, so AI-specific guidance is cheaper in a smaller canonical file such as AGENTS.md; a README nothing imports is not loaded by any agent and is not counted.',
     appliesTo: 'all',
     sources: [
       src('agentsMd', 'context', 'Describes AGENTS.md as a README for agents and says the extra detail agents need, such as build steps and conventions, would clutter a README written for humans.'),
-      src('ccMemory', 'context', 'Lists the files Claude Code loads at start (CLAUDE.md, AGENTS.md, rules, auto memory) and mentions README only as an @README import example, so a README is not shown to be loaded on every turn; this is inferred from the page listing, not stated.'),
+      src('ccMemory', 'context', 'Lists the files Claude Code loads at start (CLAUDE.md, AGENTS.md, rules, auto memory) and mentions README only as an @README import example; imports expand up to 4 hops and markdown links are never followed, so a README loads only when imported.'),
     ],
     thresholds: [
       heuristic('README_DOMINANCE_RATIO', 0.5, 'share of scanned instruction tokens', 'context-bloat.ts:README_DOMINANCE_RATIO'),
