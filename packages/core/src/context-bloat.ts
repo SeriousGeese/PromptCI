@@ -136,9 +136,12 @@ export function detectContextBloat(
   const t: ContextBloatThresholds = mergeThresholds(DEFAULTS, thresholds);
   const issues: PromptCiIssue[] = [];
 
+  const unloadedSet = new Set(unloadedReferenceDocs);
+
   for (const file of [...files, ...aliasesOfType(files, aliases, 'windsurf').filter(isLegacyWindsurfRules)]) {
     const { charCount, estimatedTokens, path: filePath, fileType } = file;
     const isWindsurf = isLegacyWindsurfRules(file);
+    const isUnloadedRef = unloadedSet.has(file);
 
     // Per-file-type thresholds: READMEs are project docs consumed for context
     // (relaxed), while `.windsurfrules` is truncated by Windsurf past a low
@@ -159,6 +162,34 @@ export function detectContextBloat(
       `Trim the file under ~${t.windsurfFileWarning.toLocaleString()} characters, or split it into ` +
       'scoped `.windsurf/rules/*.md` files so each loads only when relevant — Windsurf ' +
       'silently truncates rules past its limit, so later rules never reach the model.';
+
+    // A README or CONTRIBUTING no CLAUDE.md imports is read only when an agent
+    // opens it, so its size is no per-turn cost: one unscored info note at the
+    // warning bar, with no cost tags (pcic-5rop.111).
+    if (isUnloadedRef) {
+      if (charCount >= warnThreshold) {
+        issues.push({
+          id: fileIssueId(fileIdPath(file)),
+          severity: 'info',
+          category: 'context_bloat',
+          title: 'Reference document is large',
+          summary:
+            `File is ${charCount.toLocaleString()} chars, above ${warnThreshold.toLocaleString()}. No instruction file imports it, ` +
+            'so agents read it only when they open it; it adds nothing to every turn and costs no health-score points.',
+          filePaths: [filePath],
+          locations: [{ filePath }],
+          evidence: [
+            `charCount: ${charCount.toLocaleString()}`,
+            `estimatedTokens: ~${estimatedTokens.toLocaleString()}`,
+          ],
+          recommendation:
+            'No action needed for per-turn cost. If an instruction file imports it with @, it counts toward every turn; trim it first.',
+          confidence: 1.0,
+          tags: [UNSCORED_TAG],
+        });
+      }
+      continue;
+    }
 
     if (charCount >= highThreshold) {
       issues.push({
@@ -239,7 +270,7 @@ export function detectContextBloat(
   );
   // A README or CONTRIBUTING no CLAUDE.md imports is scanned above but never
   // loaded by an agent, so it is no part of the total (pcic-5rop.110).
-  const unloaded = new Set(unloadedReferenceDocs);
+  const unloaded = unloadedSet;
   const alwaysLoaded = files.filter((f) => ruleActivation(f) === 'always' && !replaced.has(f) && !unloaded.has(f));
   const totalChars = alwaysLoaded.reduce((sum, f) => sum + f.charCount, 0);
   const totalTokens = alwaysLoaded.reduce((sum, f) => sum + f.estimatedTokens, 0);

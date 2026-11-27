@@ -150,6 +150,7 @@ export const INSTRUCTION_ADVICE_PROVENANCE: readonly CheckProvenance[] = [
       heuristic('fileContextBudget high multiplier', 2.5, 'times the configured fileContextBudget', 'detectors.ts:DETECTORS'),
     ],
     caveat:
+      'A README, CONTRIBUTING or similar reference doc that no always-loaded file imports is no per-turn cost: it gets one info finding ("Reference document is large") at the file warning bar that costs no health-score points, not the size findings above (pcic-5rop.111). ' +
       'geminicli.com carries a banner (read 2026-11-14): Gemini CLI was replaced by Antigravity CLI on June 18th, 2026 for unpaid-tier and Google One users, and it has not been optimized for Gemini 4 Argon; a claim about gemini-cli may not hold for the replacement.',
     lastVerified: V14,
   },
