@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { detectContextBloat } from '../src/context-bloat.js';
+import { computeHealthScore } from '../src/health-score.js';
 import type { InstructionFile, FileType } from '../src/types.js';
 
 function makeFile(path: string, fileType: string, charCount: number, lineCount = 100): InstructionFile {
@@ -40,8 +41,10 @@ describe('detectContextBloat', () => {
   it('uses relaxed thresholds for readme files', () => {
     // A README-only file set is 100% README by definition, so the dominance
     // finding always fires here — this case is about the SIZE thresholds.
+    // The README is imported so it is loaded, and the per-file size checks apply.
+    const claude = { ...makeFile('/repo/CLAUDE.md', 'claude', 100), content: '@README.md\n' };
     const sizeIssues = (files: InstructionFile[]) =>
-      detectContextBloat(files, { totalWarning: 999999, totalHigh: 999999 }).filter(
+      detectContextBloat([...files, claude], { totalWarning: 999999, totalHigh: 999999 }).filter(
         (i) => !i.title.includes('dominates'),
       );
 
@@ -189,6 +192,33 @@ describe('detectContextBloat — context cost', () => {
     expect(dominance).toBeDefined();
     expect(dominance!.severity).toBe('info');
     expect(dominance!.summary).toContain('75%');
+  });
+
+  it('gives an un-imported README or CONTRIBUTING one unscored info note, not a scored size finding (pcic-5rop.111)', () => {
+    const claude = makeFile('/repo/CLAUDE.md', 'claude', 500);
+    const readme = detectContextBloat([makeFile('/repo/README.md', 'readme', 45000), claude]);
+    expect(readme).toHaveLength(1);
+    expect(readme[0]).toMatchObject({ severity: 'info', title: 'Reference document is large', tags: ['unscored'] });
+    expect(readme[0]?.summary).toContain('only when they open it');
+    expect(computeHealthScore(readme)).toBe(100);
+
+    // CONTRIBUTING gets the generic bars (high at 20,000): it would have scored -10.
+    const contributing = detectContextBloat([makeFile('/repo/CONTRIBUTING.md', 'unknown', 20000), claude]);
+    expect(contributing).toHaveLength(1);
+    expect(contributing[0]).toMatchObject({ severity: 'info', tags: ['unscored'] });
+    expect(computeHealthScore(contributing)).toBe(100);
+
+    // Under the warning bar: nothing.
+    expect(detectContextBloat([makeFile('/repo/CONTRIBUTING.md', 'unknown', 7000), claude])).toEqual([]);
+  });
+
+  it('still scores a large README that CLAUDE.md imports', () => {
+    const claude = { ...makeFile('/repo/CLAUDE.md', 'claude', 100), content: '@README.md\n' };
+    const issues = detectContextBloat([makeFile('/repo/README.md', 'readme', 45000), claude]).filter(
+      (i) => i.title === 'Instruction file is very large',
+    );
+    expect(issues).toHaveLength(1);
+    expect(issues[0]?.severity).toBe('high');
   });
 
   it('does NOT flag README dominance, or count it in the total, when no CLAUDE.md imports the README', () => {
